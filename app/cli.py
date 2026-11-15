@@ -55,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("server-name", help="show the server name and LAN addresses")
     sn = sub.add_parser("set-server-name", help="rename the server (reachable on the LAN as NAME.local)")
     sn.add_argument("name")
+    sub.add_parser("reboot", help="reboot the server")
 
     sub.add_parser("version", help="show the installed version")
     sub.add_parser("check-update", help="check GitHub for a newer version")
@@ -125,6 +126,15 @@ def main(argv: list[str] | None = None) -> int:
             print(r["output"])
             if r["cert_changed"]:
                 print(f"Restart to use the new certificate: sudo systemctl restart {settings.service_name}")
+        elif args.cmd == "reboot":
+            if input("Reboot the server now? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 1
+            try:
+                print(server_name.reboot())
+            except RuntimeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
+            db.audit("server_reboot", "sysadmin-ia", "local")
         elif args.cmd == "version":
             print(updater.current_version())
         elif args.cmd == "check-update":

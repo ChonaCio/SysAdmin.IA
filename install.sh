@@ -255,15 +255,8 @@ chown root:"$SVC_USER" "$ENV_FILE"; chmod 640 "$ENV_FILE"
 # the self-signed certificate valid for the name. The service user may run it (and only it)
 # through sudo, so the name can also be changed later from Admin → Server name.
 HELPER="/usr/local/sbin/${APP_NAME}-hostname"
-install -o root -g root -m 755 "${SRC_DIR}/scripts/${APP_NAME}-hostname" "$HELPER"
-mkdir -p /etc/sudoers.d
-echo "$SVC_USER ALL=(root) NOPASSWD: $HELPER" > "/etc/sudoers.d/${APP_NAME}-hostname.tmp"
-chmod 440 "/etc/sudoers.d/${APP_NAME}-hostname.tmp"
-if visudo -cf "/etc/sudoers.d/${APP_NAME}-hostname.tmp" >/dev/null; then
-  mv "/etc/sudoers.d/${APP_NAME}-hostname.tmp" "/etc/sudoers.d/${APP_NAME}-hostname"
-else
-  rm -f "/etc/sudoers.d/${APP_NAME}-hostname.tmp"; c_warn "sudoers validation failed; the server name can't be changed from the web UI."
-fi
+bash "${SRC_DIR}/scripts/${APP_NAME}-hostname" install | sed 's/^/    /' \
+  || c_warn "Could not install the server-name helper; the server can't be renamed from the web UI."
 
 valid_server_name() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ && ! "$1" =~ ^[0-9]+$ ]]; }
 CURRENT_NAME="$(hostname -s 2>/dev/null || hostname)"

@@ -10,6 +10,10 @@
 #   sysadmin-ia-hostname cert       create/refresh the self-signed certificate so it covers
 #                                   the current name and IP addresses
 #   sysadmin-ia-hostname status     print the name and LAN-discovery state (no changes)
+#   sysadmin-ia-hostname reboot     reboot the server (after a few seconds)
+#   sysadmin-ia-hostname install    install/refresh this helper in /usr/local/sbin and the
+#                                   sudoers rule that lets the service user run it; e.g.
+#                                   sudo bash /opt/sysadmin-ia/scripts/sysadmin-ia-hostname install
 set -euo pipefail
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
@@ -147,10 +151,44 @@ do_status() {
   echo "ips=$(lan_ips | tr '\n' ' ')"
 }
 
+INSTALLED="/usr/local/sbin/${APP_NAME}-hostname"
+SUDOERS_RULE="/etc/sudoers.d/${APP_NAME}-hostname"
+
+do_install() {
+  local self
+  self="$(readlink -f "${BASH_SOURCE[0]}")"
+  if [[ "$self" != "$INSTALLED" ]]; then
+    install -o root -g root -m 755 "$self" "${INSTALLED}.new"
+    mv "${INSTALLED}.new" "$INSTALLED"
+  fi
+  mkdir -p /etc/sudoers.d
+  echo "$SVC_USER ALL=(root) NOPASSWD: $INSTALLED" > "${SUDOERS_RULE}.tmp"
+  chmod 440 "${SUDOERS_RULE}.tmp"
+  if visudo -cf "${SUDOERS_RULE}.tmp" >/dev/null; then
+    mv "${SUDOERS_RULE}.tmp" "$SUDOERS_RULE"
+  else
+    rm -f "${SUDOERS_RULE}.tmp"; die "sudoers validation failed"
+  fi
+  echo "Installed ${INSTALLED}; '${SVC_USER}' may run it with sudo."
+}
+
+do_reboot() {
+  echo "Rebooting in 3 seconds."
+  # Detached, so the caller (the web app) can still send its reply before shutdown.
+  if command -v systemd-run >/dev/null && [[ -d /run/systemd/system ]]; then
+    systemd-run --quiet --on-active=3 --timer-property=AccuracySec=100ms /bin/systemctl reboot \
+      || nohup sh -c 'sleep 3; systemctl reboot' >/dev/null 2>&1 &
+  else
+    nohup sh -c 'sleep 3; reboot' >/dev/null 2>&1 &
+  fi
+}
+
 case "${1:-}" in
-  set)    [[ $# -eq 2 ]] || die "usage: $0 set NAME"; do_set "$2" ;;
-  cert)   do_cert ;;
-  mdns)   reannounce ;;
-  status) do_status ;;
-  *)      die "usage: $0 {set NAME|cert|mdns|status}" ;;
+  set)     [[ $# -eq 2 ]] || die "usage: $0 set NAME"; do_set "$2" ;;
+  cert)    do_cert ;;
+  mdns)    reannounce ;;
+  status)  do_status ;;
+  reboot)  do_reboot ;;
+  install) do_install ;;
+  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install}" ;;
 esac

@@ -130,8 +130,13 @@
             <span class="muted small">Letters, digits and hyphens. Computers on the same network can then open this app by name.</span>
           </label>
           <div class="small" id="sn-urls"></div>
+          <pre class="update-notes mono small" id="sn-setup" hidden></pre>
           <pre class="update-notes mono small" id="sn-output" hidden></pre>
           <span class="small" id="sn-msg" hidden></span>
+          <div class="row">
+            <button type="button" id="sn-reboot" class="ghost danger">Reboot server</button>
+            <span class="muted small">The new name works right away; reboot only if a device still uses the old one.</span>
+          </div>
         </form>
       </div>
       <div class="card admin-only" id="update-card">

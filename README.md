@@ -46,7 +46,13 @@ Change the name later in **Admin → Server name**, or with `sudo sysadmin-ia se
 - re-announces the new name via mDNS, and advertises the web UI as a network service
 - replaces the self-signed certificate so it is valid for the new name, then restarts the app (browsers show the certificate warning once more). A certificate you installed yourself is never replaced
 
-These steps need root, so the installer adds a small root-owned helper, `/usr/local/sbin/sysadmin-ia-hostname`, which the `sysadmin-ia` user may run through sudo. This works even without full access; the helper can only do the steps above. The in-app updater doesn't replace the helper; re-run `install.sh` to update it.
+No reboot is needed: the new name works right away. If a device on the network still uses the old name (for example, a router that registered it), use **Reboot server** in the same card, or `sudo sysadmin-ia reboot`.
+
+These steps need root, so the installer adds a small root-owned helper, `/usr/local/sbin/sysadmin-ia-hostname`, which the `sysadmin-ia` user may run through sudo. This works even without full access; the helper can only do the steps above (and reboot). If the app was updated from GitHub and the helper is missing or outdated, the app installs or refreshes it by itself when it has full access. Without full access, the card shows a one-time command to run as root instead:
+
+```bash
+sudo bash /opt/sysadmin-ia/scripts/sysadmin-ia-hostname install
+```
 
 If a firewall is active, allow mDNS (UDP port 5353): `sudo ufw allow 5353/udp`, or `sudo firewall-cmd --add-service=mdns --permanent && sudo firewall-cmd --reload`. Names must be 1–63 letters, digits and hyphens. `.local` names only work inside the local network (the same subnet); for access from elsewhere, use a DNS name or the IP address.
 
@@ -108,6 +114,7 @@ If the repository is private, save a GitHub token (a fine-grained token with rea
 | Set / remove API key | `sudo sysadmin-ia set-api-key` / `sudo sysadmin-ia clear-api-key` |
 | Change model | `sudo sysadmin-ia set-model claude-sonnet-5-5` (or use Admin → Claude API) |
 | Show / change the server name | `sudo sysadmin-ia server-name` / `sudo sysadmin-ia set-server-name NAME` (or Admin → Server name) |
+| Reboot the server | `sudo sysadmin-ia reboot` (or Admin → Server name → Reboot server) |
 | Check for / install updates | `sudo sysadmin-ia check-update` / `sudo sysadmin-ia update` (or Admin → Updates) |
 | Roll back an app change Claude made | `sudo -u sysadmin-ia git -C /opt/sysadmin-ia log --oneline`, then `sudo -u sysadmin-ia git -C /opt/sysadmin-ia revert <sha>` and restart |
 | Restore a file Claude edited | backups are in `/var/lib/sysadmin-ia/backups/<timestamp>/<original path>` |

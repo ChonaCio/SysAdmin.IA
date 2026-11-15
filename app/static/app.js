@@ -590,9 +590,38 @@ function renderServerName(s) {
     p.textContent = "The .local name needs the avahi-daemon service on this server. Re-run install.sh to set it up.";
     urls.append(p);
   }
-  form.server_name.disabled = $("#sn-save").disabled = !s.can_change;
-  if (!s.can_change) setSnMsg("Renaming from the web UI needs the helper that install.sh sets up.", false);
+  form.server_name.disabled = $("#sn-save").disabled = $("#sn-reboot").disabled = !s.can_change;
+  const setup = $("#sn-setup");
+  setup.hidden = !s.setup_command;
+  if (s.setup_command) {
+    setup.textContent = s.setup_command;
+    setSnMsg("One-time setup needed: run the command above on the server as root (or re-run install.sh), then reload this page.", false);
+  } else if (!s.can_change) {
+    setSnMsg(s.linux ? "Renaming needs the helper that install.sh sets up. Re-run install.sh on the server."
+                     : "Renaming is only available on an installed Linux server.", false);
+  }
 }
+
+$("#sn-reboot").addEventListener("click", async () => {
+  if (!confirm("Reboot the server now?\n\nThe web UI, and everything else running on this server, " +
+      "will be unavailable for a minute or two.")) return;
+  try {
+    const before = (await api("/api/host")).boot_time;
+    await api("/api/server/reboot", { method: "POST" });
+    setSnMsg("Rebooting… this page reloads when the server is back.", true);
+    const started = Date.now();
+    const poll = async () => {
+      try {
+        const r = await fetch("/api/host", { cache: "no-store" });
+        // Reload once the server answers with a new boot time.
+        if (r.ok && (await r.json()).boot_time > before + 5) { location.reload(); return; }
+      } catch { /* still down */ }
+      if (Date.now() - started < 10 * 60000) setTimeout(poll, 3000);
+      else setSnMsg("The server hasn't come back after 10 minutes. Check it directly.", false);
+    };
+    setTimeout(poll, 8000);
+  } catch (ex) { setSnMsg(ex.message, false); }
+});
 
 async function loadServerName() {
   renderServerName(await api("/api/server-name"));

@@ -268,6 +268,16 @@ async def put_server_name(body: ServerNameBody, request: Request, user: User = D
     return {**result, "status": await asyncio.to_thread(server_name.status)}
 
 
+@app.post("/api/server/reboot")
+async def reboot_server(request: Request, user: User = Depends(admin_user)):
+    try:
+        out = await asyncio.to_thread(server_name.reboot)
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
+    db.audit("server_reboot", user.username, auth.client_ip(request), out)
+    return {"ok": True, "output": out}
+
+
 # ---------------------------------------------------------------- updates (admin)
 
 class UpdateSettingsBody(BaseModel):
