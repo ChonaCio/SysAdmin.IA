@@ -20,6 +20,7 @@ and restored automatically if the new version fails to install or import.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import shutil
@@ -28,9 +29,10 @@ import sys
 import tarfile
 import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path, PurePosixPath
-
-import httpx
 
 from . import db
 from .config import settings
@@ -118,67 +120,78 @@ def under_supervisor() -> bool:
 
 # ------------------------------------------------------------------ GitHub
 
-def _headers(raw: bool = False) -> dict:
-    h = {
+def _request(url: str, raw: bool = False) -> urllib.request.Request:
+    req = urllib.request.Request(url, headers={
         "Accept": "application/vnd.github.raw" if raw else "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
         "User-Agent": "SysAdmin.IA-updater",
-    }
+    })
     tok, _ = token()
     if tok:
-        h["Authorization"] = f"Bearer {tok}"
-    return h
+        # Unredirected: not forwarded when GitHub redirects a download to codeload.github.com.
+        req.add_unredirected_header("Authorization", f"Bearer {tok}")
+    return req
 
 
-def _raise_for(r: httpx.Response, what: str) -> None:
-    if r.status_code == 404:
+def _http_error(e: urllib.error.HTTPError, what: str) -> UpdateError:
+    if e.code == 404:
         hint = "" if token()[0] else " If the repository is private, add a GitHub token."
-        raise UpdateError(f"{what}: not found (github.com/{repo()}).{hint}")
-    if r.status_code in (401, 403):
-        if r.headers.get("x-ratelimit-remaining") == "0":
-            raise UpdateError("GitHub API rate limit reached; try again later or add a GitHub token.")
-        raise UpdateError(f"{what}: GitHub refused access (HTTP {r.status_code}). Check the GitHub token.")
-    if r.status_code >= 400:
-        raise UpdateError(f"{what}: GitHub returned HTTP {r.status_code}.")
+        return UpdateError(f"{what}: not found (github.com/{repo()}).{hint}")
+    if e.code in (401, 403):
+        if e.headers.get("x-ratelimit-remaining") == "0":
+            return UpdateError("GitHub API rate limit reached; try again later or add a GitHub token.")
+        return UpdateError(f"{what}: GitHub refused access (HTTP {e.code}). Check the GitHub token.")
+    return UpdateError(f"{what}: GitHub returned HTTP {e.code}.")
+
+
+def _get(url: str, what: str, raw: bool = False, missing_ok: bool = False) -> bytes | None:
+    """GET a GitHub API URL (blocking). Returns None on 404 when missing_ok."""
+    try:
+        with urllib.request.urlopen(_request(url, raw), timeout=20) as r:
+            return r.read(MAX_DOWNLOAD)
+    except urllib.error.HTTPError as e:
+        if missing_ok and e.code == 404:
+            return None
+        raise _http_error(e, what) from e
+    except (urllib.error.URLError, OSError) as e:
+        raise UpdateError(f"Could not reach GitHub: {getattr(e, 'reason', e)}") from e
+
+
+def _latest_blocking() -> dict:
+    """Find the newest available version on GitHub."""
+    base = f"{API}/repos/{repo()}"
+    body = _get(f"{base}/releases/latest", "Latest release", missing_ok=True)
+    if body is not None:
+        rel = json.loads(body)
+        return {
+            "version": rel["tag_name"].lstrip("vV"),
+            "source": "release",
+            "ref": rel["tag_name"],
+            "name": rel.get("name") or rel["tag_name"],
+            "notes": (rel.get("body") or "")[:5000],
+            "published_at": rel.get("published_at"),
+            "url": rel.get("html_url"),
+        }
+    # No releases: use the VERSION file on the branch.
+    ref = urllib.parse.quote(branch(), safe="")
+    version = _get(f"{base}/contents/VERSION?ref={ref}", f"VERSION file on branch '{branch()}'",
+                   raw=True).decode("utf-8", "replace").strip()
+    if not re.fullmatch(r"v?\d+(\.\d+){0,3}([-+][\w.]+)?", version):
+        raise UpdateError(f"Unexpected VERSION file contents on GitHub: {version[:40]!r}")
+    info = {"version": version.lstrip("vV"), "source": "branch", "ref": branch(),
+            "name": f"{branch()} ({version})", "notes": "", "published_at": None,
+            "url": f"https://github.com/{repo()}/tree/{branch()}"}
+    body = _get(f"{base}/commits/{ref}", "Latest commit", missing_ok=True)
+    if body is not None:
+        cm = json.loads(body)
+        info["ref"] = cm["sha"]  # pin the download to the commit we looked at
+        info["notes"] = (cm.get("commit", {}).get("message") or "")[:5000]
+        info["published_at"] = cm.get("commit", {}).get("committer", {}).get("date")
+    return info
 
 
 async def _latest() -> dict:
-    """Find the newest available version on GitHub."""
-    async with httpx.AsyncClient(timeout=20, follow_redirects=True) as c:
-        try:
-            r = await c.get(f"{API}/repos/{repo()}/releases/latest", headers=_headers())
-            if r.status_code == 200:
-                rel = r.json()
-                return {
-                    "version": rel["tag_name"].lstrip("vV"),
-                    "source": "release",
-                    "ref": rel["tag_name"],
-                    "name": rel.get("name") or rel["tag_name"],
-                    "notes": (rel.get("body") or "")[:5000],
-                    "published_at": rel.get("published_at"),
-                    "url": rel.get("html_url"),
-                }
-            if r.status_code != 404:
-                _raise_for(r, "Latest release")
-            # No releases: use the VERSION file on the branch.
-            r = await c.get(f"{API}/repos/{repo()}/contents/VERSION",
-                            params={"ref": branch()}, headers=_headers(raw=True))
-            _raise_for(r, f"VERSION file on branch '{branch()}'")
-            version = r.text.strip()
-            if not re.fullmatch(r"v?\d+(\.\d+){0,3}([-+][\w.]+)?", version):
-                raise UpdateError(f"Unexpected VERSION file contents on GitHub: {version[:40]!r}")
-            info = {"version": version.lstrip("vV"), "source": "branch", "ref": branch(),
-                    "name": f"{branch()} ({version})", "notes": "", "published_at": None,
-                    "url": f"https://github.com/{repo()}/tree/{branch()}"}
-            r = await c.get(f"{API}/repos/{repo()}/commits/{branch()}", headers=_headers())
-            if r.status_code == 200:
-                cm = r.json()
-                info["ref"] = cm["sha"]  # pin the download to the commit we looked at
-                info["notes"] = (cm.get("commit", {}).get("message") or "")[:5000]
-                info["published_at"] = cm.get("commit", {}).get("committer", {}).get("date")
-            return info
-        except httpx.HTTPError as e:
-            raise UpdateError(f"Could not reach GitHub: {type(e).__name__}: {e}") from e
+    return await asyncio.to_thread(_latest_blocking)
 
 
 async def check(force: bool = False) -> dict:
@@ -221,22 +234,24 @@ def status() -> dict:
 
 # ------------------------------------------------------------------ install
 
-async def _download(ref: str, dest: Path) -> None:
-    url = f"{API}/repos/{repo()}/tarball/{ref}"
+def _download_blocking(ref: str, dest: Path) -> None:
+    url = f"{API}/repos/{repo()}/tarball/{urllib.parse.quote(ref, safe='')}"
     try:
-        # httpx drops the Authorization header when GitHub redirects to codeload.github.com.
-        async with httpx.AsyncClient(timeout=120, follow_redirects=True) as c:
-            async with c.stream("GET", url, headers=_headers()) as r:
-                _raise_for(r, "Download")
-                size = 0
-                with dest.open("wb") as f:
-                    async for chunk in r.aiter_bytes():
-                        size += len(chunk)
-                        if size > MAX_DOWNLOAD:
-                            raise UpdateError("Download is unexpectedly large; aborted.")
-                        f.write(chunk)
-    except httpx.HTTPError as e:
-        raise UpdateError(f"Download failed: {type(e).__name__}: {e}") from e
+        with urllib.request.urlopen(_request(url), timeout=120) as r, dest.open("wb") as f:
+            size = 0
+            while chunk := r.read(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_DOWNLOAD:
+                    raise UpdateError("Download is unexpectedly large; aborted.")
+                f.write(chunk)
+    except urllib.error.HTTPError as e:
+        raise _http_error(e, "Download") from e
+    except (urllib.error.URLError, OSError) as e:
+        raise UpdateError(f"Download failed: {getattr(e, 'reason', e)}") from e
+
+
+async def _download(ref: str, dest: Path) -> None:
+    await asyncio.to_thread(_download_blocking, ref, dest)
 
 
 def _safe_extract(archive: Path, dest: Path) -> Path:
