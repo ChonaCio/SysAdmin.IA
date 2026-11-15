@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SysAdmin.IA</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="dot" id="conn-dot" title="Connection"></span> <strong id="hostname">SysAdmin.IA</strong> <span class="muted small" id="host-os"></span></div>
+    <nav class="tabs" role="tablist">
+      <button data-view="chat" class="tab active" id="tab-chat">Chat</button>
+      <button data-view="monitor" class="tab">Monitor</button>
+      <button data-view="admin" class="tab" id="tab-admin">Admin</button>
+    </nav>
+    <div class="user"><span id="whoami" class="muted small"></span> <button id="logout" class="ghost small">Sign out</button></div>
+  </header>
+
+  <!-- ================= CHAT ================= -->
+  <section id="view-chat" class="view active">
+    <aside class="sidebar">
+      <button id="new-chat" class="primary block">+ New chat</button>
+      <ul id="conv-list" class="conv-list"></ul>
+    </aside>
+    <div class="chat-main">
+      <div id="api-warning" class="banner warn" hidden>Claude isn't connected yet: no Anthropic API key is configured. <a href="#" id="goto-claude-settings">Add one in Admin → Claude API</a>. The monitor works without it.</div>
+      <div id="messages" class="messages">
+        <div class="empty" id="empty-state">
+          <h2>Ask Claude about this server</h2>
+          <p class="muted">Claude can run commands and edit files here, including this app's own code. Every change waits for your approval.</p>
+          <div class="suggestions">
+            <button class="chip">Give me a health check of this server</button>
+            <button class="chip">What is using the most disk space?</button>
+            <button class="chip">Are there pending security updates?</button>
+            <button class="chip">Add a dark/light theme toggle to this app</button>
+          </div>
+        </div>
+      </div>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="2" placeholder="Message Claude… (Enter to send, Shift+Enter for newline)"></textarea>
+        <div class="composer-bar">
+          <label class="toggle" id="auto-approve-wrap" title="Run actions without asking. Use with care.">
+            <input type="checkbox" id="auto-approve"> Auto-approve actions
+          </label>
+          <span class="muted small" id="status"></span>
+          <span class="spacer"></span>
+          <button type="button" id="stop" class="danger" hidden>Stop</button>
+          <button type="submit" id="send" class="primary">Send</button>
+        </div>
+      </form>
+    </div>
+  </section>
+
+  <!-- ================= MONITOR ================= -->
+  <section id="view-monitor" class="view">
+    <div class="monitor">
+      <div class="tiles">
+        <div class="tile"><div class="label">CPU</div><div class="value" id="m-cpu">–</div><div class="bar"><i id="b-cpu"></i></div></div>
+        <div class="tile"><div class="label">Memory</div><div class="value" id="m-mem">–</div><div class="sub" id="m-mem-sub"></div><div class="bar"><i id="b-mem"></i></div></div>
+        <div class="tile"><div class="label">Swap</div><div class="value" id="m-swap">–</div><div class="sub" id="m-swap-sub"></div><div class="bar"><i id="b-swap"></i></div></div>
+        <div class="tile"><div class="label">Load (1/5/15)</div><div class="value small-value" id="m-load">–</div><div class="sub" id="m-cores"></div></div>
+        <div class="tile"><div class="label">Network</div><div class="value small-value" id="m-net">–</div></div>
+        <div class="tile"><div class="label">Disk I/O</div><div class="value small-value" id="m-io">–</div></div>
+        <div class="tile"><div class="label">Uptime</div><div class="value small-value" id="m-uptime">–</div><div class="sub" id="m-procs"></div></div>
+        <div class="tile"><div class="label">Services</div><div class="value small-value" id="m-svc">–</div><div class="sub" id="m-svc-failed"></div></div>
+      </div>
+
+      <div class="charts">
+        <div class="card"><h3>CPU &amp; memory <span class="muted small">last 5 min</span></h3><canvas id="chart-usage" height="160"></canvas>
+          <div class="legend"><span><i class="sw s1"></i>CPU %</span><span><i class="sw s2"></i>Memory %</span></div></div>
+        <div class="card"><h3>Network <span class="muted small">last 5 min</span></h3><canvas id="chart-net" height="160"></canvas>
+          <div class="legend"><span><i class="sw s1"></i>Receive</span><span><i class="sw s2"></i>Transmit</span></div></div>
+      </div>
+
+      <div class="card"><h3>Per-core CPU</h3><div id="cores" class="cores"></div></div>
+
+      <div class="grid2">
+        <div class="card"><h3>Filesystems</h3>
+          <table class="table"><thead><tr><th>Mount</th><th>Type</th><th>Used</th><th>Size</th><th style="width:35%">Usage</th></tr></thead><tbody id="disks"></tbody></table>
+        </div>
+        <div class="card"><h3>Temperatures</h3><div id="temps" class="muted small">No sensors reported.</div></div>
+      </div>
+
+      <div class="card">
+        <h3>Top processes
+          <span class="seg"><button data-sort="cpu" class="seg-btn active">CPU</button><button data-sort="mem" class="seg-btn">Memory</button></span>
+        </h3>
+        <div class="table-wrap">
+          <table class="table"><thead><tr><th>PID</th><th>User</th><th>Name</th><th class="num">CPU %</th><th class="num">Mem %</th><th class="num">RSS</th><th>Command</th></tr></thead><tbody id="procs"></tbody></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= ADMIN ================= -->
+  <section id="view-admin" class="view">
+    <div class="monitor">
+      <div class="card admin-only" id="claude-card">
+        <h3>Claude API <span class="status-pill" id="key-status"></span></h3>
+        <form id="claude-form" class="settings-form" autocomplete="off">
+          <label>API key
+            <span class="row">
+              <input name="api_key" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
+              <button type="button" id="test-key" class="ghost">Test</button>
+              <button type="button" id="clear-key" class="ghost danger" hidden>Remove saved key</button>
+            </span>
+            <span class="muted small" id="key-help">Get a key at console.anthropic.com. It is stored on this server and never shown again.</span>
+          </label>
+          <label>Model
+            <input name="model" list="model-options" spellcheck="false">
+            <datalist id="model-options"></datalist>
+          </label>
+          <label>Effort
+            <select name="effort"></select>
+            <span class="muted small">Higher effort is more thorough, but slower and more expensive.</span>
+          </label>
+          <div class="row"><button class="primary">Save</button><span class="small" id="claude-msg" hidden></span></div>
+        </form>
+      </div>
+      <div class="grid2">
+        <div class="card admin-only">
+          <h3>Users</h3>
+          <table class="table"><thead><tr><th>User</th><th>Role</th><th></th></tr></thead><tbody id="users"></tbody></table>
+          <form id="add-user" class="inline-form">
+            <input name="username" placeholder="username" required>
+            <input name="password" type="password" placeholder="password (10+ chars)" required minlength="10" autocomplete="new-password">
+            <select name="role"><option value="admin">admin</option><option value="viewer">viewer (monitor only)</option></select>
+            <button class="primary">Add</button>
+          </form>
+          <p class="error" id="user-error" hidden></p>
+        </div>
+        <div class="card">
+          <h3>Change my password</h3>
+          <form id="pw-form" class="stack-form">
+            <input name="current_password" type="password" placeholder="current password" required autocomplete="current-password">
+            <input name="new_password" type="password" placeholder="new password (10+ chars)" required minlength="10" autocomplete="new-password">
+            <button class="primary">Update password</button>
+            <p class="small" id="pw-msg" hidden></p>
+          </form>
+        </div>
+      </div>
+      <div class="card admin-only">
+        <h3>Audit log <button id="refresh-audit" class="ghost small">Refresh</button></h3>
+        <div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>User</th><th>IP</th><th>Action</th><th>Detail</th></tr></thead><tbody id="audit"></tbody></table></div>
+      </div>
+    </div>
+  </section>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/static/markdown.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

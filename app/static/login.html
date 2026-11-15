@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in · SysAdmin.IA</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="login-body">
+  <main class="login-card">
+    <h1>SysAdmin.IA</h1>
+    <p class="muted" id="host-hint">Sign in to continue</p>
+    <p class="insecure small" id="insecure-note" hidden>
+      Unencrypted connection (HTTP): your password and session can be read by anyone on the network.
+      <a id="https-link" href="#" hidden>Switch to HTTPS</a>
+    </p>
+    <form id="login-form" autocomplete="on">
+      <label>Username <input name="username" autocomplete="username" required autofocus></label>
+      <label>Password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit" class="primary">Sign in</button>
+      <p class="error" id="login-error" hidden></p>
+    </form>
+    <p class="muted small" id="no-users" hidden>
+      No users exist yet. On the server run <code>sudo sysadmin-ia create-user admin</code>.
+    </p>
+  </main>
+  <script src="/static/login.js"></script>
+</body>
+</html>
