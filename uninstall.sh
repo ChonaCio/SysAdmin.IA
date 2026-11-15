@@ -9,7 +9,13 @@ if command -v systemctl >/dev/null; then
   rm -f "/etc/systemd/system/${APP_NAME}.service"
   systemctl daemon-reload || true
 fi
-rm -f "/etc/sudoers.d/${APP_NAME}" /usr/local/bin/sysadmin-ia
+rm -f "/etc/sudoers.d/${APP_NAME}" "/etc/sudoers.d/${APP_NAME}-hostname" /usr/local/bin/sysadmin-ia \
+      "/usr/local/sbin/${APP_NAME}-hostname"
+# The LAN announcement of the web UI (the hostname and avahi itself are left as they are).
+if [[ -f "/etc/avahi/services/${APP_NAME}.service" ]]; then
+  rm -f "/etc/avahi/services/${APP_NAME}.service"
+  systemctl reload avahi-daemon 2>/dev/null || true
+fi
 rm -rf "/opt/${APP_NAME}"
 
 if [[ "${1:-}" == "--purge" ]]; then

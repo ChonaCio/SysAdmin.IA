@@ -20,20 +20,35 @@ sudo ./install.sh
 
 The installer:
 
-1. installs `python3` (3.10 or newer), `venv`, `git`, `openssl` and `sudo` with the distro's package manager
+1. installs `python3` (3.10 or newer), `venv`, `git`, `openssl`, `sudo` and `avahi-daemon` (mDNS) with the distro's package manager
 2. creates the system user `sysadmin-ia` and copies the app to `/opt/sysadmin-ia` (a git repo, owned by `sysadmin-ia`, so Claude can change it)
 3. writes the config to `/etc/sysadmin-ia/sysadmin-ia.env` and asks for your Anthropic API key. **You can skip this.** The app installs and runs without a key (the monitor and admin pages work), and you can add the key later (see below)
-4. generates a self-signed TLS certificate, then serves **HTTPS on port 8765** and **plain HTTP on port 8080**
-5. asks whether to grant **full access** (passwordless sudo for `sysadmin-ia`). Without it, Claude can only act as the unprivileged `sysadmin-ia` user
-6. creates the first admin user and installs and starts `sysadmin-ia.service`
+4. asks for the **server name** (default: the current hostname) and announces it on the LAN as `NAME.local`
+5. generates a self-signed TLS certificate valid for `NAME.local` and the server's IPs, then serves **HTTPS on port 8765** and **plain HTTP on port 8080**
+6. asks whether to grant **full access** (passwordless sudo for `sysadmin-ia`). Without it, Claude can only act as the unprivileged `sysadmin-ia` user
+7. creates the first admin user and installs and starts `sysadmin-ia.service`
 
-Then open `https://<server-ip>:8765/` (your browser warns about the self-signed certificate the first time) or `http://<server-ip>:8080/`.
+Then open `https://NAME.local:8765/` or `https://<server-ip>:8765/` (your browser warns about the self-signed certificate the first time), or `http://NAME.local:8080/`.
 
 Non-interactive example (`--api-key` is optional):
 
 ```bash
-sudo ./install.sh -y --full-access --admin alice --port 8765 --http-port 8080
+sudo ./install.sh -y --full-access --server-name office-server --admin alice --port 8765 --http-port 8080
 ```
+
+### Server name and LAN access
+
+The server name is the machine's hostname. The installer runs Avahi (mDNS), so every computer on the same network can reach the app as `https://NAME.local:8765/` without any DNS setup. This works out of the box on Windows 10/11, macOS, iOS, and Linux desktops with `nss-mdns`. Android supports `.local` names in Chrome on recent versions; if one doesn't, use the IP address.
+
+Change the name later in **Admin → Server name**, or with `sudo sysadmin-ia set-server-name NAME` (`sudo sysadmin-ia server-name` shows it and the LAN addresses). Renaming:
+
+- sets the hostname and the `127.0.1.1` entry in `/etc/hosts`
+- re-announces the new name via mDNS, and advertises the web UI as a network service
+- replaces the self-signed certificate so it is valid for the new name, then restarts the app (browsers show the certificate warning once more). A certificate you installed yourself is never replaced
+
+These steps need root, so the installer adds a small root-owned helper, `/usr/local/sbin/sysadmin-ia-hostname`, which the `sysadmin-ia` user may run through sudo. This works even without full access; the helper can only do the steps above. The in-app updater doesn't replace the helper; re-run `install.sh` to update it.
+
+If a firewall is active, allow mDNS (UDP port 5353): `sudo ufw allow 5353/udp`, or `sudo firewall-cmd --add-service=mdns --permanent && sudo firewall-cmd --reload`. Names must be 1–63 letters, digits and hyphens. `.local` names only work inside the local network (the same subnet); for access from elsewhere, use a DNS name or the IP address.
 
 ### HTTP and HTTPS
 
@@ -92,6 +107,7 @@ If the repository is private, save a GitHub token (a fine-grained token with rea
 | Audit log | `sudo sysadmin-ia audit -n 100` |
 | Set / remove API key | `sudo sysadmin-ia set-api-key` / `sudo sysadmin-ia clear-api-key` |
 | Change model | `sudo sysadmin-ia set-model claude-sonnet-5-5` (or use Admin → Claude API) |
+| Show / change the server name | `sudo sysadmin-ia server-name` / `sudo sysadmin-ia set-server-name NAME` (or Admin → Server name) |
 | Check for / install updates | `sudo sysadmin-ia check-update` / `sudo sysadmin-ia update` (or Admin → Updates) |
 | Roll back an app change Claude made | `sudo -u sysadmin-ia git -C /opt/sysadmin-ia log --oneline`, then `sudo -u sysadmin-ia git -C /opt/sysadmin-ia revert <sha>` and restart |
 | Restore a file Claude edited | backups are in `/var/lib/sysadmin-ia/backups/<timestamp>/<original path>` |

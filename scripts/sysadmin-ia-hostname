@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+# SysAdmin.IA – server name helper (runs as root).
+#
+# install.sh copies this to /usr/local/sbin/sysadmin-ia-hostname (root-owned) and lets the
+# service user run it through a narrow sudoers rule, so the web UI can rename the server
+# even without "full access". It only does the following:
+#
+#   sysadmin-ia-hostname set NAME   set the hostname, /etc/hosts entry, re-announce it on the
+#                                   LAN via mDNS (NAME.local) and refresh the TLS certificate
+#   sysadmin-ia-hostname cert       create/refresh the self-signed certificate so it covers
+#                                   the current name and IP addresses
+#   sysadmin-ia-hostname status     print the name and LAN-discovery state (no changes)
+set -euo pipefail
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+APP_NAME="sysadmin-ia"
+SVC_USER="sysadmin-ia"
+CONF_DIR="/etc/${APP_NAME}"
+ENV_FILE="${CONF_DIR}/sysadmin-ia.env"
+TLS_DIR="${CONF_DIR}/tls"
+CERT="${TLS_DIR}/cert.pem"
+KEY="${TLS_DIR}/key.pem"
+MARK="SysAdmin.IA self-signed"
+AVAHI_SERVICE="/etc/avahi/services/${APP_NAME}.service"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] || die "must run as root"
+
+valid_name() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] && [[ ! "$1" =~ ^[0-9]+$ ]]; }
+
+lan_ips() { hostname -I 2>/dev/null | tr ' ' '\n' | grep -v ':' | grep -v '^$' || true; }
+
+env_value() { [[ -f "$ENV_FILE" ]] && sed -n "s/^$1=//p" "$ENV_FILE" | tail -1 || true; }
+
+# ---------------------------------------------------------------- TLS certificate
+# Only the certificate install.sh generated is managed here; a certificate you installed
+# yourself (other path, or not created by SysAdmin.IA) is never touched.
+cert_is_ours() {
+  [[ -f "$CERT" ]] || return 1
+  local subj issuer
+  subj="$(openssl x509 -in "$CERT" -noout -subject 2>/dev/null)" || return 1
+  issuer="$(openssl x509 -in "$CERT" -noout -issuer 2>/dev/null)" || return 1
+  [[ "$subj" == *"$MARK"* ]] && return 0
+  # Certificates from older installers: self-signed with only a CN.
+  [[ "${subj#subject=}" == "${issuer#issuer=}" && "$subj" =~ ^subject=\ ?CN\ ?=\ ?[^,/]+$ ]]
+}
+
+cert_covers() {  # cert_covers "DNS:a,DNS:b,IP:1.2.3.4"
+  local san item
+  san="$(openssl x509 -in "$CERT" -noout -text 2>/dev/null | grep -A1 'Subject Alternative Name' | tail -1 | tr -d ' ')"
+  san="${san//IPAddress:/IP:}"
+  IFS=, read -ra items <<<"$1"
+  for item in "${items[@]}"; do [[ ",${san}," == *",${item},"* ]] || return 1; done
+}
+
+do_cert() {
+  [[ "$(env_value SAI_TLS_CERT)" == "$CERT" ]] || { echo "TLS: not using ${CERT}; certificate left alone."; return 0; }
+  local name fqdn san ip
+  name="$(hostname -s 2>/dev/null || hostname)"
+  fqdn="$(hostname -f 2>/dev/null || echo "$name")"
+  san="DNS:${name},DNS:${name}.local,DNS:localhost,IP:127.0.0.1"
+  [[ "$fqdn" != "$name" && "$fqdn" != localhost* ]] && san="DNS:${fqdn},${san}"
+  for ip in $(lan_ips); do san="${san},IP:${ip}"; done
+
+  if [[ -f "$CERT" ]]; then
+    if ! cert_is_ours; then echo "TLS: ${CERT} is not a SysAdmin.IA self-signed certificate; left alone."; return 0; fi
+    if cert_covers "$san"; then echo "TLS: certificate already covers ${name} and ${name}.local."; return 0; fi
+  fi
+  mkdir -p "$TLS_DIR"
+  openssl req -x509 -newkey rsa:2048 -nodes -days 825 -sha256 \
+    -keyout "${KEY}.new" -out "${CERT}.new" \
+    -subj "/O=${MARK}/CN=${name}.local" -addext "subjectAltName=${san}" >/dev/null 2>&1 \
+    || die "openssl could not create the certificate"
+  mv "${KEY}.new" "$KEY"; mv "${CERT}.new" "$CERT"
+  chown -R root:"$SVC_USER" "$TLS_DIR"; chmod 750 "$TLS_DIR"; chmod 640 "$TLS_DIR"/*.pem
+  echo "TLS: new self-signed certificate for ${name}.local (${san}). Browsers will warn once more."
+  echo "CERT_CHANGED"
+}
+
+# ---------------------------------------------------------------- mDNS (Avahi)
+write_avahi_service() {
+  [[ -d /etc/avahi/services ]] || return 0
+  local port scheme
+  port="$(env_value SAI_PORT)"; port="${port:-8765}"
+  scheme=http; [[ -n "$(env_value SAI_TLS_CERT)" ]] && scheme=https
+  cat > "$AVAHI_SERVICE" <<EOF
+<?xml version="1.0" standalone='no'?>
+<!DOCTYPE service-group SYSTEM "avahi-service.dtd">
+<!-- Written by SysAdmin.IA: advertises the web UI on the LAN. -->
+<service-group>
+  <name replace-wildcards="yes">SysAdmin.IA on %h</name>
+  <service>
+    <type>_${scheme}._tcp</type>
+    <port>${port}</port>
+    <txt-record>path=/</txt-record>
+  </service>
+</service-group>
+EOF
+}
+
+reannounce() {
+  if command -v avahi-daemon >/dev/null; then
+    write_avahi_service
+    if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+      systemctl enable avahi-daemon >/dev/null 2>&1 || true
+      systemctl restart avahi-daemon >/dev/null 2>&1 || echo "mDNS: could not restart avahi-daemon."
+    elif command -v rc-service >/dev/null; then
+      rc-service avahi-daemon restart >/dev/null 2>&1 || true
+    fi
+    echo "mDNS: announcing $(hostname -s 2>/dev/null || hostname).local on the LAN."
+  else
+    echo "mDNS: avahi-daemon is not installed, so NAME.local will not resolve. Re-run install.sh to add it."
+  fi
+}
+
+# ---------------------------------------------------------------- hostname
+do_set() {
+  local new="${1,,}" old
+  valid_name "$new" || die "invalid name '$1': use 1-63 letters, digits and hyphens (not starting/ending with a hyphen)"
+  old="$(hostname -s 2>/dev/null || hostname)"
+  if command -v hostnamectl >/dev/null && [[ -d /run/systemd/system ]]; then
+    hostnamectl set-hostname "$new"
+  else
+    echo "$new" > /etc/hostname
+    hostname "$new"
+  fi
+  # /etc/hosts: keep the name resolvable locally (Debian-style 127.0.1.1 entry).
+  if grep -qE '^127\.0\.1\.1[[:space:]]' /etc/hosts; then
+    sed -i -E "s/^127\.0\.1\.1[[:space:]].*/127.0.1.1\t${new}.local ${new}/" /etc/hosts
+  else
+    printf '127.0.1.1\t%s.local %s\n' "$new" "$new" >> /etc/hosts
+  fi
+  echo "Hostname: ${old} -> ${new}"
+  reannounce
+  do_cert
+}
+
+do_status() {
+  local name avahi=missing
+  name="$(hostname -s 2>/dev/null || hostname)"
+  if command -v avahi-daemon >/dev/null; then
+    avahi=installed
+    if command -v systemctl >/dev/null && systemctl is-active --quiet avahi-daemon 2>/dev/null; then avahi=active; fi
+  fi
+  echo "name=${name}"
+  echo "avahi=${avahi}"
+  echo "ips=$(lan_ips | tr '\n' ' ')"
+}
+
+case "${1:-}" in
+  set)    [[ $# -eq 2 ]] || die "usage: $0 set NAME"; do_set "$2" ;;
+  cert)   do_cert ;;
+  mdns)   reannounce ;;
+  status) do_status ;;
+  *)      die "usage: $0 {set NAME|cert|mdns|status}" ;;
+esac

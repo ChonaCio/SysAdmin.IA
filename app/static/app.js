@@ -558,6 +558,71 @@ $("#goto-claude-settings").addEventListener("click", (e) => {
   $("#claude-form").api_key.focus();
 });
 
+// ------------------------------------------------------------ server name
+function setSnMsg(text, ok) {
+  const m = $("#sn-msg");
+  m.textContent = text;
+  m.className = `small ${ok ? "ok-text" : "error"}`;
+  m.hidden = !text;
+}
+
+function renderServerName(s) {
+  const form = $("#sn-form");
+  form.server_name.value = s.name;
+  const pill = $("#sn-status");
+  const labels = { active: ["reachable as " + s.mdns_name, "ok"], installed: ["mDNS not running", "warn"], missing: ["mDNS not installed", "warn"] };
+  const [text, cls] = labels[s.mdns] || ["", ""];
+  pill.textContent = text; pill.className = `status-pill ${cls}`;
+  const urls = $("#sn-urls");
+  urls.innerHTML = "";
+  if (s.urls.length) {
+    urls.append("Open from another computer on the LAN: ");
+    s.urls.forEach((u, i) => {
+      const a = document.createElement("a");
+      a.href = u; a.textContent = u; a.target = "_blank"; a.rel = "noopener noreferrer";
+      if (i) urls.append(" · ");
+      urls.append(a);
+    });
+  }
+  if (s.mdns !== "active") {
+    const p = document.createElement("p");
+    p.className = "muted";
+    p.textContent = "The .local name needs the avahi-daemon service on this server. Re-run install.sh to set it up.";
+    urls.append(p);
+  }
+  form.server_name.disabled = $("#sn-save").disabled = !s.can_change;
+  if (!s.can_change) setSnMsg("Renaming from the web UI needs the helper that install.sh sets up.", false);
+}
+
+async function loadServerName() {
+  renderServerName(await api("/api/server-name"));
+}
+
+$("#sn-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const name = e.target.server_name.value.trim().toLowerCase().replace(/\.local$/, "");
+  if (!confirm(`Rename this server to "${name}"?\n\nIt will be reachable on the LAN as ${name}.local. ` +
+      "Other services that rely on the current hostname may be affected.")) return;
+  setSnMsg("Renaming…", true);
+  $("#sn-save").disabled = true;
+  try {
+    const r = await api("/api/server-name", { method: "PUT", body: JSON.stringify({ name }) });
+    renderServerName(r.status);
+    const out = $("#sn-output");
+    out.textContent = r.output; out.hidden = !r.output;
+    $("#hostname").textContent = r.name;
+    document.title = `${r.name} · SysAdmin.IA`;
+    if (r.restarting) {
+      setSnMsg("Renamed. Restarting with the new certificate…", true);
+      const next = `${location.protocol}//${r.name}.local${location.port ? ":" + location.port : ""}/`;
+      setTimeout(() => setSnMsg(`Renamed. If this page stops responding, open ${next}`, true), 4000);
+    } else {
+      setSnMsg(`Renamed to ${r.name}.`, true);
+    }
+  } catch (ex) { setSnMsg(ex.message, false); }
+  finally { $("#sn-save").disabled = false; }
+});
+
 // ------------------------------------------------------------ updates
 function setUpdateMsg(text, ok) {
   const m = $("#update-msg");
@@ -668,6 +733,7 @@ async function loadAdmin() {
   if (state.me.role !== "admin") return;
   loadClaudeSettings().catch((e) => setClaudeMsg(e.message, false));
   loadUpdate().catch((e) => setUpdateMsg(e.message, false));
+  loadServerName().catch((e) => setSnMsg(e.message, false));
   const users = await api("/api/users");
   $("#users").innerHTML = "";
   for (const u of users) {

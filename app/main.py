@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 import anthropic
 
-from . import agent, auth, claude_settings, db, monitor, updater
+from . import agent, auth, claude_settings, db, monitor, server_name, updater
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -239,6 +239,33 @@ async def test_claude_settings(body: TestKeyBody, user: User = Depends(admin_use
         return {"ok": False, "message": f"API error {e.status_code}: {e.message}"}
     except anthropic.APIConnectionError:
         return {"ok": False, "message": "Could not reach api.anthropic.com from this server."}
+
+
+# ---------------------------------------------------------------- server name (admin)
+
+class ServerNameBody(BaseModel):
+    name: str
+
+
+@app.get("/api/server-name")
+async def get_server_name(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(server_name.status)
+
+
+@app.put("/api/server-name")
+async def put_server_name(body: ServerNameBody, request: Request, user: User = Depends(admin_user)):
+    ip = auth.client_ip(request)
+    old = server_name.current()
+    try:
+        result = await asyncio.to_thread(server_name.set_name, body.name)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
+    db.audit("server_name", user.username, ip, {"from": old, "to": result["name"]})
+    # A new certificate is only loaded at startup.
+    result["restarting"] = result["cert_changed"] and updater.under_supervisor()
+    if result["restarting"]:
+        _schedule_restart()
+    return {**result, "status": await asyncio.to_thread(server_name.status)}
 
 
 # ---------------------------------------------------------------- updates (admin)

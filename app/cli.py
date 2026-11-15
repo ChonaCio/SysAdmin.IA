@@ -6,7 +6,7 @@ import asyncio
 import getpass
 import sys
 
-from . import auth, claude_settings, db, updater
+from . import auth, claude_settings, db, server_name, updater
 from .config import settings
 
 
@@ -51,6 +51,10 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("set-model", help="set the Claude model (empty string resets to default)")
     m.add_argument("model")
     sub.add_parser("claude-status", help="show the Claude API configuration")
+
+    sub.add_parser("server-name", help="show the server name and LAN addresses")
+    sn = sub.add_parser("set-server-name", help="rename the server (reachable on the LAN as NAME.local)")
+    sn.add_argument("name")
 
     sub.add_parser("version", help="show the installed version")
     sub.add_parser("check-update", help="check GitHub for a newer version")
@@ -105,6 +109,22 @@ def main(argv: list[str] | None = None) -> int:
             src = {"web": "saved via web UI / sysadmin-ia", "config": "config file"}.get(s["api_key_source"], "")
             print(f"API key: {s['api_key_hint'] + ' (' + src + ')' if s['api_key_set'] else 'not configured'}")
             print(f"Model:   {s['model']}\nEffort:  {s['effort']}")
+        elif args.cmd == "server-name":
+            s = server_name.status()
+            print(f"Server name: {s['name']}   (LAN name: {s['mdns_name']}, mDNS {s['mdns']})")
+            for url in s["urls"]:
+                print(f"  {url}")
+        elif args.cmd == "set-server-name":
+            old = server_name.current()
+            try:
+                r = server_name.set_name(args.name)
+            except RuntimeError as e:
+                print(f"Error: {e}", file=sys.stderr)
+                return 1
+            db.audit("server_name", "sysadmin-ia", "local", {"from": old, "to": r["name"]})
+            print(r["output"])
+            if r["cert_changed"]:
+                print(f"Restart to use the new certificate: sudo systemctl restart {settings.service_name}")
         elif args.cmd == "version":
             print(updater.current_version())
         elif args.cmd == "check-update":

@@ -118,6 +118,22 @@
           <div class="row"><button class="primary">Save</button><span class="small" id="claude-msg" hidden></span></div>
         </form>
       </div>
+      <div class="card admin-only" id="server-name-card">
+        <h3>Server name <span class="status-pill" id="sn-status"></span></h3>
+        <form id="sn-form" class="settings-form" autocomplete="off">
+          <label>Name on the network
+            <span class="row">
+              <input name="server_name" spellcheck="false" placeholder="office-server" maxlength="63" pattern="[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?" required>
+              <span class="muted">.local</span>
+              <button class="primary" id="sn-save">Rename</button>
+            </span>
+            <span class="muted small">Letters, digits and hyphens. Computers on the same network can then open this app by name.</span>
+          </label>
+          <div class="small" id="sn-urls"></div>
+          <pre class="update-notes mono small" id="sn-output" hidden></pre>
+          <span class="small" id="sn-msg" hidden></span>
+        </form>
+      </div>
       <div class="card admin-only" id="update-card">
         <h3>Updates <span class="status-pill" id="update-status"></span></h3>
         <div class="settings-form">

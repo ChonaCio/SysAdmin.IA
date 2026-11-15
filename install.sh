@@ -8,6 +8,7 @@
 #   --port PORT          HTTPS port (default 8765)
 #   --http-port PORT     plain-HTTP port served alongside HTTPS (default 8080)
 #   --no-http            serve HTTPS only
+#   --server-name NAME   server (host) name; the UI is then reachable on the LAN at NAME.local
 #   --admin NAME         name of the first admin user (default: admin)
 #   --full-access        give the service user passwordless sudo (Claude can change the system)
 #   --no-full-access     don't (Claude can only act as the unprivileged service user)
@@ -31,6 +32,7 @@ HTTP_PORT="8080"
 HTTP_PORT_SET=0
 BIND="0.0.0.0"
 ADMIN_NAME="admin"
+SERVER_NAME=""
 FULL_ACCESS=""
 TLS=1
 ASSUME_YES=0
@@ -47,11 +49,12 @@ while [[ $# -gt 0 ]]; do
     --no-http) HTTP_PORT="0"; HTTP_PORT_SET=1; shift ;;
     --bind) BIND="$2"; shift 2 ;;
     --admin) ADMIN_NAME="$2"; shift 2 ;;
+    --server-name) SERVER_NAME="$2"; shift 2 ;;
     --full-access) FULL_ACCESS=1; shift ;;
     --no-full-access) FULL_ACCESS=0; shift ;;
     --no-tls) TLS=0; shift ;;
     -y|--yes) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
     *) die "Unknown option: $1" ;;
   esac
 done
@@ -111,18 +114,25 @@ install_packages() {
     export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq
     apt-get install -y -qq python3 python3-venv python3-pip git openssl sudo ca-certificates >/dev/null
+    apt-get install -y -qq avahi-daemon libnss-mdns >/dev/null || c_warn "Could not install avahi (NAME.local won't work)."
   elif command -v dnf >/dev/null; then
     dnf install -y -q python3 python3-pip git openssl sudo
+    dnf install -y -q avahi nss-mdns || dnf install -y -q avahi || c_warn "Could not install avahi (NAME.local won't work)."
   elif command -v yum >/dev/null; then
     yum install -y -q python3 python3-pip git openssl sudo
+    yum install -y -q avahi || c_warn "Could not install avahi (NAME.local won't work)."
   elif command -v zypper >/dev/null; then
     zypper --non-interactive install -y python3 python3-pip git openssl sudo
+    zypper --non-interactive install -y avahi nss-mdns || c_warn "Could not install avahi (NAME.local won't work)."
   elif command -v pacman >/dev/null; then
     pacman -Sy --noconfirm --needed python python-pip git openssl sudo
+    pacman -S --noconfirm --needed avahi nss-mdns || c_warn "Could not install avahi (NAME.local won't work)."
   elif command -v apk >/dev/null; then
     apk add --no-cache python3 py3-pip git openssl sudo bash shadow util-linux
+    apk add --no-cache avahi || c_warn "Could not install avahi (NAME.local won't work)."
   else
-    c_warn "Unknown package manager; make sure python3 (>=3.10, with venv), git, openssl and sudo are installed."
+    c_warn "Unknown package manager; make sure python3 (>=3.10, with venv), git, openssl and sudo are installed,"
+    c_warn "plus avahi-daemon if you want to reach the server as NAME.local."
   fi
 }
 install_packages
@@ -240,17 +250,51 @@ PORT="$(sed -n 's/^SAI_PORT=//p' "$ENV_FILE" | tail -1)"; PORT="${PORT:-8765}"
 HTTP_PORT="$(sed -n 's/^SAI_HTTP_PORT=//p' "$ENV_FILE" | tail -1)"; HTTP_PORT="${HTTP_PORT:-0}"
 chown root:"$SVC_USER" "$ENV_FILE"; chmod 640 "$ENV_FILE"
 
-if [[ $TLS -eq 1 && ! -f "$CONF_DIR/tls/cert.pem" ]]; then
-  c_info "Generating self-signed TLS certificate (replace with a real one for production)"
-  mkdir -p "$CONF_DIR/tls"
-  HOST_FQDN="$(hostname -f 2>/dev/null || hostname)"
-  SAN="DNS:${HOST_FQDN},DNS:$(hostname),DNS:localhost,IP:127.0.0.1"
-  for ip in $(hostname -I 2>/dev/null || true); do [[ "$ip" == *:* ]] || SAN="${SAN},IP:${ip}"; done
-  openssl req -x509 -newkey rsa:2048 -nodes -days 825 -sha256 \
-    -keyout "$CONF_DIR/tls/key.pem" -out "$CONF_DIR/tls/cert.pem" \
-    -subj "/CN=${HOST_FQDN}" -addext "subjectAltName=${SAN}" >/dev/null 2>&1
-  chown -R root:"$SVC_USER" "$CONF_DIR/tls"; chmod 750 "$CONF_DIR/tls"; chmod 640 "$CONF_DIR/tls/"*.pem
+# ------------------------------------------------------------------ server name & LAN discovery
+# Root-owned helper that sets the hostname, announces NAME.local via mDNS (Avahi) and keeps
+# the self-signed certificate valid for the name. The service user may run it (and only it)
+# through sudo, so the name can also be changed later from Admin → Server name.
+HELPER="/usr/local/sbin/${APP_NAME}-hostname"
+install -o root -g root -m 755 "${SRC_DIR}/scripts/${APP_NAME}-hostname" "$HELPER"
+mkdir -p /etc/sudoers.d
+echo "$SVC_USER ALL=(root) NOPASSWD: $HELPER" > "/etc/sudoers.d/${APP_NAME}-hostname.tmp"
+chmod 440 "/etc/sudoers.d/${APP_NAME}-hostname.tmp"
+if visudo -cf "/etc/sudoers.d/${APP_NAME}-hostname.tmp" >/dev/null; then
+  mv "/etc/sudoers.d/${APP_NAME}-hostname.tmp" "/etc/sudoers.d/${APP_NAME}-hostname"
+else
+  rm -f "/etc/sudoers.d/${APP_NAME}-hostname.tmp"; c_warn "sudoers validation failed; the server name can't be changed from the web UI."
 fi
+
+valid_server_name() { [[ "$1" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ && ! "$1" =~ ^[0-9]+$ ]]; }
+CURRENT_NAME="$(hostname -s 2>/dev/null || hostname)"
+if [[ -z "$SERVER_NAME" && $INTERACTIVE -eq 1 ]]; then
+  echo "The server name is how other computers on your network reach it: https://NAME.local:${PORT:-8765}/"
+  while true; do
+    read -r -p "Server name [${CURRENT_NAME}]: " SERVER_NAME
+    SERVER_NAME="${SERVER_NAME%.local}"
+    [[ -z "$SERVER_NAME" ]] && break
+    valid_server_name "${SERVER_NAME,,}" && break
+    echo "Use 1-63 letters, digits and hyphens (no spaces or dots, not starting/ending with a hyphen)."
+  done
+fi
+SERVER_NAME="${SERVER_NAME%.local}"
+if [[ -n "$SERVER_NAME" ]] && ! valid_server_name "${SERVER_NAME,,}"; then
+  c_warn "Invalid --server-name '${SERVER_NAME}'; keeping '${CURRENT_NAME}'."
+  SERVER_NAME=""
+fi
+SERVER_NAME="${SERVER_NAME:-$CURRENT_NAME}"
+if [[ "${SERVER_NAME,,}" != "${CURRENT_NAME,,}" ]]; then
+  SERVER_NAME="${SERVER_NAME,,}"
+  c_info "Setting server name to '${SERVER_NAME}'"
+  "$HELPER" set "$SERVER_NAME" | sed 's/^/    /' || c_warn "Could not set the server name (see the message above)."
+else
+  "$HELPER" mdns | sed 's/^/    /' || true
+fi
+if [[ $TLS -eq 1 ]]; then
+  c_info "Checking the TLS certificate"
+  "$HELPER" cert | grep -v '^CERT_CHANGED$' | sed 's/^/    /' || c_warn "Could not create the TLS certificate."
+fi
+SERVER_NAME="$(hostname -s 2>/dev/null || hostname)"
 
 # ------------------------------------------------------------------ privileges
 SUDOERS="/etc/sudoers.d/${APP_NAME}"
@@ -345,21 +389,32 @@ if [[ $TLS -eq 1 && "$HTTP_PORT" != 0 ]]; then PORTS="$PORT $HTTP_PORT"; fi
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
   c_warn "ufw is active. Allow access with (ideally only from trusted IPs):"
   for p in $PORTS; do echo "      sudo ufw allow ${p}/tcp"; done
+  echo "      sudo ufw allow 5353/udp    # mDNS, so ${SERVER_NAME}.local resolves on the LAN"
 elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
   c_warn "firewalld is active. Allow access with:"
   for p in $PORTS; do echo "      sudo firewall-cmd --add-port=${p}/tcp --permanent"; done
+  echo "      sudo firewall-cmd --add-service=mdns --permanent    # so ${SERVER_NAME}.local resolves"
   echo "      sudo firewall-cmd --reload"
 fi
 
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+MDNS=0; command -v avahi-daemon >/dev/null && MDNS=1
 echo
 if [[ $TLS -eq 1 ]]; then
-  c_info "Done. Open https://${IP:-<server-ip>}:${PORT}/"
+  if [[ $MDNS -eq 1 ]]; then
+    c_info "Done. Open https://${SERVER_NAME}.local:${PORT}/   (or https://${IP:-<server-ip>}:${PORT}/)"
+  else
+    c_info "Done. Open https://${IP:-<server-ip>}:${PORT}/"
+  fi
   if [[ "$HTTP_PORT" != 0 ]]; then
-    echo "    or (unencrypted) http://${IP:-<server-ip>}:${HTTP_PORT}/"
+    echo "    or (unencrypted) http://$( [[ $MDNS -eq 1 ]] && echo "${SERVER_NAME}.local" || echo "${IP:-<server-ip>}" ):${HTTP_PORT}/"
   fi
 else
-  c_info "Done. Open http://${IP:-<server-ip>}:${PORT}/"
+  if [[ $MDNS -eq 1 ]]; then
+    c_info "Done. Open http://${SERVER_NAME}.local:${PORT}/   (or http://${IP:-<server-ip>}:${PORT}/)"
+  else
+    c_info "Done. Open http://${IP:-<server-ip>}:${PORT}/"
+  fi
 fi
 [[ -n "${GENERATED_PW:-}" ]] && echo "    Admin login: ${ADMIN_NAME} / ${GENERATED_PW}   (change it under Admin)"
 if ! grep -q '^ANTHROPIC_API_KEY=.\+' "$ENV_FILE"; then
