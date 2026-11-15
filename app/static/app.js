@@ -558,9 +558,116 @@ $("#goto-claude-settings").addEventListener("click", (e) => {
   $("#claude-form").api_key.focus();
 });
 
+// ------------------------------------------------------------ updates
+function setUpdateMsg(text, ok) {
+  const m = $("#update-msg");
+  m.textContent = text;
+  m.className = `small ${ok ? "ok-text" : "error"}`;
+  m.hidden = !text;
+}
+
+function renderUpdate(s) {
+  $("#update-current").textContent = s.current;
+  const repo = $("#update-repo");
+  repo.textContent = `github.com/${s.repo}`;
+  repo.href = `https://github.com/${s.repo}`;
+  const pill = $("#update-status");
+  const latest = s.latest;
+  $("#update-latest").hidden = !latest;
+  if (latest) {
+    $("#update-latest-version").textContent = latest.version;
+    const when = latest.published_at ? new Date(latest.published_at).toLocaleString() : "";
+    $("#update-latest-meta").textContent = `(${latest.source === "release" ? "release " + latest.name : "branch " + s.branch}${when ? ", " + when : ""})`;
+    const notes = $("#update-notes");
+    notes.textContent = latest.notes || "";
+    notes.hidden = !latest.notes || !s.update_available;
+  }
+  if (s.error) { pill.textContent = "check failed"; pill.className = "status-pill warn"; }
+  else if (!s.checked_at) { pill.textContent = ""; pill.className = "status-pill"; }
+  else if (s.update_available) { pill.textContent = "update available"; pill.className = "status-pill warn"; }
+  else { pill.textContent = "up to date"; pill.className = "status-pill ok"; }
+  $("#update-apply").hidden = !s.update_available || !s.can_apply;
+  if (s.error) setUpdateMsg(s.error, false);
+  else if (s.update_available && !s.can_apply) setUpdateMsg("This app runs from a git clone: update it with `git pull`.", false);
+  else setUpdateMsg("", true);
+  $("#update-clear-token").hidden = s.token_source !== "web";
+  $("#update-token-form").github_token.placeholder = s.token_set
+    ? `saved${s.token_source === "config" ? " in config file" : ""} — type to replace`
+    : "github_pat_…";
+  state.update = s;
+}
+
+async function loadUpdate() {
+  const s = await api("/api/update");
+  renderUpdate(s);
+  // Check GitHub automatically (the server caches the answer for an hour).
+  if (!s.checked_at) renderUpdate(await api("/api/update/check?force=false", { method: "POST" }));
+}
+
+$("#update-check").addEventListener("click", async () => {
+  setUpdateMsg("Checking GitHub…", true);
+  try { renderUpdate(await api("/api/update/check", { method: "POST" })); }
+  catch (ex) { setUpdateMsg(ex.message, false); }
+});
+
+$("#update-apply").addEventListener("click", async () => {
+  const s = state.update;
+  if (!confirm(`Update SysAdmin.IA from ${s.current} to ${s.latest.version}?\n\n` +
+      "The current code is backed up first and restored automatically if the update fails. " +
+      "Changes Claude made to this app's own files may be overwritten (they stay in the app's git history).")) return;
+  const btn = $("#update-apply");
+  btn.disabled = true; $("#update-check").disabled = true;
+  setUpdateMsg("Downloading and installing… this can take a few minutes.", true);
+  try {
+    const r = await api("/api/update/apply", { method: "POST" });
+    if (r.restart) {
+      setUpdateMsg(`Updated to ${r.to}. Restarting…`, true);
+      waitForVersion(r.to);
+    } else {
+      setUpdateMsg(`Updated to ${r.to}. Restart the app to load the new version.`, true);
+    }
+  } catch (ex) {
+    setUpdateMsg(ex.message, false);
+  } finally {
+    btn.disabled = false; $("#update-check").disabled = false;
+  }
+});
+
+function waitForVersion(target, tries = 0) {
+  setTimeout(async () => {
+    try {
+      const r = await fetch("/api/version", { cache: "no-store" });
+      if (r.ok && (await r.json()).version === target) { location.reload(); return; }
+    } catch { /* still restarting */ }
+    if (tries < 60) waitForVersion(target, tries + 1);
+    else setUpdateMsg("The app did not come back after the update; check the service logs.", false);
+  }, 2000);
+}
+
+$("#update-token-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const value = e.target.github_token.value.trim();
+  if (!value) return;
+  try {
+    renderUpdate(await api("/api/update/settings", { method: "PUT", body: JSON.stringify({ github_token: value }) }));
+    e.target.github_token.value = "";
+    setUpdateMsg("Token saved. Checking…", true);
+    renderUpdate(await api("/api/update/check", { method: "POST" }));
+  } catch (ex) { setUpdateMsg(ex.message, false); }
+});
+
+$("#update-clear-token").addEventListener("click", async () => {
+  if (!confirm("Remove the GitHub token saved in the web UI?")) return;
+  try {
+    renderUpdate(await api("/api/update/settings", { method: "PUT", body: JSON.stringify({ clear_github_token: true }) }));
+    setUpdateMsg("Token removed.", true);
+  } catch (ex) { setUpdateMsg(ex.message, false); }
+});
+
 async function loadAdmin() {
   if (state.me.role !== "admin") return;
   loadClaudeSettings().catch((e) => setClaudeMsg(e.message, false));
+  loadUpdate().catch((e) => setUpdateMsg(e.message, false));
   const users = await api("/api/users");
   $("#users").innerHTML = "";
   for (const u of users) {

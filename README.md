@@ -68,6 +68,19 @@ A key saved in the web UI or with the `sysadmin-ia` command takes precedence ove
 
 To upgrade, run `install.sh` again from a newer copy. Your config, data and users are kept, and the current app state (including Claude's edits) is committed to git first.
 
+### Updating from GitHub
+
+The app can update itself from [github.com/ChonaCio/SysAdmin.IA](https://github.com/ChonaCio/SysAdmin.IA):
+
+- **Web UI:** **Admin → Updates** shows the installed version and checks GitHub (automatically, at most once an hour, or with **Check for updates**). When a newer version exists, **Update now** installs it and restarts the service; the page reloads when it's back.
+- **Command line:** `sudo sysadmin-ia check-update`, then `sudo sysadmin-ia update` and `sudo systemctl restart sysadmin-ia`.
+
+The latest version is the newest GitHub **release** (tag like `v1.2.0`) or, if the repository has no releases, the `VERSION` file on the `main` branch. The installed version is the `VERSION` file in `/opt/sysadmin-ia`. To publish a new version, bump `VERSION` (and optionally create a release with the matching tag).
+
+An update downloads the code, backs up the current code to `/var/lib/sysadmin-ia/backups/app-<version>-<time>.tar.gz`, copies the new files over `/opt/sysadmin-ia` (config, data and the virtualenv are kept), reinstalls Python dependencies if `requirements.txt` changed, and checks that the new code loads. If any step fails the backup is restored. Both the old and the new state are committed to the app's local git repo, so Claude's own edits to the app can be recovered with `git log` / `git diff` if an update overwrites them.
+
+If the repository is private, save a GitHub token (a fine-grained token with read-only **Contents** access is enough) in **Admin → Updates** or with `sudo sysadmin-ia set-github-token`. The in-app update only refreshes the app code and Python packages; if a release changes `install.sh` (systemd unit, sudoers, CLI wrapper), re-run `install.sh` from that release instead.
+
 ## Day-to-day
 
 | Task | Command |
@@ -79,6 +92,7 @@ To upgrade, run `install.sh` again from a newer copy. Your config, data and user
 | Audit log | `sudo sysadmin-ia audit -n 100` |
 | Set / remove API key | `sudo sysadmin-ia set-api-key` / `sudo sysadmin-ia clear-api-key` |
 | Change model | `sudo sysadmin-ia set-model claude-sonnet-5-5` (or use Admin → Claude API) |
+| Check for / install updates | `sudo sysadmin-ia check-update` / `sudo sysadmin-ia update` (or Admin → Updates) |
 | Roll back an app change Claude made | `sudo -u sysadmin-ia git -C /opt/sysadmin-ia log --oneline`, then `sudo -u sysadmin-ia git -C /opt/sysadmin-ia revert <sha>` and restart |
 | Restore a file Claude edited | backups are in `/var/lib/sysadmin-ia/backups/<timestamp>/<original path>` |
 | Uninstall | `sudo ./uninstall.sh` (add `--purge` to remove config, data and the user) |
@@ -99,6 +113,9 @@ To upgrade, run `install.sh` again from a newer copy. Your config, data and user
 | `SAI_SESSION_HOURS` | `12` | Login session lifetime |
 | `SAI_COMMAND_TIMEOUT` | `300` | Seconds before a command is killed |
 | `SAI_ALLOW_AUTO_APPROVE` | `true` | Whether users can turn on "Auto-approve actions" in the chat |
+| `SAI_UPDATE_REPO` | `ChonaCio/SysAdmin.IA` | GitHub repository checked for updates |
+| `SAI_UPDATE_BRANCH` | `main` | Branch whose `VERSION` file is used when the repository has no releases |
+| `SAI_GITHUB_TOKEN` | – | GitHub token for a private repository; one saved in the web UI overrides it |
 
 Restart the service after editing.
 

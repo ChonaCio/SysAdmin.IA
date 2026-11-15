@@ -13,7 +13,7 @@ from pydantic import BaseModel
 
 import anthropic
 
-from . import agent, auth, claude_settings, db, monitor
+from . import agent, auth, claude_settings, db, monitor, updater
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -239,6 +239,59 @@ async def test_claude_settings(body: TestKeyBody, user: User = Depends(admin_use
         return {"ok": False, "message": f"API error {e.status_code}: {e.message}"}
     except anthropic.APIConnectionError:
         return {"ok": False, "message": "Could not reach api.anthropic.com from this server."}
+
+
+# ---------------------------------------------------------------- updates (admin)
+
+class UpdateSettingsBody(BaseModel):
+    github_token: str | None = None   # new token; omitted/None = unchanged
+    clear_github_token: bool = False
+
+
+@app.get("/api/version")
+async def version(user: User = Depends(current_user)):
+    return {"version": updater.current_version()}
+
+
+@app.get("/api/update")
+async def update_status(user: User = Depends(admin_user)):
+    """Configuration and the last check result (does not contact GitHub)."""
+    return await asyncio.to_thread(updater.status)
+
+
+@app.post("/api/update/check")
+async def update_check(force: bool = True, user: User = Depends(admin_user)):
+    return await updater.check(force=force)
+
+
+@app.put("/api/update/settings")
+async def update_settings(body: UpdateSettingsBody, request: Request, user: User = Depends(admin_user)):
+    try:
+        if body.clear_github_token:
+            updater.set_token(None)
+            db.audit("update_settings", user.username, auth.client_ip(request), "github_token cleared")
+        elif body.github_token:
+            updater.set_token(body.github_token)
+            db.audit("update_settings", user.username, auth.client_ip(request), "github_token set")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return await asyncio.to_thread(updater.status)
+
+
+@app.post("/api/update/apply")
+async def update_apply(request: Request, user: User = Depends(admin_user)):
+    ip = auth.client_ip(request)
+    before = updater.current_version()
+    try:
+        result = await updater.apply()
+    except updater.UpdateError as e:
+        db.audit("update_failed", user.username, ip, {"from": before, "error": str(e)})
+        raise HTTPException(400, str(e))
+    db.audit("update", user.username, ip, {"from": result["from"], "to": result["to"],
+                                           "files": len(result["changed"])})
+    if result["restart"]:
+        _schedule_restart()
+    return result
 
 
 @app.get("/api/audit")

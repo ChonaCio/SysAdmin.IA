@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import getpass
 import sys
 
-from . import auth, claude_settings, db
+from . import auth, claude_settings, db, updater
+from .config import settings
 
 
 def _prompt_password() -> str:
@@ -49,6 +51,14 @@ def main(argv: list[str] | None = None) -> int:
     m = sub.add_parser("set-model", help="set the Claude model (empty string resets to default)")
     m.add_argument("model")
     sub.add_parser("claude-status", help="show the Claude API configuration")
+
+    sub.add_parser("version", help="show the installed version")
+    sub.add_parser("check-update", help="check GitHub for a newer version")
+    u = sub.add_parser("update", help="download and install the newest version from GitHub")
+    u.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
+    g = sub.add_parser("set-github-token", help="save a GitHub token (needed if the repository is private)")
+    g.add_argument("--stdin", action="store_true", help="read the token from stdin")
+    sub.add_parser("clear-github-token", help="remove the saved GitHub token")
 
     args = ap.parse_args(argv)
 
@@ -95,6 +105,45 @@ def main(argv: list[str] | None = None) -> int:
             src = {"web": "saved via web UI / sysadmin-ia", "config": "config file"}.get(s["api_key_source"], "")
             print(f"API key: {s['api_key_hint'] + ' (' + src + ')' if s['api_key_set'] else 'not configured'}")
             print(f"Model:   {s['model']}\nEffort:  {s['effort']}")
+        elif args.cmd == "version":
+            print(updater.current_version())
+        elif args.cmd == "check-update":
+            s = asyncio.run(updater.check(force=True))
+            print(f"Installed: {s['current']}   Source: github.com/{s['repo']}")
+            if s["error"]:
+                print(f"Error: {s['error']}", file=sys.stderr)
+                return 1
+            latest = s["latest"]
+            print(f"Latest:    {latest['version']} ({latest['source']} {latest['name']})")
+            print("An update is available: sudo sysadmin-ia update" if s["update_available"] else "Up to date.")
+        elif args.cmd == "update":
+            s = asyncio.run(updater.check(force=True))
+            if s["error"]:
+                print(f"Error: {s['error']}", file=sys.stderr)
+                return 1
+            if not s["update_available"]:
+                print(f"Already up to date ({s['current']}).")
+                return 0
+            if not args.yes and input(f"Update {s['current']} -> {s['latest']['version']}? [y/N] ").strip().lower() not in ("y", "yes"):
+                return 1
+            try:
+                r = asyncio.run(updater.apply())
+            except updater.UpdateError as e:
+                db.audit("update_failed", "sysadmin-ia", "local", {"from": s["current"], "error": str(e)})
+                print(f"Update failed: {e}", file=sys.stderr)
+                return 1
+            db.audit("update", "sysadmin-ia", "local", {"from": r["from"], "to": r["to"], "files": len(r["changed"])})
+            print("\n".join(r["log"]))
+            print(f"Updated to {r['to']}. Restart to load it: sudo systemctl restart {settings.service_name}")
+        elif args.cmd == "set-github-token":
+            tok = sys.stdin.readline().strip() if args.stdin else getpass.getpass("GitHub token: ").strip()
+            updater.set_token(tok)
+            db.audit("update_settings", "sysadmin-ia", "local", "github_token set")
+            print("GitHub token saved.")
+        elif args.cmd == "clear-github-token":
+            updater.set_token(None)
+            db.audit("update_settings", "sysadmin-ia", "local", "github_token cleared")
+            print("Saved GitHub token removed.")
         elif args.cmd == "audit":
             import datetime
             for r in reversed(db.query("SELECT * FROM audit_log ORDER BY id DESC LIMIT ?", (args.n,))):

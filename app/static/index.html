@@ -118,6 +118,31 @@
           <div class="row"><button class="primary">Save</button><span class="small" id="claude-msg" hidden></span></div>
         </form>
       </div>
+      <div class="card admin-only" id="update-card">
+        <h3>Updates <span class="status-pill" id="update-status"></span></h3>
+        <div class="settings-form">
+          <p class="small" id="update-summary">Installed version <strong id="update-current">–</strong>. Source: <a id="update-repo" target="_blank" rel="noopener noreferrer"></a></p>
+          <div id="update-latest" class="small" hidden>
+            <p>Latest: <strong id="update-latest-version"></strong> <span class="muted" id="update-latest-meta"></span></p>
+            <pre class="update-notes mono small" id="update-notes" hidden></pre>
+          </div>
+          <div class="row">
+            <button type="button" id="update-check" class="ghost">Check for updates</button>
+            <button type="button" id="update-apply" class="primary" hidden>Update now</button>
+            <span class="small" id="update-msg" hidden></span>
+          </div>
+          <form id="update-token-form" autocomplete="off">
+            <label>GitHub token <span class="muted small">(only needed if the repository is private)</span>
+              <span class="row">
+                <input name="github_token" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
+                <button class="ghost">Save token</button>
+                <button type="button" id="update-clear-token" class="ghost danger" hidden>Remove saved token</button>
+              </span>
+              <span class="muted small" id="update-token-help">A fine-grained token with read-only “Contents” access to the repository is enough.</span>
+            </label>
+          </form>
+        </div>
+      </div>
       <div class="grid2">
         <div class="card admin-only">
           <h3>Users</h3>

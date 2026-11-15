@@ -205,6 +205,11 @@ SAI_COMMAND_TIMEOUT=300
 SAI_ALLOW_AUTO_APPROVE=true
 # Server-side refusal fallback routing ("default"), or empty to disable.
 SAI_FALLBACKS=default
+# Self-update source (Admin → Updates / 'sysadmin-ia update'). A token is only needed
+# for a private repository; one saved in the web UI takes precedence.
+#SAI_UPDATE_REPO=ChonaCio/SysAdmin.IA
+#SAI_UPDATE_BRANCH=main
+#SAI_GITHUB_TOKEN=
 EOF
   if [[ $TLS -eq 1 ]]; then
     echo "SAI_TLS_CERT=${CONF_DIR}/tls/cert.pem" >> "$ENV_FILE"
@@ -276,7 +281,8 @@ cat > /usr/local/bin/sysadmin-ia <<EOF
 [[ \$EUID -eq 0 ]] || exec sudo "\$0" "\$@"
 cd "${PREFIX}"
 set -a; . "${ENV_FILE}"; set +a
-ENVV=(SAI_DATA_DIR="${DATA_DIR}" ANTHROPIC_API_KEY="\${ANTHROPIC_API_KEY:-}" SAI_MODEL="\${SAI_MODEL:-}" SAI_EFFORT="\${SAI_EFFORT:-}")
+ENVV=(SAI_DATA_DIR="${DATA_DIR}" ANTHROPIC_API_KEY="\${ANTHROPIC_API_KEY:-}" SAI_MODEL="\${SAI_MODEL:-}" SAI_EFFORT="\${SAI_EFFORT:-}" SAI_SERVICE_NAME="${APP_NAME}"
+      SAI_GITHUB_TOKEN="\${SAI_GITHUB_TOKEN:-}" SAI_UPDATE_REPO="\${SAI_UPDATE_REPO:-}" SAI_UPDATE_BRANCH="\${SAI_UPDATE_BRANCH:-}")
 if command -v runuser >/dev/null; then
   exec runuser -u ${SVC_USER} -- env -i PATH="\$PATH" HOME="${DATA_DIR}" "\${ENVV[@]}" "${PREFIX}/.venv/bin/python" -m app.cli "\$@"
 else
