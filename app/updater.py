@@ -1,10 +1,12 @@
 """Self-update from GitHub.
 
 Checks the GitHub repository (default ChonaCio/SysAdmin.IA) for a newer version and, on
-request, downloads it and installs it over the running app, the same way install.sh
-upgrades an installation: the code is copied over the install directory (.venv, data,
-.git and .env are left alone), Python dependencies are refreshed, and the change is
-committed to the install directory's local git repository.
+request, installs it. Normally ("full" mode) the root helper downloads the new version and
+runs its own install.sh non-interactively, so an update does everything a fresh install of
+that version would (system packages, systemd unit, helpers, sudoers, CLI, virtualenv, code)
+while keeping config, data and users. If the helper isn't available ("code" mode), only the
+code is copied over the install directory (.venv, data, .git and .env are left alone),
+Python dependencies are refreshed, and the change is committed to the local git repo.
 
 Where the "latest version" comes from:
   * the latest GitHub release (tag such as v1.2.0), if the repository has releases;
@@ -208,6 +210,7 @@ async def check(force: bool = False) -> dict:
         "token_source": tok_source,
         "can_apply": not dev_checkout(),
         "auto_restart": under_supervisor(),
+        **await asyncio.to_thread(_upgrade_mode),
         "checked_at": time.time(),
         "latest": None,
         "update_available": False,
@@ -229,7 +232,8 @@ def status() -> dict:
     base = _last_check or {"latest": None, "update_available": False, "error": None, "checked_at": None}
     return {**base, "current": current_version(), "repo": repo(), "branch": branch(),
             "token_set": bool(tok), "token_source": tok_source,
-            "can_apply": not dev_checkout(), "auto_restart": under_supervisor()}
+            "can_apply": not dev_checkout(), "auto_restart": under_supervisor(),
+            **_upgrade_mode(), "progress": progress(0)}
 
 
 # ------------------------------------------------------------------ install
@@ -361,8 +365,67 @@ def _install(src: Path, new_version: str, log: list[str]) -> list[str]:
     return changed
 
 
+UPGRADE_STATUS = Path("/var/log/sysadmin-ia/upgrade.status")
+UPGRADE_LOG = Path("/var/log/sysadmin-ia/upgrade.log")
+
+
+def progress(log_lines: int = 40) -> dict:
+    """State of the last full upgrade (written by the root helper)."""
+    out: dict = {"state": None, "version": None, "message": None, "updated": None, "log": ""}
+    try:
+        for line in UPGRADE_STATUS.read_text(encoding="utf-8").splitlines():
+            key, _, value = line.partition("=")
+            if key in out:
+                out[key] = value
+    except OSError:
+        return out
+    if out["updated"]:
+        out["updated"] = int(out["updated"]) if out["updated"].isdigit() else None
+    try:
+        out["log"] = "\n".join(UPGRADE_LOG.read_text(encoding="utf-8", errors="replace").splitlines()[-log_lines:])
+    except OSError:
+        pass
+    return out
+
+
+def full_upgrade_available() -> bool:
+    """True if updates can run the new version's install.sh as root (via the helper)."""
+    from . import server_name  # local import: server_name is optional at import time
+    return server_name.helper_supports("upgrade")
+
+
+def _upgrade_mode() -> dict:
+    """{"full_upgrade": bool, "setup_command": one-time root command to enable it, or None}."""
+    from . import server_name
+    full = full_upgrade_available()
+    hint = None
+    if not full and sys.platform.startswith("linux") and not dev_checkout() and server_name.BUNDLED.is_file():
+        hint = server_name.setup_command()
+    return {"full_upgrade": full, "setup_command": hint}
+
+
+async def _apply_full(info: dict) -> dict:
+    """Start a full upgrade (the new install.sh, as root, in the background)."""
+    from . import server_name
+    latest = info["latest"]
+    tok, _ = token()
+    out = await asyncio.to_thread(server_name.run_helper, "upgrade", latest["ref"], latest["version"],
+                                  timeout=60, input=(tok or "") + "\n")
+    return {"ok": True, "mode": "full", "from": info["current"], "to": latest["version"],
+            "changed": [], "log": [out], "restart": True}
+
+
 async def apply() -> dict:
-    """Download and install the latest version. The caller restarts the app afterwards."""
+    """Install the latest version.
+
+    Preferred ("full" mode): the root helper downloads the release and runs its install.sh
+    non-interactively, exactly like a manual install/upgrade (system packages, systemd unit,
+    helper, sudoers, CLI wrapper, virtualenv, code), then restarts the app. It runs in the
+    background; follow it with progress().
+
+    Fallback ("code" mode, when the helper isn't available): replace the app code and Python
+    packages only. The caller restarts the app afterwards.
+    """
     if _lock.locked():
         raise UpdateError("An update is already running.")
     async with _lock:
@@ -374,6 +437,11 @@ async def apply() -> dict:
         if not info["update_available"]:
             raise UpdateError(f"Already up to date (version {info['current']}).")
         latest = info["latest"]
+        if re.fullmatch(r"\d+(\.\d+){0,3}", latest["version"]) and await asyncio.to_thread(full_upgrade_available):
+            try:
+                return await _apply_full(info)
+            except RuntimeError as e:
+                raise UpdateError(str(e)) from e
         log: list[str] = [f"Updating {info['current']} -> {latest['version']} ({latest['source']} {latest['ref']})"]
         work = Path(tempfile.mkdtemp(prefix="update-", dir=settings.data_dir))
         try:
@@ -388,5 +456,7 @@ async def apply() -> dict:
             shutil.rmtree(work, ignore_errors=True)
         global _last_check
         _last_check = None
-        return {"ok": True, "from": info["current"], "to": latest["version"],
-                "changed": changed, "log": log, "restart": under_supervisor()}
+        from . import server_name
+        return {"ok": True, "mode": "code", "from": info["current"], "to": latest["version"],
+                "changed": changed, "log": log, "restart": under_supervisor(),
+                "setup_command": server_name.setup_command() if sys.platform.startswith("linux") else None}

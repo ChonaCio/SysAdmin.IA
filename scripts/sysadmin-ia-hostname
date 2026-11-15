@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
-# SysAdmin.IA – server name helper (runs as root).
+# SysAdmin.IA – root helper (server name, reboot, full upgrades).
 #
 # install.sh copies this to /usr/local/sbin/sysadmin-ia-hostname (root-owned) and lets the
-# service user run it through a narrow sudoers rule, so the web UI can rename the server
-# even without "full access". It only does the following:
+# service user run it through a narrow sudoers rule, so the web UI can rename the server,
+# reboot it and install updates even without "full access". It only does the following:
 #
+#   sysadmin-ia-hostname upgrade REF VERSION
+#                                   download REF (tag, branch or commit) of the configured
+#                                   GitHub repository (SAI_UPDATE_REPO in the root-owned
+#                                   config file, never chosen by the caller) and run its
+#                                   install.sh non-interactively, in the background; rolls
+#                                   back if the app does not come up. An optional GitHub
+#                                   token is read from stdin. Progress:
+#                                   /var/log/sysadmin-ia/upgrade.{status,log}
 #   sysadmin-ia-hostname set NAME   set the hostname, /etc/hosts entry, re-announce it on the
 #                                   LAN via mDNS (NAME.local) and refresh the TLS certificate
 #   sysadmin-ia-hostname cert       create/refresh the self-signed certificate so it covers
@@ -154,6 +162,147 @@ do_status() {
 INSTALLED="/usr/local/sbin/${APP_NAME}-hostname"
 SUDOERS_RULE="/etc/sudoers.d/${APP_NAME}-hostname"
 
+# ---------------------------------------------------------------- full upgrade
+# Everything an upgrade needs is done by the new version's own install.sh, exactly as when
+# installing it by hand: packages (e.g. avahi), the systemd unit, this helper, sudoers rules,
+# the CLI wrapper, the virtualenv and the app code. Config, data and users are kept.
+PREFIX="/opt/${APP_NAME}"
+DATA_DIR="/var/lib/${APP_NAME}"
+LOG_DIR="/var/log/${APP_NAME}"          # root-owned: the service user can read, not write
+UPG_LOG="${LOG_DIR}/upgrade.log"
+UPG_STATUS="${LOG_DIR}/upgrade.status"
+UPG_TOKEN="${LOG_DIR}/.upgrade-token"
+
+valid_ref()     { [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ && "$1" != *..* ]]; }
+valid_version() { [[ "$1" =~ ^[0-9]+(\.[0-9]+){0,3}$ ]]; }
+valid_repo()    { [[ "$1" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; }
+
+as_svc() {
+  if command -v runuser >/dev/null; then runuser -u "$SVC_USER" -- env HOME="$DATA_DIR" "$@"
+  else sudo -u "$SVC_USER" -- env HOME="$DATA_DIR" "$@"; fi
+}
+
+upg_status() {  # upg_status STATE VERSION MESSAGE
+  printf 'state=%s\nversion=%s\nupdated=%s\nmessage=%s\n' "$1" "$2" "$(date +%s)" "$3" > "${UPG_STATUS}.tmp"
+  chown root:"$SVC_USER" "${UPG_STATUS}.tmp"; chmod 640 "${UPG_STATUS}.tmp"
+  mv "${UPG_STATUS}.tmp" "$UPG_STATUS"
+}
+
+prepare_log_dir() {
+  mkdir -p "$LOG_DIR"
+  chown root:"$SVC_USER" "$LOG_DIR"; chmod 750 "$LOG_DIR"
+}
+
+do_upgrade() {  # upgrade REF VERSION   (GitHub token, optional, on stdin)
+  local ref="$1" version="$2" tok="" state="" updated=0
+  valid_ref "$ref" || die "invalid ref"
+  valid_version "$version" || die "invalid version"
+  prepare_log_dir
+  if [[ -f "$UPG_STATUS" ]]; then
+    state="$(sed -n 's/^state=//p' "$UPG_STATUS")"; updated="$(sed -n 's/^updated=//p' "$UPG_STATUS")"
+    if [[ "$state" == running && $(( $(date +%s) - ${updated:-0} )) -lt 1800 ]]; then
+      die "an upgrade is already running"
+    fi
+  fi
+  if [[ ! -t 0 ]]; then IFS= read -r -t 5 tok || true; fi
+  rm -f "$UPG_TOKEN"
+  if [[ -n "$tok" ]]; then
+    [[ ${#tok} -le 255 && ! "$tok" =~ [[:space:]] ]] || die "invalid token"
+    (umask 077; printf '%s' "$tok" > "$UPG_TOKEN")
+  fi
+  : > "$UPG_LOG"; chown root:"$SVC_USER" "$UPG_LOG"; chmod 640 "$UPG_LOG"
+  upg_status running "$version" "Starting"
+  # Run detached from the web app: install.sh restarts the app's service, which would
+  # otherwise kill this process half-way.
+  local self; self="$(readlink -f "${BASH_SOURCE[0]}")"
+  if command -v systemd-run >/dev/null && [[ -d /run/systemd/system ]]; then
+    systemd-run --quiet --collect --unit="${APP_NAME}-upgrade-$(date +%s)" \
+      /bin/bash "$self" _upgrade-run "$ref" "$version"
+  else
+    nohup setsid /bin/bash "$self" _upgrade-run "$ref" "$version" >/dev/null 2>&1 &
+  fi
+  echo "Upgrade to ${version} started."
+}
+
+do_upgrade_run() {  # _upgrade-run REF VERSION   (the background part)
+  local ref="$1" version="$2" repo tok="" work root snap="" host port ok=0 i
+  valid_ref "$ref" || die "invalid ref"
+  valid_version "$version" || die "invalid version"
+  prepare_log_dir
+  exec >>"$UPG_LOG" 2>&1
+  set -E
+  trap 'upg_status failed "$version" "Unexpected error; see ${UPG_LOG}"' ERR
+  echo "==> $(date -Is) Upgrading SysAdmin.IA to ${version} (${ref})"
+
+  repo="$(env_value SAI_UPDATE_REPO)"; repo="${repo:-ChonaCio/SysAdmin.IA}"
+  valid_repo "$repo" || { upg_status failed "$version" "Invalid SAI_UPDATE_REPO"; die "invalid SAI_UPDATE_REPO"; }
+  tok="$(env_value SAI_GITHUB_TOKEN)"
+  if [[ -f "$UPG_TOKEN" ]]; then tok="$(cat "$UPG_TOKEN")"; rm -f "$UPG_TOKEN"; fi
+
+  work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  upg_status running "$version" "Downloading"
+  echo "==> Downloading github.com/${repo} @ ${ref}"
+  if ! GH_TOKEN="$tok" python3 -I -c '
+import os, sys, urllib.request
+req = urllib.request.Request(sys.argv[1], headers={"User-Agent": "SysAdmin.IA-updater",
+                                                   "Accept": "application/vnd.github+json"})
+if os.environ.get("GH_TOKEN"):
+    req.add_unredirected_header("Authorization", "Bearer " + os.environ["GH_TOKEN"])
+size = 0
+with urllib.request.urlopen(req, timeout=120) as r, open(sys.argv[2], "wb") as f:
+    while chunk := r.read(1 << 20):
+        size += len(chunk)
+        if size > 50 * 1024 * 1024:
+            sys.exit("download too large")
+        f.write(chunk)
+' "https://api.github.com/repos/${repo}/tarball/${ref}" "${work}/src.tar.gz"; then
+    upg_status failed "$version" "Download failed"; die "download failed"
+  fi
+  mkdir "${work}/src"
+  tar -xzf "${work}/src.tar.gz" -C "${work}/src" --no-same-owner --no-same-permissions \
+    || { upg_status failed "$version" "Could not unpack the download"; die "unpack failed"; }
+  root="$(find "${work}/src" -mindepth 1 -maxdepth 1 -type d | head -1)"
+  if [[ -z "$root" || ! -f "${root}/install.sh" || ! -f "${root}/app/main.py" ]]; then
+    upg_status failed "$version" "The download does not look like SysAdmin.IA"; die "bad archive"
+  fi
+  chmod -R u+rwX,go+rX "$root"
+  # Tags/releases may not bump VERSION themselves; record the version being installed.
+  echo "$version" > "${root}/VERSION"
+
+  if [[ -d "${PREFIX}/.git" ]]; then
+    as_svc git -C "$PREFIX" add -A >/dev/null 2>&1 || true
+    as_svc git -C "$PREFIX" commit -qm "Snapshot before update to ${version} $(date -Is)" >/dev/null 2>&1 || true
+    snap="$(as_svc git -C "$PREFIX" rev-parse HEAD 2>/dev/null || true)"
+  fi
+
+  upg_status running "$version" "Running install.sh"
+  echo "==> Running install.sh -y"
+  if (cd "$root" && bash ./install.sh -y); then
+    upg_status running "$version" "Waiting for the app to start"
+    host="$(env_value SAI_HOST)"; port="$(env_value SAI_PORT)"; port="${port:-8765}"
+    [[ -z "$host" || "$host" == 0.0.0.0 || "$host" == "::" ]] && host=127.0.0.1
+    for i in $(seq 1 45); do
+      if (exec 3<>"/dev/tcp/${host}/${port}") 2>/dev/null; then ok=1; break; fi
+      sleep 2
+    done
+  fi
+
+  if [[ $ok -eq 1 ]]; then
+    echo "==> $(date -Is) Upgrade to ${version} finished."
+    upg_status done "$version" "Updated to ${version}"
+    return 0
+  fi
+  echo "==> The new version did not start; rolling back."
+  if [[ -n "$snap" ]]; then
+    as_svc git -C "$PREFIX" reset -q --hard "$snap" || true
+    as_svc "${PREFIX}/.venv/bin/pip" install -q -r "${PREFIX}/requirements.txt" || true
+  fi
+  systemctl restart "$APP_NAME" 2>/dev/null || true
+  upg_status failed "$version" "The update failed and was rolled back; see ${UPG_LOG}"
+  return 1
+}
+
 do_install() {
   local self
   self="$(readlink -f "${BASH_SOURCE[0]}")"
@@ -190,5 +339,7 @@ case "${1:-}" in
   status)  do_status ;;
   reboot)  do_reboot ;;
   install) do_install ;;
-  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install}" ;;
+  upgrade) [[ $# -eq 3 ]] || die "usage: $0 upgrade REF VERSION"; do_upgrade "$2" "$3" ;;
+  _upgrade-run) [[ $# -eq 3 ]] || die "usage: $0 _upgrade-run REF VERSION"; do_upgrade_run "$2" "$3" ;;
+  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION}" ;;
 esac

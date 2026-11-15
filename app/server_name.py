@@ -5,7 +5,7 @@ Changing it needs root, so it goes through the root-owned helper in /usr/local/s
 sets the hostname, re-announces it via mDNS (Avahi), refreshes the self-signed TLS
 certificate for NAME.local, and can reboot the server.
 
-install.sh sets the helper up. If the app was updated in place (Admin â†’ Updates) the helper
+install.sh sets the helper up. If the app was updated in place (Admin → Updates) the helper
 may be missing or outdated; when the service user has full access (passwordless sudo) the
 app installs or refreshes it by itself. Otherwise an admin runs the command that
 status()["setup_command"] shows, once.
@@ -37,7 +37,7 @@ def validate(name: str) -> str:
     if name.endswith(".local"):
         name = name[: -len(".local")]
     if not NAME_RE.fullmatch(name) or name.isdigit():
-        raise ValueError("Use 1â€“63 letters, digits and hyphens (no spaces or dots, "
+        raise ValueError("Use 1–63 letters, digits and hyphens (no spaces or dots, "
                          "not starting or ending with a hyphen), e.g. 'office-server'.")
     return name
 
@@ -65,8 +65,9 @@ def _mdns_state() -> str:
     return "installed"
 
 
-def _run(cmd: list[str], timeout: int = 120) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+def _run(cmd: list[str], timeout: int = 120, input: str | None = None) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout,
+                          input=input if input is not None else "")
 
 
 def _full_access() -> bool:
@@ -105,11 +106,11 @@ def ensure_helper() -> None:
     if not BUNDLED.is_file():
         if _helper_usable():
             return
-        raise HelperError("The server-name helper is missing. Re-run install.sh to set it up.")
+        raise HelperError("The root helper is missing. Re-run install.sh to set it up.")
     if not _full_access():
         if _helper_usable():
             return  # outdated but working; new subcommands may be unavailable
-        raise HelperError("Renaming needs a one-time setup as root. On the server, run:\n"
+        raise HelperError("This needs a one-time setup as root. On the server, run:\n"
                          f"  {setup_command()}")
     r = _run(["sudo", "-n", "bash", str(BUNDLED), "install"])
     if r.returncode != 0:
@@ -142,9 +143,26 @@ def status() -> dict:
     }
 
 
-def _helper(*args: str, timeout: int = 120) -> str:
+def helper_supports(subcommand: str) -> bool:
+    """True if the root helper can be used (installing/refreshing it if possible) and knows
+    `subcommand`. Never raises."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        ensure_helper()
+        r = _run(["sudo", "-n", str(HELPER)], 10)  # no arguments: prints the usage line
+    except (HelperError, OSError, subprocess.TimeoutExpired):
+        return False
+    return f"|{subcommand}" in r.stderr or f"{{{subcommand}" in r.stderr
+
+
+def run_helper(*args: str, timeout: int = 120, input: str | None = None) -> str:
+    return _helper(*args, timeout=timeout, input=input)
+
+
+def _helper(*args: str, timeout: int = 120, input: str | None = None) -> str:
     ensure_helper()
-    r = _run(["sudo", "-n", str(HELPER), *args], timeout)
+    r = _run(["sudo", "-n", str(HELPER), *args], timeout, input)
     out = (r.stdout + r.stderr).strip()
     if r.returncode != 0:
         if "usage:" in out:

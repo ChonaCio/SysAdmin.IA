@@ -24,6 +24,25 @@ def _prompt_password() -> str:
             print(e)
 
 
+def _follow_upgrade(timeout: int = 1800) -> int:
+    """Print the full upgrade's log as it grows, until it finishes."""
+    import time
+    printed = 0
+    start = time.time()
+    while time.time() - start < timeout:
+        p = updater.progress(log_lines=100000)
+        lines = p["log"].splitlines()
+        for line in lines[printed:]:
+            print(line, flush=True)
+        printed = len(lines)
+        if p["state"] in ("done", "failed"):
+            print(p["message"] or p["state"])
+            return 0 if p["state"] == "done" else 1
+        time.sleep(2)
+    print(f"Still running; follow it in {updater.UPGRADE_LOG}")
+    return 1
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="sysadmin-ia", description="SysAdmin.IA administration")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -162,9 +181,15 @@ def main(argv: list[str] | None = None) -> int:
                 db.audit("update_failed", "sysadmin-ia", "local", {"from": s["current"], "error": str(e)})
                 print(f"Update failed: {e}", file=sys.stderr)
                 return 1
+            if r["mode"] == "full":
+                db.audit("update_started", "sysadmin-ia", "local", {"from": r["from"], "to": r["to"]})
+                print("\n".join(r["log"]))
+                return _follow_upgrade()
             db.audit("update", "sysadmin-ia", "local", {"from": r["from"], "to": r["to"], "files": len(r["changed"])})
             print("\n".join(r["log"]))
-            print(f"Updated to {r['to']}. Restart to load it: sudo systemctl restart {settings.service_name}")
+            print(f"Updated to {r['to']} (app code only). Restart to load it: sudo systemctl restart {settings.service_name}")
+            if r.get("setup_command"):
+                print(f"For complete updates (system packages, service, helper), run once: {r['setup_command']}")
         elif args.cmd == "set-github-token":
             tok = sys.stdin.readline().strip() if args.stdin else getpass.getpass("GitHub token: ").strip()
             updater.set_token(tok)

@@ -48,7 +48,7 @@ Change the name later in **Admin → Server name**, or with `sudo sysadmin-ia se
 
 No reboot is needed: the new name works right away. If a device on the network still uses the old name (for example, a router that registered it), use **Reboot server** in the same card, or `sudo sysadmin-ia reboot`.
 
-These steps need root, so the installer adds a small root-owned helper, `/usr/local/sbin/sysadmin-ia-hostname`, which the `sysadmin-ia` user may run through sudo. This works even without full access; the helper can only do the steps above (and reboot). If the app was updated from GitHub and the helper is missing or outdated, the app installs or refreshes it by itself when it has full access. Without full access, the card shows a one-time command to run as root instead:
+These steps need root, so the installer adds a small root-owned helper, `/usr/local/sbin/sysadmin-ia-hostname`, which the `sysadmin-ia` user may run through sudo. This works even without full access; the helper can only do the steps above, reboot, and install updates from the configured GitHub repository. If the app was updated from GitHub and the helper is missing or outdated, the app installs or refreshes it by itself when it has full access. Without full access, the card shows a one-time command to run as root instead:
 
 ```bash
 sudo bash /opt/sysadmin-ia/scripts/sysadmin-ia-hostname install
@@ -93,14 +93,24 @@ To upgrade, run `install.sh` again from a newer copy. Your config, data and user
 
 The app can update itself from [github.com/ChonaCio/SysAdmin.IA](https://github.com/ChonaCio/SysAdmin.IA):
 
-- **Web UI:** **Admin → Updates** shows the installed version and checks GitHub (automatically, at most once an hour, or with **Check for updates**). When a newer version exists, **Update now** installs it and restarts the service; the page reloads when it's back.
-- **Command line:** `sudo sysadmin-ia check-update`, then `sudo sysadmin-ia update` and `sudo systemctl restart sysadmin-ia`.
+- **Web UI:** **Admin → Updates** shows the installed version and checks GitHub (automatically, at most once an hour, or with **Check for updates**). When a newer version exists, **Update now** installs it while showing the installer's output live; the page reloads when the new version is running.
+- **Command line:** `sudo sysadmin-ia check-update`, then `sudo sysadmin-ia update` (it prints the installer's output until it's done).
 
 The latest version is the newest GitHub **release** (tag like `v1.2.0`) or, if the repository has no releases, the `VERSION` file on the `main` branch. The installed version is the `VERSION` file in `/opt/sysadmin-ia`. To publish a new version, bump `VERSION` (and optionally create a release with the matching tag).
 
-An update downloads the code, backs up the current code to `/var/lib/sysadmin-ia/backups/app-<version>-<time>.tar.gz`, copies the new files over `/opt/sysadmin-ia` (config, data and the virtualenv are kept), reinstalls Python dependencies if `requirements.txt` changed, and checks that the new code loads. If any step fails the backup is restored. Both the old and the new state are committed to the app's local git repo, so Claude's own edits to the app can be recovered with `git log` / `git diff` if an update overwrites them.
+**An update does everything a fresh install of the new version would do.** The root helper (`/usr/local/sbin/sysadmin-ia-hostname`) downloads the new version from the repository configured in `/etc/sysadmin-ia/sysadmin-ia.env` and runs its `install.sh -y` in the background. That installs any new system packages (for example avahi for `NAME.local`), and refreshes the systemd unit, the helper, the sudoers rules, the `sysadmin-ia` command, the virtualenv and the app code. Your config, data, users, server name, certificate and full-access choice are kept. Before it starts, the current app state (including Claude's edits) is committed to the app's local git repo. If the new version doesn't come up, the code is reset to that commit and the service is restarted. The output is in `/var/log/sysadmin-ia/upgrade.log`.
 
-If the repository is private, save a GitHub token (a fine-grained token with read-only **Contents** access is enough) in **Admin → Updates** or with `sudo sysadmin-ia set-github-token`. The in-app update only refreshes the app code and Python packages; if a release changes `install.sh` (systemd unit, sudoers, CLI wrapper), re-run `install.sh` from that release instead.
+The app can only ask the helper to install a version from the configured repository, never code it supplies itself, so this works without granting Claude full access.
+
+**One-time step for older installations.** Servers installed before this feature have no helper, or an older one that can't run updates. With full access, the app installs or refreshes the helper by itself. Otherwise, **Admin → Updates** shows this command to run once as root:
+
+```bash
+sudo bash /opt/sysadmin-ia/scripts/sysadmin-ia-hostname install
+```
+
+Until then, updates fall back to replacing only the app code and Python packages: the current code is backed up to `/var/lib/sysadmin-ia/backups/app-<version>-<time>.tar.gz`, the new files are copied over `/opt/sysadmin-ia`, and the backup is restored if the new code fails to load.
+
+If the repository is private, save a GitHub token (a fine-grained token with read-only **Contents** access is enough) in **Admin → Updates** or with `sudo sysadmin-ia set-github-token`.
 
 ## Day-to-day
 

@@ -293,6 +293,8 @@ SERVER_NAME="$(hostname -s 2>/dev/null || hostname)"
 SUDOERS="/etc/sudoers.d/${APP_NAME}"
 if [[ -z "$FULL_ACCESS" ]]; then
   if [[ -f "$SUDOERS" ]]; then FULL_ACCESS=1
+  elif [[ $UPGRADE -eq 1 && $INTERACTIVE -eq 0 ]]; then
+    FULL_ACCESS=0   # unattended upgrade (e.g. from Admin → Updates): keep the earlier choice
   else
     echo
     c_warn "Full access lets Claude (after your approval in the web UI) run commands as root,"

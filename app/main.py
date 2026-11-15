@@ -324,11 +324,20 @@ async def update_apply(request: Request, user: User = Depends(admin_user)):
     except updater.UpdateError as e:
         db.audit("update_failed", user.username, ip, {"from": before, "error": str(e)})
         raise HTTPException(400, str(e))
+    if result["mode"] == "full":
+        # The root helper runs the new install.sh in the background; it restarts the app.
+        db.audit("update_started", user.username, ip, {"from": result["from"], "to": result["to"]})
+        return result
     db.audit("update", user.username, ip, {"from": result["from"], "to": result["to"],
-                                           "files": len(result["changed"])})
+                                           "files": len(result["changed"]), "mode": "code"})
     if result["restart"]:
         _schedule_restart()
     return result
+
+
+@app.get("/api/update/progress")
+async def update_progress(user: User = Depends(admin_user)):
+    return {**await asyncio.to_thread(updater.progress), "current": updater.current_version()}
 
 
 @app.get("/api/audit")

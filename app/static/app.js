@@ -587,7 +587,9 @@ function renderServerName(s) {
   if (s.mdns !== "active") {
     const p = document.createElement("p");
     p.className = "muted";
-    p.textContent = "The .local name needs the avahi-daemon service on this server. Re-run install.sh to set it up.";
+    p.textContent = s.mdns === "installed"
+      ? "The .local name needs the avahi-daemon service, which isn't running right now."
+      : "The .local name needs the avahi-daemon service; installing the next update (Admin → Updates) sets it up.";
     urls.append(p);
   }
   form.server_name.disabled = $("#sn-save").disabled = $("#sn-reboot").disabled = !s.can_change;
@@ -595,9 +597,9 @@ function renderServerName(s) {
   setup.hidden = !s.setup_command;
   if (s.setup_command) {
     setup.textContent = s.setup_command;
-    setSnMsg("One-time setup needed: run the command above on the server as root (or re-run install.sh), then reload this page.", false);
+    setSnMsg("One-time setup needed: run the command above on the server as root, then reload this page.", false);
   } else if (!s.can_change) {
-    setSnMsg(s.linux ? "Renaming needs the helper that install.sh sets up. Re-run install.sh on the server."
+    setSnMsg(s.linux ? "Renaming isn't available on this installation."
                      : "Renaming is only available on an installed Linux server.", false);
   }
 }
@@ -688,12 +690,19 @@ function renderUpdate(s) {
   $("#update-token-form").github_token.placeholder = s.token_set
     ? `saved${s.token_source === "config" ? " in config file" : ""} — type to replace`
     : "github_pat_…";
+  const mode = $("#update-mode");
+  mode.hidden = !s.setup_command;
+  if (s.setup_command) {
+    mode.textContent = "Updates currently replace only the app code. To let them also install system packages, " +
+      `the service and helpers (like install.sh does), run this once on the server as root: ${s.setup_command}`;
+  }
   state.update = s;
 }
 
 async function loadUpdate() {
   const s = await api("/api/update");
   renderUpdate(s);
+  if (s.progress && s.progress.state === "running") followUpgrade(s.progress.version);
   // Check GitHub automatically (the server caches the answer for an hour).
   if (!s.checked_at) renderUpdate(await api("/api/update/check?force=false", { method: "POST" }));
 }
@@ -707,6 +716,8 @@ $("#update-check").addEventListener("click", async () => {
 $("#update-apply").addEventListener("click", async () => {
   const s = state.update;
   if (!confirm(`Update SysAdmin.IA from ${s.current} to ${s.latest.version}?\n\n` +
+      (s.full_upgrade ? "The new version's installer runs exactly as a fresh install would (system packages, " +
+        "service, helpers, app code); your settings, users and data are kept. " : "") +
       "The current code is backed up first and restored automatically if the update fails. " +
       "Changes Claude made to this app's own files may be overwritten (they stay in the app's git history).")) return;
   const btn = $("#update-apply");
@@ -714,18 +725,57 @@ $("#update-apply").addEventListener("click", async () => {
   setUpdateMsg("Downloading and installing… this can take a few minutes.", true);
   try {
     const r = await api("/api/update/apply", { method: "POST" });
+    if (r.mode === "full") {
+      followUpgrade(r.to);
+      return;  // buttons stay disabled until the page reloads
+    }
     if (r.restart) {
       setUpdateMsg(`Updated to ${r.to}. Restarting…`, true);
       waitForVersion(r.to);
     } else {
       setUpdateMsg(`Updated to ${r.to}. Restart the app to load the new version.`, true);
     }
+    btn.disabled = false; $("#update-check").disabled = false;
   } catch (ex) {
     setUpdateMsg(ex.message, false);
-  } finally {
     btn.disabled = false; $("#update-check").disabled = false;
   }
 });
+
+// Follow a full upgrade (install.sh running as root in the background). The app restarts
+// during it, so failed requests are expected for a few seconds.
+function followUpgrade(target) {
+  const logEl = $("#update-log");
+  logEl.hidden = false;
+  $("#update-apply").disabled = $("#update-check").disabled = true;
+  const started = Date.now();
+  const poll = async () => {
+    try {
+      const r = await fetch("/api/update/progress", { cache: "no-store", headers: { "X-SAI-CSRF": "1" } });
+      if (r.status === 401) { location.href = "/login"; return; }
+      if (r.ok) {
+        const p = await r.json();
+        const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
+        logEl.textContent = p.log || "";
+        if (atBottom) logEl.scrollTop = logEl.scrollHeight;
+        if (p.state === "done" && p.current === target) {
+          setUpdateMsg(`${p.message}. Reloading…`, true);
+          setTimeout(() => location.reload(), 1500);
+          return;
+        }
+        if (p.state === "failed") {
+          setUpdateMsg(p.message || "The update failed.", false);
+          $("#update-apply").disabled = $("#update-check").disabled = false;
+          return;
+        }
+        setUpdateMsg(`Updating to ${target}: ${p.message || "working"}…`, true);
+      }
+    } catch { /* app restarting */ }
+    if (Date.now() - started < 30 * 60000) setTimeout(poll, 2000);
+    else setUpdateMsg("The update is taking unusually long; check /var/log/sysadmin-ia/upgrade.log on the server.", false);
+  };
+  poll();
+}
 
 function waitForVersion(target, tries = 0) {
   setTimeout(async () => {

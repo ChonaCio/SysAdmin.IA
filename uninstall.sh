@@ -19,7 +19,7 @@ fi
 rm -rf "/opt/${APP_NAME}"
 
 if [[ "${1:-}" == "--purge" ]]; then
-  rm -rf "/etc/${APP_NAME}" "/var/lib/${APP_NAME}"
+  rm -rf "/etc/${APP_NAME}" "/var/lib/${APP_NAME}" "/var/log/${APP_NAME}"
   userdel sysadmin-ia 2>/dev/null || deluser sysadmin-ia 2>/dev/null || true
   echo "Removed application, configuration, data and the 'sysadmin-ia' user."
 else
