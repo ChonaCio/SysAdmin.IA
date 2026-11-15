@@ -93,10 +93,12 @@ To upgrade, run `install.sh` again from a newer copy. Your config, data and user
 
 The app can update itself from [github.com/ChonaCio/SysAdmin.IA](https://github.com/ChonaCio/SysAdmin.IA):
 
-- **Web UI:** **Admin → Updates** shows the installed version and checks GitHub (automatically, at most once an hour, or with **Check for updates**). When a newer version exists, **Update now** installs it while showing the installer's output live; the page reloads when the new version is running.
+- **Web UI:** the **Check for updates** button in the top bar (every page, admins only) turns into **Update to X.Y.Z** when a newer version exists. It leads to **Admin → Updates**, which lists every version the update includes with its release notes. While an update runs, a bar with a spinner shows its progress on every page; **See details** opens the installer's output in the **Console**. The page reloads when the new version is running.
 - **Command line:** `sudo sysadmin-ia check-update`, then `sudo sysadmin-ia update` (it prints the installer's output until it's done).
 
-The latest version is the newest GitHub **release** (tag like `v1.2.0`) or, if the repository has no releases, the `VERSION` file on the `main` branch. The installed version is the `VERSION` file in `/opt/sysadmin-ia`. To publish a new version, bump `VERSION` (and optionally create a release with the matching tag).
+Updates are cumulative: the latest version is the **highest version number** among the repository's GitHub releases and version tags (`v1.3.3`), and an update installs it directly, whatever the installed version. Only if the repository has neither, the `VERSION` file on the `main` branch is used. To publish a new version, push a tag (or create a release) such as `v1.3.3`.
+
+The installed version is the `VERSION` file in `/opt/sysadmin-ia`. `install.sh` sets it from the tag it's installed from (a `git clone` checked out at a tag, or a release's "Source code" archive such as `SysAdmin.IA-1.3.3`), so `VERSION` in the repository doesn't have to be bumped by hand. A copy of a branch without a tag (for example "Download ZIP" of `main`) falls back to the `VERSION` file.
 
 **An update does everything a fresh install of the new version would do.** The root helper (`/usr/local/sbin/sysadmin-ia-hostname`) downloads the new version from the repository configured in `/etc/sysadmin-ia/sysadmin-ia.env` and runs its `install.sh -y` in the background. That installs any new system packages (for example avahi for `NAME.local`), and refreshes the systemd unit, the helper, the sudoers rules, the `sysadmin-ia` command, the virtualenv and the app code. Your config, data, users, server name, certificate and full-access choice are kept. Before it starts, the current app state (including Claude's edits) is committed to the app's local git repo. If the new version doesn't come up, the code is reset to that commit and the service is restarted. The output is in `/var/log/sysadmin-ia/upgrade.log`.
 
@@ -111,6 +113,10 @@ sudo bash /opt/sysadmin-ia/scripts/sysadmin-ia-hostname install
 Until then, updates fall back to replacing only the app code and Python packages: the current code is backed up to `/var/lib/sysadmin-ia/backups/app-<version>-<time>.tar.gz`, the new files are copied over `/opt/sysadmin-ia`, and the backup is restored if the new code fails to load.
 
 If the repository is private, save a GitHub token (a fine-grained token with read-only **Contents** access is enough) in **Admin → Updates** or with `sudo sysadmin-ia set-github-token`.
+
+### Console
+
+The **Console** tab (admins only) is a terminal on the server in the browser: a login shell as the `sysadmin-ia` user, with full colors, resizing and copy/paste. With full access it can use `sudo`, just like Claude's commands. Unlike Claude's actions, commands typed there run immediately, without an approval step. Opening and closing a console session is recorded in the audit log, but what is typed is not. The **Update progress** session follows the installer's output while an update runs. To turn the console off, set `SAI_ALLOW_CONSOLE=false` and restart.
 
 ## Day-to-day
 
@@ -146,6 +152,7 @@ If the repository is private, save a GitHub token (a fine-grained token with rea
 | `SAI_SESSION_HOURS` | `12` | Login session lifetime |
 | `SAI_COMMAND_TIMEOUT` | `300` | Seconds before a command is killed |
 | `SAI_ALLOW_AUTO_APPROVE` | `true` | Whether users can turn on "Auto-approve actions" in the chat |
+| `SAI_ALLOW_CONSOLE` | `true` | Whether admins get the web **Console** (a shell on the server). `false` removes it |
 | `SAI_UPDATE_REPO` | `ChonaCio/SysAdmin.IA` | GitHub repository checked for updates |
 | `SAI_UPDATE_BRANCH` | `main` | Branch whose `VERSION` file is used when the repository has no releases |
 | `SAI_GITHUB_TOKEN` | – | GitHub token for a private repository; one saved in the web UI overrides it |

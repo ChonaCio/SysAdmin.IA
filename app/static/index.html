@@ -4,6 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>SysAdmin.IA</title>
+  <link rel="stylesheet" href="/static/vendor/xterm.css">
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -12,10 +13,22 @@
     <nav class="tabs" role="tablist">
       <button data-view="chat" class="tab active" id="tab-chat">Chat</button>
       <button data-view="monitor" class="tab">Monitor</button>
+      <button data-view="console" class="tab" id="tab-console" hidden>Console</button>
       <button data-view="admin" class="tab" id="tab-admin">Admin</button>
     </nav>
-    <div class="user"><span id="whoami" class="muted small"></span> <button id="logout" class="ghost small">Sign out</button></div>
+    <div class="user">
+      <button id="topbar-update" class="update-btn" hidden title="Check GitHub for a newer version">
+        <span class="update-icon" aria-hidden="true">⟳</span> <span id="topbar-update-text">Check for updates</span>
+      </button>
+      <span id="whoami" class="muted small"></span> <button id="logout" class="ghost small">Sign out</button>
+    </div>
   </header>
+
+  <div id="updating-bar" class="updating-bar" role="status" aria-live="polite" hidden>
+    <span class="spinner" aria-hidden="true"></span>
+    <span id="updating-text">Updating…</span>
+    <button type="button" id="updating-details" class="small">See details</button>
+  </div>
 
   <!-- ================= CHAT ================= -->
   <section id="view-chat" class="view active">
@@ -93,9 +106,57 @@
     </div>
   </section>
 
+  <!-- ================= CONSOLE ================= -->
+  <section id="view-console" class="view">
+    <div class="console">
+      <div class="console-bar">
+        <span class="seg" id="console-sessions">
+          <button data-session="shell" class="seg-btn active">Shell</button>
+          <button data-session="update" class="seg-btn" id="console-update-tab" hidden>Update progress</button>
+        </span>
+        <span class="muted small" id="console-status"></span>
+        <span class="spacer"></span>
+        <button type="button" id="console-reconnect" class="ghost small" hidden>Reconnect</button>
+      </div>
+      <div class="console-term" id="console-term-shell"></div>
+      <div class="console-term" id="console-term-update" hidden></div>
+    </div>
+  </section>
+
   <!-- ================= ADMIN ================= -->
   <section id="view-admin" class="view">
     <div class="monitor">
+      <div class="card admin-only update-card" id="update-card">
+        <div class="update-head">
+          <div>
+            <h3>Updates <span class="status-pill" id="update-status"></span></h3>
+            <p class="small">Installed version <strong id="update-current">–</strong>
+              · Source: <a id="update-repo" target="_blank" rel="noopener noreferrer"></a>
+              <span class="muted" id="update-checked"></span></p>
+          </div>
+          <div class="update-actions">
+            <button type="button" id="update-check" class="primary big"><span aria-hidden="true">⟳</span> Check for updates</button>
+            <button type="button" id="update-apply" class="primary big" hidden>Update</button>
+          </div>
+        </div>
+        <div id="update-latest" class="small" hidden>
+          <p id="update-latest-line"></p>
+          <div id="update-pending" class="pending-list"></div>
+        </div>
+        <p class="small" id="update-msg" hidden></p>
+        <p class="small muted" id="update-mode" hidden></p>
+        <details class="small update-token">
+          <summary>GitHub token <span class="muted">(only needed if the repository is private)</span></summary>
+          <form id="update-token-form" class="settings-form" autocomplete="off">
+            <span class="row">
+              <input name="github_token" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false" aria-label="GitHub token">
+              <button class="ghost">Save token</button>
+              <button type="button" id="update-clear-token" class="ghost danger" hidden>Remove saved token</button>
+            </span>
+            <span class="muted small" id="update-token-help">A fine-grained token with read-only “Contents” access to the repository is enough.</span>
+          </form>
+        </details>
+      </div>
       <div class="card admin-only" id="claude-card">
         <h3>Claude API <span class="status-pill" id="key-status"></span></h3>
         <form id="claude-form" class="settings-form" autocomplete="off">
@@ -139,33 +200,6 @@
           </div>
         </form>
       </div>
-      <div class="card admin-only" id="update-card">
-        <h3>Updates <span class="status-pill" id="update-status"></span></h3>
-        <div class="settings-form">
-          <p class="small" id="update-summary">Installed version <strong id="update-current">–</strong>. Source: <a id="update-repo" target="_blank" rel="noopener noreferrer"></a></p>
-          <div id="update-latest" class="small" hidden>
-            <p>Latest: <strong id="update-latest-version"></strong> <span class="muted" id="update-latest-meta"></span></p>
-            <pre class="update-notes mono small" id="update-notes" hidden></pre>
-          </div>
-          <div class="row">
-            <button type="button" id="update-check" class="ghost">Check for updates</button>
-            <button type="button" id="update-apply" class="primary" hidden>Update now</button>
-            <span class="small" id="update-msg" hidden></span>
-          </div>
-          <pre class="update-notes mono small" id="update-log" hidden></pre>
-          <p class="small muted" id="update-mode" hidden></p>
-          <form id="update-token-form" autocomplete="off">
-            <label>GitHub token <span class="muted small">(only needed if the repository is private)</span>
-              <span class="row">
-                <input name="github_token" type="password" placeholder="github_pat_…" autocomplete="off" spellcheck="false">
-                <button class="ghost">Save token</button>
-                <button type="button" id="update-clear-token" class="ghost danger" hidden>Remove saved token</button>
-              </span>
-              <span class="muted small" id="update-token-help">A fine-grained token with read-only “Contents” access to the repository is enough.</span>
-            </label>
-          </form>
-        </div>
-      </div>
       <div class="grid2">
         <div class="card admin-only">
           <h3>Users</h3>
@@ -196,6 +230,8 @@
   </section>
 
   <div id="toast" class="toast" hidden></div>
+  <script src="/static/vendor/xterm.js"></script>
+  <script src="/static/vendor/addon-fit.js"></script>
   <script src="/static/markdown.js"></script>
   <script src="/static/app.js"></script>
 </body>

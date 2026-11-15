@@ -77,6 +77,8 @@ class Settings:
     )
     # When true, a user may switch the chat to "auto-approve" mode.
     allow_auto_approve: bool = field(default_factory=lambda: _bool("SAI_ALLOW_AUTO_APPROVE", True))
+    # When true, admins get a web console (a shell on the server as the service user).
+    allow_console: bool = field(default_factory=lambda: _bool("SAI_ALLOW_CONSOLE", True))
 
     @property
     def tls_enabled(self) -> bool:

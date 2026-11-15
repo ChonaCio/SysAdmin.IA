@@ -8,11 +8,12 @@ while keeping config, data and users. If the helper isn't available ("code" mode
 code is copied over the install directory (.venv, data, .git and .env are left alone),
 Python dependencies are refreshed, and the change is committed to the local git repo.
 
-Where the "latest version" comes from:
-  * the latest GitHub release (tag such as v1.2.0), if the repository has releases;
-  * otherwise the VERSION file on the update branch (default: main).
+The "latest version" is the highest version number among the repository's GitHub releases
+and version tags (v1.2.3); only if there are neither, the VERSION file on the update branch
+(default: main). Updates are cumulative: they go straight to the latest version.
 
-The installed version is the VERSION file next to app/. Private repositories need a
+The installed version is the VERSION file next to app/. install.sh writes it from the git
+tag (or release archive name) it is installed from, so it need not be bumped by hand. Private repositories need a
 GitHub token (fine-grained, read-only "Contents" permission is enough), saved in
 Admin → Updates, with `sysadmin-ia set-github-token`, or as SAI_GITHUB_TOKEN.
 
@@ -159,22 +160,60 @@ def _get(url: str, what: str, raw: bool = False, missing_ok: bool = False) -> by
         raise UpdateError(f"Could not reach GitHub: {getattr(e, 'reason', e)}") from e
 
 
-def _latest_blocking() -> dict:
-    """Find the newest available version on GitHub."""
+STABLE_RE = re.compile(r"v?\d+(\.\d+){1,3}")  # v1.2.3 / 1.2.3 (pre-releases like -beta are skipped)
+
+
+def _vkey(v: str) -> tuple[int, ...]:
+    p = parse_version(v)
+    return p + (0,) * (4 - len(p))
+
+
+def _versions_blocking() -> list[dict]:
+    """Every published version, highest first: GitHub releases plus version tags.
+
+    The highest version number wins, not the most recently published release, so an update
+    always goes straight to the newest version (cumulative). Without releases or tags, the
+    VERSION file on the update branch is used.
+    """
     base = f"{API}/repos/{repo()}"
-    body = _get(f"{base}/releases/latest", "Latest release", missing_ok=True)
-    if body is not None:
-        rel = json.loads(body)
-        return {
-            "version": rel["tag_name"].lstrip("vV"),
-            "source": "release",
-            "ref": rel["tag_name"],
-            "name": rel.get("name") or rel["tag_name"],
-            "notes": (rel.get("body") or "")[:5000],
-            "published_at": rel.get("published_at"),
-            "url": rel.get("html_url"),
+    found: dict[tuple, dict] = {}
+    body = _get(f"{base}/releases?per_page=100", "Releases", missing_ok=True)
+    for rel in json.loads(body or b"[]"):
+        tag = rel.get("tag_name") or ""
+        if rel.get("draft") or rel.get("prerelease") or not STABLE_RE.fullmatch(tag):
+            continue
+        found[_vkey(tag)] = {
+            "version": tag.lstrip("vV"), "source": "release", "ref": tag,
+            "name": rel.get("name") or tag, "notes": (rel.get("body") or "")[:5000],
+            "published_at": rel.get("published_at"), "url": rel.get("html_url"),
         }
-    # No releases: use the VERSION file on the branch.
+    body = _get(f"{base}/tags?per_page=100", "Tags", missing_ok=True)
+    for t in json.loads(body or b"[]"):
+        tag = t.get("name") or ""
+        if STABLE_RE.fullmatch(tag) and _vkey(tag) not in found:
+            found[_vkey(tag)] = {
+                "version": tag.lstrip("vV"), "source": "tag", "ref": tag, "name": tag, "notes": "",
+                "published_at": None, "url": f"https://github.com/{repo()}/tree/{tag}",
+                "_sha": t.get("commit", {}).get("sha"),
+            }
+    versions = [found[k] for k in sorted(found, reverse=True)]
+    if not versions:
+        return [_branch_version(base)]
+    # A tag without a release has no notes: use its commit message (newest only, to save requests).
+    top = versions[0]
+    if top["source"] == "tag" and top.get("_sha"):
+        cm = _get(f"{base}/commits/{top['_sha']}", "Commit", missing_ok=True)
+        if cm:
+            c = json.loads(cm).get("commit", {})
+            top["notes"] = (c.get("message") or "")[:5000]
+            top["published_at"] = c.get("committer", {}).get("date")
+    for v in versions:
+        v.pop("_sha", None)
+    return versions
+
+
+def _branch_version(base: str) -> dict:
+    """Fallback when the repository has no releases or version tags."""
     ref = urllib.parse.quote(branch(), safe="")
     version = _get(f"{base}/contents/VERSION?ref={ref}", f"VERSION file on branch '{branch()}'",
                    raw=True).decode("utf-8", "replace").strip()
@@ -192,15 +231,27 @@ def _latest_blocking() -> dict:
     return info
 
 
-async def _latest() -> dict:
-    return await asyncio.to_thread(_latest_blocking)
+def _with_pending(result: dict) -> dict:
+    """Add the versions between the installed one and the newest ("pending", oldest first)."""
+    current = current_version()
+    versions = result.get("versions") or []
+    pending = [{k: v[k] for k in ("version", "name", "notes", "published_at", "url")}
+               for v in reversed(versions) if is_newer(v["version"], current)]
+    latest = result.get("latest")
+    out = {k: v for k, v in result.items() if k != "versions"}
+    return {**out, "current": current, "pending": pending,
+            "update_available": bool(latest) and is_newer(latest["version"], current)}
 
 
 async def check(force: bool = False) -> dict:
-    """Compare the installed version with GitHub. Cached for an hour unless force=True."""
+    """Compare the installed version with GitHub. Cached for an hour unless force=True.
+
+    "latest" is the newest version, which is what an update installs (it is cumulative);
+    "pending" lists every version from the installed one up to it, with release notes.
+    """
     global _last_check
     if not force and _last_check and time.time() - _last_check["checked_at"] < CACHE_SECONDS:
-        return {**_last_check, "current": current_version()}
+        return _with_pending(_last_check)
     tok, tok_source = token()
     result = {
         "current": current_version(),
@@ -217,19 +268,19 @@ async def check(force: bool = False) -> dict:
         "error": None,
     }
     try:
-        latest = await _latest()
-        result["latest"] = latest
-        result["update_available"] = is_newer(latest["version"], result["current"])
+        versions = await asyncio.to_thread(_versions_blocking)
+        result["versions"] = versions
+        result["latest"] = versions[0]
     except UpdateError as e:
         result["error"] = str(e)
     _last_check = result
-    return result
+    return _with_pending(result)
 
 
 def status() -> dict:
     """Configuration and the last check result, without contacting GitHub."""
     tok, tok_source = token()
-    base = _last_check or {"latest": None, "update_available": False, "error": None, "checked_at": None}
+    base = _with_pending(_last_check or {"latest": None, "error": None, "checked_at": None})
     return {**base, "current": current_version(), "repo": repo(), "branch": branch(),
             "token_set": bool(tok), "token_source": tok_source,
             "can_apply": not dev_checkout(), "auto_restart": under_supervisor(),

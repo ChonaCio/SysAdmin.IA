@@ -65,6 +65,10 @@ async function boot() {
   } else {
     connectWs();
     loadConversations();
+    if (state.me.console) $("#tab-console").hidden = false;
+    // Top-bar update button + resume showing an update that is still running.
+    renderTopbarUpdate(null);
+    loadUpdate().catch(() => {});
   }
   api("/api/host").then((h) => {
     $("#hostname").textContent = h.hostname;
@@ -81,6 +85,7 @@ function switchView(v) {
   $$(".view").forEach((s) => s.classList.toggle("active", s.id === `view-${v}`));
   if (v === "admin") loadAdmin();
   if (v === "monitor") { drawCharts(); refreshProcs(); }
+  if (v === "console") showConsoleSession(state.consoleSession || "shell");
 }
 
 $("#logout").addEventListener("click", async () => {
@@ -662,28 +667,61 @@ function setUpdateMsg(text, ok) {
   m.hidden = !text;
 }
 
+function fmtDate(iso) { return iso ? new Date(iso).toLocaleDateString() : ""; }
+
 function renderUpdate(s) {
   $("#update-current").textContent = s.current;
   const repo = $("#update-repo");
   repo.textContent = `github.com/${s.repo}`;
   repo.href = `https://github.com/${s.repo}`;
+  $("#update-checked").textContent = s.checked_at ? `· checked ${new Date(s.checked_at * 1000).toLocaleTimeString()}` : "";
   const pill = $("#update-status");
   const latest = s.latest;
+  const pending = s.pending || [];
   $("#update-latest").hidden = !latest;
   if (latest) {
-    $("#update-latest-version").textContent = latest.version;
-    const when = latest.published_at ? new Date(latest.published_at).toLocaleString() : "";
-    $("#update-latest-meta").textContent = `(${latest.source === "release" ? "release " + latest.name : "branch " + s.branch}${when ? ", " + when : ""})`;
-    const notes = $("#update-notes");
-    notes.textContent = latest.notes || "";
-    notes.hidden = !latest.notes || !s.update_available;
+    const line = $("#update-latest-line");
+    if (s.update_available) {
+      line.innerHTML = "";
+      const strong = document.createElement("strong");
+      strong.textContent = latest.version;
+      line.append("Version ", strong, " is available. Updating installs it directly");
+      line.append(pending.length > 1
+        ? `, including everything from the ${pending.length} versions since ${s.current}:`
+        : ":");
+    } else {
+      line.textContent = `You have the latest version (${latest.version}).`;
+    }
+    const list = $("#update-pending");
+    list.innerHTML = "";
+    if (s.update_available) {
+      [...pending].reverse().forEach((v, i) => {   // newest first
+        const d = document.createElement("details");
+        d.open = i === 0;
+        const sum = document.createElement("summary");
+        const b = document.createElement("strong"); b.textContent = v.version;
+        sum.append(b, v.name && v.name.replace(/^v/i, "") !== v.version ? ` · ${v.name}` : "",
+                   v.published_at ? ` · ${fmtDate(v.published_at)}` : "");
+        d.append(sum);
+        const notes = document.createElement("pre");
+        notes.className = "update-notes mono small";
+        notes.textContent = (v.notes || "").trim() || "No release notes.";
+        d.append(notes);
+        list.append(d);
+      });
+    }
   }
   if (s.error) { pill.textContent = "check failed"; pill.className = "status-pill warn"; }
   else if (!s.checked_at) { pill.textContent = ""; pill.className = "status-pill"; }
   else if (s.update_available) { pill.textContent = "update available"; pill.className = "status-pill warn"; }
   else { pill.textContent = "up to date"; pill.className = "status-pill ok"; }
-  $("#update-apply").hidden = !s.update_available || !s.can_apply;
-  if (s.error) setUpdateMsg(s.error, false);
+  const apply = $("#update-apply");
+  apply.hidden = !s.update_available || !s.can_apply;
+  if (latest) apply.textContent = `Update to ${latest.version}`;
+  $("#update-check").className = s.update_available ? "ghost big" : "primary big";
+  renderTopbarUpdate(s);
+  if (state.updating) { /* keep the progress message */ }
+  else if (s.error) setUpdateMsg(s.error, false);
   else if (s.update_available && !s.can_apply) setUpdateMsg("This app runs from a git clone: update it with `git pull`.", false);
   else setUpdateMsg("", true);
   $("#update-clear-token").hidden = s.token_source !== "web";
@@ -699,80 +737,132 @@ function renderUpdate(s) {
   state.update = s;
 }
 
+// Top-bar button: always visible to admins, so checking for updates is one click away.
+function renderTopbarUpdate(s) {
+  const b = $("#topbar-update");
+  if (!state.me || state.me.role !== "admin") { b.hidden = true; return; }
+  b.hidden = !!state.updating;
+  const available = s && s.update_available && s.latest;
+  b.classList.toggle("available", !!available);
+  $("#topbar-update-text").textContent = available ? `Update to ${s.latest.version}` : "Check for updates";
+  b.title = available ? `Version ${s.latest.version} is available (installed: ${s.current})`
+                      : "Check GitHub for a newer version";
+}
+
+$("#topbar-update").addEventListener("click", async () => {
+  switchView("admin");
+  $("#update-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  if (!(state.update && state.update.update_available)) $("#update-check").click();
+});
+
 async function loadUpdate() {
   const s = await api("/api/update");
   renderUpdate(s);
-  if (s.progress && s.progress.state === "running") followUpgrade(s.progress.version);
+  if (s.progress && s.progress.state === "running" && !state.updating) followUpgrade(s.progress.version);
   // Check GitHub automatically (the server caches the answer for an hour).
   if (!s.checked_at) renderUpdate(await api("/api/update/check?force=false", { method: "POST" }));
 }
 
 $("#update-check").addEventListener("click", async () => {
-  setUpdateMsg("Checking GitHub…", true);
-  try { renderUpdate(await api("/api/update/check", { method: "POST" })); }
+  const btn = $("#update-check");
+  btn.disabled = true;
+  setUpdateBusy("Checking GitHub…");
+  try { renderUpdate(await api("/api/update/check", { method: "POST" })); if (!state.update.error) setUpdateMsg("", true); }
   catch (ex) { setUpdateMsg(ex.message, false); }
+  finally { btn.disabled = false; }
 });
+
+// ---- "Updating…" state: a bar under the top bar (all tabs) with a spinner and "See details".
+function setUpdateBusy(text) {
+  const m = $("#update-msg");
+  m.innerHTML = '<span class="spinner" aria-hidden="true"></span> ';
+  m.append(text);
+  m.className = "small busy";
+  m.hidden = false;
+}
+
+function showUpdating(text) {
+  state.updating = true;
+  $("#updating-bar").hidden = false;
+  $("#updating-text").textContent = text;
+  $("#topbar-update").hidden = true;
+  $("#update-apply").disabled = $("#update-check").disabled = true;
+  setUpdateBusy(text);
+}
+
+function hideUpdating() {
+  state.updating = false;
+  $("#updating-bar").hidden = true;
+  $("#update-apply").disabled = $("#update-check").disabled = false;
+  renderTopbarUpdate(state.update);
+}
+
+$("#updating-details").addEventListener("click", () => openConsole("update"));
 
 $("#update-apply").addEventListener("click", async () => {
   const s = state.update;
-  if (!confirm(`Update SysAdmin.IA from ${s.current} to ${s.latest.version}?\n\n` +
+  const included = (s.pending || []).length > 1 ? ` (includes ${s.pending.length} versions)` : "";
+  if (!confirm(`Update SysAdmin.IA from ${s.current} to ${s.latest.version}${included}?\n\n` +
       (s.full_upgrade ? "The new version's installer runs exactly as a fresh install would (system packages, " +
         "service, helpers, app code); your settings, users and data are kept. " : "") +
       "The current code is backed up first and restored automatically if the update fails. " +
       "Changes Claude made to this app's own files may be overwritten (they stay in the app's git history).")) return;
-  const btn = $("#update-apply");
-  btn.disabled = true; $("#update-check").disabled = true;
-  setUpdateMsg("Downloading and installing… this can take a few minutes.", true);
+  state.updateConsole = s.full_upgrade ? "log" : "local";
+  resetUpdateConsole();
+  showUpdating(`Updating to ${s.latest.version}…`);
+  if (state.updateConsole === "local") {
+    updateConsoleWrite(`Updating ${s.current} -> ${s.latest.version} (app code only)\r\nDownloading and installing…\r\n`);
+  }
   try {
     const r = await api("/api/update/apply", { method: "POST" });
-    if (r.mode === "full") {
-      followUpgrade(r.to);
-      return;  // buttons stay disabled until the page reloads
-    }
+    if (r.mode === "full") { followUpgrade(r.to); return; }
+    updateConsoleWrite((r.log || []).join("\r\n") + "\r\n");
     if (r.restart) {
-      setUpdateMsg(`Updated to ${r.to}. Restarting…`, true);
+      $("#updating-text").textContent = `Updated to ${r.to}. Restarting…`;
+      setUpdateBusy(`Updated to ${r.to}. Restarting…`);
+      updateConsoleWrite("Restarting the app…\r\n");
       waitForVersion(r.to);
     } else {
+      hideUpdating();
       setUpdateMsg(`Updated to ${r.to}. Restart the app to load the new version.`, true);
     }
-    btn.disabled = false; $("#update-check").disabled = false;
   } catch (ex) {
+    hideUpdating();
+    updateConsoleWrite(`\r\n\x1b[31mUpdate failed: ${ex.message}\x1b[0m\r\n`);
     setUpdateMsg(ex.message, false);
-    btn.disabled = false; $("#update-check").disabled = false;
   }
 });
 
 // Follow a full upgrade (install.sh running as root in the background). The app restarts
 // during it, so failed requests are expected for a few seconds.
 function followUpgrade(target) {
-  const logEl = $("#update-log");
-  logEl.hidden = false;
-  $("#update-apply").disabled = $("#update-check").disabled = true;
+  state.updateConsole = "log";
+  showUpdating(`Updating to ${target}…`);
   const started = Date.now();
   const poll = async () => {
     try {
-      const r = await fetch("/api/update/progress", { cache: "no-store", headers: { "X-SAI-CSRF": "1" } });
+      const r = await fetch("/api/update/progress", { cache: "no-store" });
       if (r.status === 401) { location.href = "/login"; return; }
       if (r.ok) {
         const p = await r.json();
-        const atBottom = logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 20;
-        logEl.textContent = p.log || "";
-        if (atBottom) logEl.scrollTop = logEl.scrollHeight;
         if (p.state === "done" && p.current === target) {
-          setUpdateMsg(`${p.message}. Reloading…`, true);
+          $("#updating-text").textContent = `Updated to ${target}. Reloading…`;
+          setUpdateBusy(`Updated to ${target}. Reloading…`);
           setTimeout(() => location.reload(), 1500);
           return;
         }
         if (p.state === "failed") {
+          hideUpdating();
           setUpdateMsg(p.message || "The update failed.", false);
-          $("#update-apply").disabled = $("#update-check").disabled = false;
           return;
         }
-        setUpdateMsg(`Updating to ${target}: ${p.message || "working"}…`, true);
+        const text = `Updating to ${target}: ${(p.message || "working").replace(/\.$/, "")}…`;
+        $("#updating-text").textContent = text;
+        setUpdateBusy(text);
       }
     } catch { /* app restarting */ }
     if (Date.now() - started < 30 * 60000) setTimeout(poll, 2000);
-    else setUpdateMsg("The update is taking unusually long; check /var/log/sysadmin-ia/upgrade.log on the server.", false);
+    else { hideUpdating(); setUpdateMsg("The update is taking unusually long; open the details to see where it is.", false); }
   };
   poll();
 }
@@ -784,9 +874,103 @@ function waitForVersion(target, tries = 0) {
       if (r.ok && (await r.json()).version === target) { location.reload(); return; }
     } catch { /* still restarting */ }
     if (tries < 60) waitForVersion(target, tries + 1);
-    else setUpdateMsg("The app did not come back after the update; check the service logs.", false);
+    else { hideUpdating(); setUpdateMsg("The app did not come back after the update; check the service logs.", false); }
   }, 2000);
 }
+
+// ------------------------------------------------------------ console
+// Terminal sessions over /ws/console: "shell" (interactive) and "update" (follows the update
+// log). For an app-code-only update there is no log file, so its output is written locally.
+const consoles = {};
+
+function makeConsole(name) {
+  if (consoles[name]) return consoles[name];
+  const term = new Terminal({
+    cursorBlink: name === "shell", disableStdin: name !== "shell", scrollback: 5000, fontSize: 13,
+    fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() || "monospace",
+    theme: { background: "#111317", foreground: "#e6e8eb", cursor: "#e0793c", selectionBackground: "#3a4250" },
+  });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open($(`#console-term-${name}`));
+  const c = { name, term, fit, ws: null };
+  term.onData((d) => { if (c.ws && c.ws.readyState === 1) c.ws.send(JSON.stringify({ type: "input", data: d })); });
+  term.onResize(({ cols, rows }) => {
+    if (c.ws && c.ws.readyState === 1) c.ws.send(JSON.stringify({ type: "resize", cols, rows }));
+  });
+  consoles[name] = c;
+  return c;
+}
+
+function connectConsole(name) {
+  const c = makeConsole(name);
+  if (c.ws && c.ws.readyState <= 1) return;
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/console?mode=${name}`);
+  ws.binaryType = "arraybuffer";
+  c.ws = ws;
+  if (name === "update") c.term.reset();  // the log is replayed from the start
+  setConsoleStatus(name, "connecting…");
+  ws.onopen = () => {
+    setConsoleStatus(name, name === "shell" ? "connected" : "following the update log");
+    ws.send(JSON.stringify({ type: "resize", cols: c.term.cols, rows: c.term.rows }));
+  };
+  ws.onmessage = (e) => {
+    if (typeof e.data !== "string") { c.term.write(new Uint8Array(e.data)); return; }
+    const m = JSON.parse(e.data);
+    if (m.type === "exit") c.term.write(`\r\n\x1b[90m[session ended, exit code ${m.code}]\x1b[0m\r\n`);
+    if (m.type === "error") c.term.write(`\r\n\x1b[31m${m.message}\x1b[0m\r\n`);
+  };
+  ws.onclose = (e) => {
+    if (e.code === 4401) { location.href = "/login"; return; }
+    setConsoleStatus(name, "disconnected");
+    // During an update the app restarts: keep following the log.
+    if (name === "update" && state.updating && state.updateConsole === "log") setTimeout(() => connectConsole("update"), 2000);
+  };
+}
+
+function setConsoleStatus(name, text) {
+  consoles[name] && (consoles[name].status = text);
+  if (state.consoleSession === name) {
+    $("#console-status").textContent = text;
+    $("#console-reconnect").hidden = !(name === "shell" && text === "disconnected");
+  }
+}
+
+function showConsoleSession(name) {
+  state.consoleSession = name;
+  if (name === "update") $("#console-update-tab").hidden = false;
+  $$("#console-sessions .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.session === name));
+  $("#console-term-shell").hidden = name !== "shell";
+  $("#console-term-update").hidden = name !== "update";
+  const c = makeConsole(name);
+  requestAnimationFrame(() => { c.fit.fit(); if (name === "shell") c.term.focus(); });
+  if (name === "shell" || state.updateConsole !== "local") connectConsole(name);
+  setConsoleStatus(name, name === "update" && state.updateConsole === "local" ? "update output" : (c.status || ""));
+}
+
+function openConsole(name) {
+  switchView("console");
+  showConsoleSession(name);
+}
+
+function resetUpdateConsole() {
+  const c = makeConsole("update");
+  if (c.ws) { c.ws.onclose = null; c.ws.close(); c.ws = null; }
+  c.term.reset();
+}
+
+function updateConsoleWrite(text) { makeConsole("update").term.write(text); }
+
+$$("#console-sessions .seg-btn").forEach((b) => b.addEventListener("click", () => showConsoleSession(b.dataset.session)));
+$("#console-reconnect").addEventListener("click", () => {
+  const c = makeConsole("shell");
+  c.term.write("\r\n");
+  connectConsole("shell");
+});
+window.addEventListener("resize", () => {
+  if (state.view === "console" && consoles[state.consoleSession]) consoles[state.consoleSession].fit.fit();
+});
 
 $("#update-token-form").addEventListener("submit", async (e) => {
   e.preventDefault();

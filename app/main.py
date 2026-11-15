@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import signal
 import time
@@ -13,7 +14,7 @@ from pydantic import BaseModel
 
 import anthropic
 
-from . import agent, auth, claude_settings, db, monitor, server_name, updater
+from . import agent, auth, claude_settings, console, db, monitor, server_name, updater
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -126,6 +127,7 @@ async def setup_status():
 async def me(user: User = Depends(current_user)):
     return {"username": user.username, "role": user.role, "model": claude_settings.model(),
             "allow_auto_approve": settings.allow_auto_approve,
+            "console": settings.allow_console and user.is_admin,
             "api_key_configured": bool(claude_settings.api_key()[0])}
 
 
@@ -412,6 +414,25 @@ def _schedule_restart() -> None:
     """Exit cleanly; systemd (Restart=always) starts the new code."""
     loop = asyncio.get_running_loop()
     loop.call_later(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
+
+
+@app.websocket("/ws/console")
+async def console_ws(ws: WebSocket, mode: str = "shell"):
+    user = auth.websocket_user(ws)
+    if not user or not user.is_admin or not settings.allow_console:
+        await ws.close(code=4401 if not user else 4403)
+        return
+    mode = "update" if mode == "update" else "shell"
+    await ws.accept()
+    ip = auth.client_ip(ws)
+    started = time.time()
+    if mode == "shell":
+        db.audit("console_open", user.username, ip)
+    code = await console.run(ws, mode)
+    if mode == "shell":
+        db.audit("console_close", user.username, ip, {"exit_code": code, "seconds": round(time.time() - started)})
+    with contextlib.suppress(Exception):
+        await ws.close()
 
 
 @app.websocket("/ws/chat")

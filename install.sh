@@ -169,6 +169,26 @@ fi
 c_info "Copying application to $PREFIX"
 tar -C "$SRC_DIR" --exclude='.venv' --exclude='data' --exclude='.git' --exclude='__pycache__' --exclude='.env' -cf - . \
   | tar -C "$PREFIX" -xf -
+
+# The version being installed: the highest of the VERSION file, the git tag this copy was
+# checked out from (git clone + checkout), and a release archive's folder name
+# (SysAdmin.IA-1.3.3). That way VERSION needn't be bumped by hand for each release.
+detect_version() {
+  local v="" tag base
+  v="$(tr -d '[:space:]' < "${SRC_DIR}/VERSION" 2>/dev/null || true)"
+  if command -v git >/dev/null && [[ -e "${SRC_DIR}/.git" ]]; then
+    tag="$(git -c safe.directory="$SRC_DIR" -C "$SRC_DIR" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null \
+        || git -c safe.directory="$SRC_DIR" -C "$SRC_DIR" describe --tags --abbrev=0 --match '[0-9]*' 2>/dev/null || true)"
+    tag="${tag#[vV]}"
+  fi
+  base="$(basename "$SRC_DIR")"
+  [[ -z "${tag:-}" && "$base" =~ -[vV]?([0-9]+(\.[0-9]+){1,3})$ ]] && tag="${BASH_REMATCH[1]}"
+  printf '%s\n' "$v" "${tag:-}" | grep -E '^[0-9]+(\.[0-9]+){0,3}$' \
+    | sort -t. -k1,1n -k2,2n -k3,3n -k4,4n | tail -1
+}
+APP_VERSION="$(detect_version || true)"
+if [[ -n "$APP_VERSION" ]]; then echo "$APP_VERSION" > "$PREFIX/VERSION"; fi
+c_info "Version ${APP_VERSION:-unknown}"
 chown -R "$SVC_USER:$SVC_USER" "$PREFIX"
 chmod 755 "$PREFIX"
 
