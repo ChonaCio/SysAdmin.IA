@@ -56,6 +56,7 @@ const ICON = {
   history: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5M12 7v5l3 2"/>',
   "arrow-down": '<path d="M12 5v14M6 13l6 6 6-6"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  shield: '<path d="M12 3l8 3v6c0 4.5-3.4 8.2-8 9-4.6-.8-8-4.5-8-9V6z"/>',
   bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   chip: '<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
@@ -1836,7 +1837,6 @@ $("#update-clear-token").addEventListener("click", async () => {
 async function loadAdmin() {
   if (state.me.role !== "admin") return;
   loadUpdate().catch((e) => setUpdateMsg(e.message, false));
-  loadServerName().catch((e) => setSnMsg(e.message, false));
   loadTimezone().catch((e) => setFormMsg("#tz-msg", e.message, false));
   loadAudit();
 }

@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
-from . import containers, local_ai, model_search, network, publish, routers, user_prefs, variables
+from . import containers, firewall, lan_names, local_ai, model_search, network, publish, routers, user_prefs, variables
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -1078,7 +1078,8 @@ def _dump(b, **kw) -> dict:
 def _net(fn, *a, **kw):
     try:
         return fn(*a, **kw)
-    except (network.NetworkError, routers.RouterError, publish.PublishError, containers.DockerError) as e:
+    except (network.NetworkError, routers.RouterError, publish.PublishError, containers.DockerError, firewall.FirewallError,
+            lan_names.NamesError) as e:
         raise HTTPException(400, str(e))
 
 
@@ -1246,6 +1247,118 @@ async def net_kick(body: MacBody, request: Request, user: User = Depends(admin_u
     await asyncio.to_thread(_net, routers.kick, body.mac, prot)
     db.audit("device_kicked", user.username, auth.client_ip(request), _dump(body))
     return {"ok": True}
+
+
+# ---- names on the LAN and websites on shared ports (Network → Names)
+class LanNameBody(BaseModel):
+    name: str
+    ip: str
+
+
+class LanNameRemoveBody(BaseModel):
+    id: str
+
+
+class LanSiteBody(BaseModel):
+    hostname: str
+    target: str
+    https: bool = False
+    make_name: bool = True
+
+
+@app.get("/api/network/names")
+async def net_names(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_net, lan_names.list_names)
+
+
+@app.post("/api/network/names")
+async def net_names_add(body: LanNameBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, lan_names.add_name, body.name, body.ip)
+    db.audit("lan_name_added", user.username, auth.client_ip(request), _dump(body))
+    return out
+
+
+@app.post("/api/network/names/remove")
+async def net_names_remove(body: LanNameRemoveBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, lan_names.remove_name, body.id)
+    db.audit("lan_name_removed", user.username, auth.client_ip(request), {"id": body.id})
+    return out
+
+
+@app.get("/api/network/sites")
+async def net_sites(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_net, lan_names.sites_status)
+
+
+@app.post("/api/network/sites")
+async def net_sites_add(body: LanSiteBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, lan_names.add_site, body.hostname, body.target, body.https, body.make_name)
+    db.audit("lan_site_added", user.username, auth.client_ip(request), _dump(body))
+    return out
+
+
+@app.delete("/api/network/sites/{sid}")
+async def net_sites_remove(sid: int, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, lan_names.remove_site, sid)
+    db.audit("lan_site_removed", user.username, auth.client_ip(request), {"id": sid})
+    return {"ok": True}
+
+
+@app.get("/api/network/sites/ca.crt")
+async def net_sites_ca(user: User = Depends(admin_user)):
+    pem = await asyncio.to_thread(publish.local_ca_cert)
+    if not pem:
+        raise HTTPException(404, "The local certificate authority doesn't exist yet (add an HTTPS website first).")
+    return Response(pem, media_type="application/x-x509-ca-cert",
+                    headers={"Content-Disposition": 'attachment; filename="sysadmin-ia-local-ca.crt"'})
+
+
+# ---- this server's firewall (Network → Ports)
+class FirewallPortBody(BaseModel):
+    port: str
+    proto: str = "tcp"
+    note: str = ""
+
+
+class FirewallRuleBody(BaseModel):
+    id: str
+
+
+class FirewallFlagBody(BaseModel):
+    value: bool
+
+
+@app.get("/api/network/firewall")
+async def net_firewall(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_net, firewall.status)
+
+
+@app.post("/api/network/firewall/open")
+async def net_firewall_open(body: FirewallPortBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, firewall.open_port, body.port, body.proto, body.note)
+    db.audit("firewall_port_opened", user.username, auth.client_ip(request), _dump(body))
+    return out
+
+
+@app.post("/api/network/firewall/remove")
+async def net_firewall_remove(body: FirewallRuleBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, firewall.remove_rule, body.id)
+    db.audit("firewall_rule_removed", user.username, auth.client_ip(request), {"rule": body.id})
+    return out
+
+
+@app.post("/api/network/firewall/default")
+async def net_firewall_default(body: FirewallFlagBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, firewall.set_default, body.value)
+    db.audit("firewall_default", user.username, auth.client_ip(request), {"closed": body.value})
+    return out
+
+
+@app.post("/api/network/firewall/enabled")
+async def net_firewall_enabled(body: FirewallFlagBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, firewall.set_enabled, body.value)
+    db.audit("firewall_enabled", user.username, auth.client_ip(request), {"on": body.value})
+    return out
 
 
 @app.post("/api/network/devices/known-all")

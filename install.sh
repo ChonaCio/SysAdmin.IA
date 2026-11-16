@@ -279,7 +279,7 @@ chown root:"$SVC_USER" "$ENV_FILE"; chmod 640 "$ENV_FILE"
 # ------------------------------------------------------------------ server name & LAN discovery
 # Root-owned helper that sets the hostname, announces NAME.local via mDNS (Avahi) and keeps
 # the self-signed certificate valid for the name. The service user may run it (and only it)
-# through sudo, so the name can also be changed later from Admin → Server name.
+# through sudo, so the name can also be changed later from Network → Names & websites → Server name.
 HELPER="/usr/local/sbin/${APP_NAME}-hostname"
 bash "${SRC_DIR}/scripts/${APP_NAME}-hostname" install | sed 's/^/    /' \
   || c_warn "Could not install the server-name helper; the server can't be renamed from the web UI."

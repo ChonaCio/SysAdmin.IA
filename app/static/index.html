@@ -233,27 +233,6 @@
           </form>
         </details>
       </div>
-      <div class="card admin-only" id="server-name-card">
-        <h3>Server name <span class="status-pill" id="sn-status"></span></h3>
-        <form id="sn-form" class="settings-form" autocomplete="off">
-          <label>Name on the network
-            <span class="row">
-              <input name="server_name" spellcheck="false" placeholder="office-server" maxlength="63" pattern="[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?" required>
-              <span class="muted">.local</span>
-              <button class="primary" id="sn-save">Rename</button>
-            </span>
-            <span class="muted small">Letters, digits and hyphens. Computers on the same network can then open this app by name.</span>
-          </label>
-          <div class="small" id="sn-urls"></div>
-          <pre class="update-notes mono small" id="sn-setup" hidden></pre>
-          <pre class="update-notes mono small" id="sn-output" hidden></pre>
-          <span class="small" id="sn-msg" hidden></span>
-          <div class="row">
-            <button type="button" id="sn-reboot" class="ghost danger">Reboot server</button>
-            <span class="muted small">The new name works right away; reboot only if a device still uses the old one.</span>
-          </div>
-        </form>
-      </div>
       <div class="card admin-only" id="tz-card">
         <h3>Time zone <span class="status-pill" id="tz-status"></span></h3>
         <form id="tz-form" class="settings-form" autocomplete="off">
@@ -487,12 +466,37 @@
         <div class="dk-tabs-row">
           <div class="seg dk-tabs" id="net-tabs" role="tablist">
             <button type="button" class="seg-btn active" data-tab="devices">Devices</button>
+            <button type="button" class="seg-btn" data-tab="names">Names &amp; websites</button>
+            <button type="button" class="seg-btn" data-tab="ports">Ports</button>
             <button type="button" class="seg-btn" data-tab="router">Router &amp; DHCP</button>
             <button type="button" class="seg-btn" data-tab="publish">Publish on the internet</button>
             <button type="button" class="seg-btn" data-tab="settings">Settings</button>
           </div>
         </div>
         <div id="net-pane"></div>
+        <div id="net-names-holder" hidden>
+          <div class="net-card" id="server-name-card">
+            <h3>Server name <span class="status-pill" id="sn-status"></span></h3>
+            <form id="sn-form" class="settings-form" autocomplete="off">
+              <label>Name on the network
+                <span class="row">
+                  <input name="server_name" spellcheck="false" placeholder="office-server" maxlength="63" pattern="[A-Za-z0-9]([A-Za-z0-9\-]{0,61}[A-Za-z0-9])?" required>
+                  <span class="muted">.local</span>
+                  <button class="primary" id="sn-save">Rename</button>
+                </span>
+                <span class="muted small">Letters, digits and hyphens. Computers on the same network can then open this app by name.</span>
+              </label>
+              <div class="small" id="sn-urls"></div>
+              <pre class="update-notes mono small" id="sn-setup" hidden></pre>
+              <pre class="update-notes mono small" id="sn-output" hidden></pre>
+              <span class="small" id="sn-msg" hidden></span>
+              <div class="row">
+                <button type="button" id="sn-reboot" class="ghost danger">Reboot server</button>
+                <span class="muted small">The new name works right away; reboot only if a device still uses the old one.</span>
+              </div>
+            </form>
+          </div>
+        </div>
       </div>
     </div>
   </section>

@@ -40,7 +40,7 @@ sudo ./install.sh -y --full-access --server-name office-server --admin alice --p
 
 The server name is the machine's hostname. The installer runs Avahi (mDNS), so every computer on the same network can reach the app as `https://NAME.local:8765/` without any DNS setup. This works out of the box on Windows 10/11, macOS, iOS, and Linux desktops with `nss-mdns`. Android supports `.local` names in Chrome on recent versions; if one doesn't, use the IP address.
 
-Change the name later in **Admin → Server name**, or with `sudo sysadmin-ia set-server-name NAME` (`sudo sysadmin-ia server-name` shows it and the LAN addresses). Renaming:
+Change the name later in **Network → Names & websites → Server name**, or with `sudo sysadmin-ia set-server-name NAME` (`sudo sysadmin-ia server-name` shows it and the LAN addresses). Renaming:
 
 - sets the hostname and the `127.0.1.1` entry in `/etc/hosts`
 - re-announces the new name via mDNS, and advertises the web UI as a network service
@@ -246,12 +246,31 @@ The **Network** module (Server group) shows what's on your LAN, talks to your ro
 - **Private addresses:** phones and laptops often use a private (randomized) Wi-Fi address, so they show without a maker.
 - **Watching:** the network is re-checked every 15 minutes (**Settings**), which powers the job triggers **New device on the network** and **Device offline**.
 
+**Names & websites.** Names instead of addresses, for this server and everything on the LAN.
+- **Server name:** the server's own name (`NAME.local`), rename and reboot (moved here from Admin).
+- **Names on the network:** give a device (or this server) a name.
+  - Names ending in **`.local`** (e.g. `nas.local`) are announced by this server over mDNS (`avahi-publish`, package avahi-utils). They work on any network, with no router support; phones, Macs, Windows 10+ and Linux understand them. If another device already uses the name, the row says so.
+  - **Other names** (e.g. `nas.home.lan`) are stored as DNS entries in the router (OpenWrt, MikroTik). Devices must use the router as their DNS server (the usual setup).
+  - Reserve the device's address (**Router & DHCP**) so the name keeps pointing to it.
+- **Websites on this server:** many sites and apps on the same port. Each site gets a name (e.g. `photos.local` → the Immich container, `nas.local` → the NAS's web page, `admin.local` → SysAdmin.IA itself). A small proxy (Caddy, container `sai-caddy`) listens on port 80 (and 443) and sends each visit to the right app by name.
+  - The name is created too, pointing to this server (optional).
+  - **HTTPS** uses certificates from this server's own certificate authority. Browsers warn until you trust it; the tab has a link to download it.
+  - SysAdmin.IA itself is always served over HTTPS when the app uses HTTPS, so signing in keeps working.
+  - The proxy is shared with **Publish on the internet** (Caddy method): public and local sites live in the same configuration. It's removed when nothing needs it. Needs Docker, and ports 80/443 not used by another program.
+
+**Ports.** This server's own firewall: which of its ports other devices can connect to.
+- **Uses what's installed:** ufw (Debian/Ubuntu), firewalld (Fedora/RHEL/openSUSE), or, if neither is installed, a small nftables table managed by SysAdmin.IA that is loaded at boot.
+- **Closed by default (recommended):** turn the firewall on or close ports by default with one button. SysAdmin.IA's own port, SSH and mDNS (for `name.local`) are opened first, so you aren't locked out. You can switch back to open by default.
+- **Open ports table:** each rule with its port, protocol, whether something is using it, and what (SSH server, a container, nginx, PostgreSQL…). **Open port** adds a port or a range (TCP, UDP or both, with a note). Delete a row to close the port. The app's own port can't be closed from here; closing the SSH port asks first. Rules made elsewhere (e.g. firewalld rich rules) are shown but not edited.
+- **Ports in use:** every program waiting for connections, whether other devices can reach it (open, closed, only some addresses), and an **Open port** button for closed ones. Ports Docker publishes for containers are marked: Docker routes them around the host firewall, so they stay reachable even when closed here.
+- Needs the refreshed root helper; if it's missing, the tab shows the one-time setup command.
+
 **Router & DHCP.** Connect SysAdmin.IA to your router (**Detect my router** suggests the type):
 
 | Router type | What SysAdmin.IA can do |
 |---|---|
 | Automatic (UPnP) — most home routers | Port forwarding and reading the public address. It can't change DHCP. UPnP must be on in the router. |
-| OpenWrt (LuCI) | Everything: DHCP leases, reserved addresses, address range, lease time, DNS servers handed out, port forwarding, kicking and blocking devices |
+| OpenWrt (LuCI) | Everything: DHCP leases, reserved addresses, address range, lease time, DNS servers handed out, port forwarding, kicking and blocking devices, local DNS names |
 | MikroTik RouterOS 7 (REST API: IP → Services → www/www-ssl) | Everything, as for OpenWrt |
 | Other | A link to the router's admin page |
 
@@ -386,8 +405,8 @@ The **Console** tab (admins only) is a terminal on the server in the browser: a 
 | List AI connections | `sudo sysadmin-ia ai-status` (manage them in the AI connections module) |
 | Set / remove the Claude API key | `sudo sysadmin-ia set-api-key` / `sudo sysadmin-ia clear-api-key` |
 | Change the default connection's model | `sudo sysadmin-ia set-model claude-sonnet-5-5` |
-| Show / change the server name | `sudo sysadmin-ia server-name` / `sudo sysadmin-ia set-server-name NAME` (or Admin → Server name) |
-| Reboot the server | `sudo sysadmin-ia reboot` (or Admin → Server name → Reboot server) |
+| Show / change the server name | `sudo sysadmin-ia server-name` / `sudo sysadmin-ia set-server-name NAME` (or Network → Names & websites → Server name) |
+| Reboot the server | `sudo sysadmin-ia reboot` (or Network → Names & websites → Reboot server) |
 | Check for / install updates | `sudo sysadmin-ia check-update` / `sudo sysadmin-ia update` (or Admin → Updates) |
 | Roll back an app change Claude made | `sudo -u sysadmin-ia git -C /opt/sysadmin-ia log --oneline`, then `sudo -u sysadmin-ia git -C /opt/sysadmin-ia revert <sha>` and restart |
 | Restore a file Claude edited | backups are in `/var/lib/sysadmin-ia/backups/<timestamp>/<original path>` |

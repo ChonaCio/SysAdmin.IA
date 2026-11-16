@@ -868,8 +868,18 @@ class NetworkEngine:
             self.task = asyncio.get_running_loop().create_task(self._loop())
 
     async def _loop(self) -> None:
-        await asyncio.sleep(30)
+        from . import lan_names
+        await asyncio.sleep(2)
+        try:
+            await asyncio.to_thread(lan_names.sync_mdns)     # announce the .local names (Network → Names)
+        except Exception:
+            log.exception("publishing .local names failed")
+        await asyncio.sleep(28)
         while True:
+            try:
+                await asyncio.to_thread(lan_names.sync_mdns)
+            except Exception:
+                log.exception("publishing .local names failed")
             try:
                 s = get_settings()
                 last = float(db.get_setting("network_last_scan") or 0)

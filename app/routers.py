@@ -326,7 +326,7 @@ def _lease_seconds(v: str) -> int | None:
 
 class OpenWrtRouter(Router):
     type = "openwrt"
-    caps = {"leases", "static", "dhcp_settings", "forwards", "external_ip", "block", "kick"}
+    caps = {"leases", "static", "dhcp_settings", "forwards", "external_ip", "block", "kick", "dns"}
     NULL = "0" * 32
 
     def __init__(self, address: str, username: str, password: str, verify: bool = False) -> None:
@@ -409,6 +409,22 @@ class OpenWrtRouter(Router):
         self._commit("dhcp", "dnsmasq")
 
     def remove_static(self, sid: str) -> None:
+        self.call("uci", "delete", {"config": "dhcp", "section": sid})
+        self._commit("dhcp", "dnsmasq")
+
+    # local DNS names (dnsmasq "domain" sections: name → address)
+    def dns_list(self) -> list[dict]:
+        return [{"id": k, "name": v.get("name", "").lower(), "ip": v.get("ip", "")}
+                for k, v in self._uci("dhcp").items() if v.get(".type") == "domain" and v.get("name")]
+
+    def dns_add(self, name: str, ip: str) -> None:
+        for e in self.dns_list():
+            if e["name"] == name:
+                self.call("uci", "delete", {"config": "dhcp", "section": e["id"]})
+        self.call("uci", "add", {"config": "dhcp", "type": "domain", "values": {"name": name, "ip": ip}})
+        self._commit("dhcp", "dnsmasq")
+
+    def dns_remove(self, sid: str) -> None:
         self.call("uci", "delete", {"config": "dhcp", "section": sid})
         self._commit("dhcp", "dnsmasq")
 
@@ -525,7 +541,7 @@ class OpenWrtRouter(Router):
 
 class MikroTikRouter(Router):
     type = "mikrotik"
-    caps = {"leases", "static", "dhcp_settings", "forwards", "block", "kick"}
+    caps = {"leases", "static", "dhcp_settings", "forwards", "block", "kick", "dns"}
     WIFI_PATHS = ("/interface/wifi", "/interface/wireless")   # RouterOS 7 "wifi" package / legacy "wireless"
 
     def __init__(self, address: str, username: str, password: str, verify: bool = False) -> None:
@@ -567,6 +583,21 @@ class MikroTikRouter(Router):
 
     def remove_static(self, lid: str) -> None:
         self._req("DELETE", f"/ip/dhcp-server/lease/{urllib.parse.quote(lid, safe='*')}")
+
+    # local DNS names (/ip/dns/static A records)
+    def dns_list(self) -> list[dict]:
+        return [{"id": e[".id"], "name": e["name"].lower(), "ip": e.get("address", "")}
+                for e in self.get("/ip/dns/static")
+                if e.get("name") and e.get("type", "A") == "A" and e.get("address")]
+
+    def dns_add(self, name: str, ip: str) -> None:
+        for e in self.dns_list():
+            if e["name"] == name:
+                self.dns_remove(e["id"])
+        self._req("PUT", "/ip/dns/static", {"name": name, "address": ip, "comment": "SysAdmin.IA"})
+
+    def dns_remove(self, eid: str) -> None:
+        self._req("DELETE", f"/ip/dns/static/{urllib.parse.quote(eid, safe='*')}")
 
     def _server(self) -> tuple[dict, dict, dict]:
         servers = self.get("/ip/dhcp-server")
@@ -706,6 +737,33 @@ def remove_static(lid: str) -> None:
     if "static" not in r.caps:
         raise RouterError("This router type can't reserve addresses.")
     r.remove_static(str(lid))
+
+
+def dns_list() -> list[dict]:
+    r = adapter()
+    if "dns" not in r.caps:
+        raise RouterError("This router type can't hold local DNS names. OpenWrt and MikroTik can.")
+    return r.dns_list()
+
+
+def dns_add(name: str, ip: str) -> None:
+    r = adapter()
+    if "dns" not in r.caps:
+        raise RouterError("This router type can't hold local DNS names. OpenWrt and MikroTik can.")
+    r.dns_add(name, _check_ip(ip))
+
+
+def dns_remove(eid: str) -> None:
+    r = adapter()
+    if "dns" not in r.caps:
+        raise RouterError("This router type can't hold local DNS names. OpenWrt and MikroTik can.")
+    r.dns_remove(str(eid))
+
+
+def has_cap(cap: str) -> bool:
+    """What the configured router type can do (without connecting to it)."""
+    cls = {"upnp": UpnpRouter, "openwrt": OpenWrtRouter, "mikrotik": MikroTikRouter, "manual": ManualRouter}.get(get_config().get("type") or "")
+    return bool(cls) and cap in getattr(cls, "caps", set())
 
 
 def dhcp_settings() -> dict:

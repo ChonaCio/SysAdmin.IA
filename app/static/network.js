@@ -77,8 +77,326 @@ function showNetTab(tab) {
   state.net.tab = tab;
   $$("#net-tabs .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
   const pane = $("#net-pane");
+  const sn = $("#server-name-card");
+  if (sn && pane.contains(sn)) $("#net-names-holder").append(sn);   // keep the Server name card (and its handlers)
   pane.innerHTML = '<p class="muted small"><span class="spinner" aria-hidden="true"></span> Loading…</p>';
-  ({ devices: netDevicesTab, router: netRouterTab, publish: netPublishTab, settings: netSettingsTab })[tab](pane);
+  ({ devices: netDevicesTab, names: netNamesTab, ports: netPortsTab, router: netRouterTab, publish: netPublishTab, settings: netSettingsTab })[tab](pane);
+}
+
+// ------------------------------------------------------------ Names & websites
+const NAME_STATE = { ok: ["announced", "tag-ok"], pending: ["starting…", ""], error: ["not announced", "tag-warn"] };
+
+async function netNamesTab(pane) {
+  let names, sites;
+  if (!state.net.devices) state.net.devices = await api("/api/network/devices").catch(() => []);
+  try { [names, sites] = await Promise.all([api("/api/network/names"), api("/api/network/sites")]); }
+  catch (ex) { pane.innerHTML = ""; pane.append(el("p", { class: "small error" }, ex.message)); return; }
+  if (state.net.tab !== "names") return;
+  state.net.names = names;
+  state.net.sites = sites;
+  pane.innerHTML = "";
+  pane.append($("#server-name-card"));
+  loadServerName().catch((e) => setSnMsg(e.message, false));
+  pane.append(netNamesCard(names), netSitesCard(sites, names));
+}
+
+function netNamesCard(n) {
+  const box = el("div", { class: "net-card" },
+    el("div", { class: "net-card-head" }, el("h3", {}, "Names on the network"),
+      el("button", { type: "button", class: "small", onclick: () => netNameDialog() }, withIcon("plus", "Add a name"))),
+    el("p", { class: "muted small" }, "Give devices (or this server) a name instead of an address. Names ending in .local are announced by this server and work on any network. Other names, such as nas.home.lan, are kept in the router's DNS" +
+      (n.router_dns ? "." : " (needs an OpenWrt or MikroTik router, set up in Router & DHCP).")));
+  if (n.router_error) box.append(el("p", { class: "small error" }, n.router_error));
+  if (!n.avahi) box.append(el("p", { class: "note warn small" }, "Publishing .local names needs avahi-publish on the server (package avahi-utils; installing the next update sets it up)."));
+  const rows = [el("tr", { class: "lan-self" },
+    el("td", {}, el("strong", { class: "mono", "data-no-i18n": "" }, n.server.mdns_name)),
+    el("td", { class: "small" }, el("span", { class: "mono" }, n.server.ip || "–"), el("div", { class: "muted small" }, "This server")),
+    el("td", {}, ".local"),
+    el("td", {}, el("span", { class: `tag ${n.server.mdns === "active" ? "tag-ok" : "tag-warn"}` }, n.server.mdns === "active" ? "announced" : "not announced")),
+    el("td", { class: "right muted small" }, "Server name"))];
+  for (const x of n.names) {
+    const [label, cls] = x.where === "router" ? ["in the router", "tag-ok"] : (NAME_STATE[x.state] || NAME_STATE.pending);
+    rows.push(el("tr", {},
+      el("td", {}, el("span", { class: "mono", "data-no-i18n": "" }, x.name),
+        x.auto ? el("div", { class: "muted small" }, "added with a website") : null),
+      el("td", { class: "small" }, el("span", { class: "mono" }, x.ip), x.device ? el("div", { class: "muted small", "data-no-i18n": x.device === "This server" ? null : "" }, x.device) : null),
+      el("td", {}, x.where === "router" ? "Router DNS" : ".local"),
+      el("td", {}, el("span", { class: `tag ${cls}`, title: x.error || "" }, label), x.error ? el("div", { class: "small error" }, x.error) : null),
+      el("td", { class: "right" }, el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Remove this name", title: "Remove this name",
+        onclick: async () => {
+          if (!confirm(`Remove the name ${x.name}?`)) return;
+          try { await api("/api/network/names/remove", { method: "POST", body: JSON.stringify({ id: x.id }) }); toast("Name removed."); }
+          catch (ex) { toast(ex.message, 6000); }
+          showNetTab("names");
+        } }, iconEl("trash")))));
+  }
+  box.append(el("div", { class: "table-wrap" }, el("table", { class: "table fw-table" },
+    el("thead", {}, el("tr", {}, ...["Name", "Address", "Kind", "Status", ""].map((h) => el("th", {}, h)))),
+    el("tbody", {}, ...rows))));
+  return box;
+}
+
+function netNameDialog() {
+  const n = state.net.names || {};
+  const devs = (state.net.devices || []).filter((d) => d.ip);
+  const list = el("datalist", { id: "lan-name-ips" }, n.server_ip ? el("option", { value: n.server_ip }, "This server") : null,
+    ...devs.filter((d) => d.ip !== n.server_ip).map((d) => el("option", { value: d.ip }, d.name || d.vendor || d.mac)));
+  const f = {
+    name: el("input", { required: true, class: "mono", placeholder: n.router_dns ? "e.g. nas.local or nas.home.lan" : "e.g. nas.local", spellcheck: "false", autocomplete: "off" }),
+    ip: el("input", { required: true, class: "mono", list: "lan-name-ips", placeholder: "192.168.1.20", spellcheck: "false", autocomplete: "off" }),
+  };
+  netDialog("Add a name", [list, field("Name", f.name, n.router_dns ? "Ends in .local (announced by this server) or any other domain (kept in the router)." : "One word plus .local."),
+    field("Device (address)", f.ip, "Pick a device or this server. Give the device a reserved address (Router & DHCP) so the name keeps working.")],
+  async () => {
+    await api("/api/network/names", { method: "POST", body: JSON.stringify({ name: f.name.value, ip: f.ip.value }) });
+    toast("Name added.");
+    showNetTab("names");
+  }, "Add");
+}
+
+function netSitesCard(s, n) {
+  const box = el("div", { class: "net-card" },
+    el("div", { class: "net-card-head" }, el("h3", {}, "Websites on this server"),
+      el("button", { type: "button", class: "small", disabled: !s.docker, onclick: () => netSiteDialog() }, withIcon("plus", "Add a website"))),
+    el("p", { class: "muted small" }, "Serve several websites and apps on the same port (80, and 443 for HTTPS) of this server: each one gets its own name, and a small proxy (Caddy, in a container) sends every visit to the right app. Many apps can then share port 80 instead of each needing its own port."));
+  if (!s.docker) { box.append(el("p", { class: "note warn small" }, "This needs Docker: install it in the Containers module first.")); return box; }
+  if (s.sites.length) {
+    box.append(el("p", { class: "small" }, "Proxy: ", el("span", { class: `tag ${s.proxy === "running" ? "tag-ok" : "tag-warn"}` }, s.proxy === "running" ? "running" : s.proxy || "not running"),
+      s.public_proxy ? el("span", { class: "muted" }, " · also serves the sites published on the internet") : null));
+  } else box.append(el("p", { class: "muted small" }, "No websites yet."));
+  const tgtLabel = (t) => (t === s.app_target ? "SysAdmin.IA (this app)" : t);
+  const rows = s.sites.map((x) => {
+    const url = `${x.https ? "https" : "http"}://${x.hostname}/`;
+    return el("tr", {},
+      el("td", {}, el("a", { href: url, target: "_blank", rel: "noopener noreferrer", class: "mono", "data-no-i18n": "" }, x.hostname)),
+      el("td", { class: "mono small" }, tgtLabel(x.target)),
+      el("td", {}, x.https ? el("span", { class: "tag tag-ok" }, "HTTPS") : el("span", { class: "tag" }, "HTTP")),
+      el("td", { class: "right" }, el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Remove this website", title: "Remove this website",
+        onclick: async () => {
+          if (!confirm(`Remove the website ${x.hostname}? The app behind it keeps running; it's just no longer reachable by this name.`)) return;
+          try { await api(`/api/network/sites/${x.id}`, { method: "DELETE" }); toast("Website removed."); }
+          catch (ex) { toast(ex.message, 6000); }
+          showNetTab("names");
+        } }, iconEl("trash"))));
+  });
+  if (rows.length) {
+    box.append(el("div", { class: "table-wrap" }, el("table", { class: "table fw-table" },
+      el("thead", {}, el("tr", {}, ...["Website", "Goes to", "", ""].map((h) => el("th", {}, h)))),
+      el("tbody", {}, ...rows))));
+  }
+  if (s.sites.some((x) => x.https)) {
+    box.append(el("p", { class: "muted small" }, "HTTPS websites use certificates from this server's own certificate authority. Browsers warn until you trust it: ",
+      s.ca ? el("a", { href: "/api/network/sites/ca.crt", download: "sysadmin-ia-local-ca.crt" }, "download the certificate") : el("span", {}, "it's created when the proxy starts"),
+      " and add it to each device's trusted certificates."));
+  }
+  if (!n.server.ip) box.append(el("p", { class: "small error" }, "This server's LAN address isn't known."));
+  return box;
+}
+
+function netSiteDialog() {
+  const s = state.net.sites || { targets: [] };
+  const n = state.net.names || {};
+  const list = el("datalist", { id: "lan-site-targets" }, ...s.targets.map((t) => el("option", { value: t.target }, t.label)));
+  const f = {
+    host: el("input", { required: true, class: "mono", placeholder: n.router_dns ? "e.g. photos.local or photos.home.lan" : "e.g. photos.local", spellcheck: "false", autocomplete: "off" }),
+    target: el("input", { required: true, class: "mono", list: "lan-site-targets", placeholder: "127.0.0.1:2283", spellcheck: "false", autocomplete: "off" }),
+    https: el("input", { type: "checkbox" }),
+    name: el("input", { type: "checkbox", checked: true }),
+  };
+  const appNote = el("p", { class: "muted small", hidden: true }, "SysAdmin.IA itself: it's served over HTTPS when the app uses HTTPS, so signing in keeps working.");
+  f.target.addEventListener("input", () => {
+    appNote.hidden = f.target.value.trim() !== "app";
+    if (f.target.value.trim() === "app" && s.app_target.startsWith("https")) f.https.checked = true;
+  });
+  netDialog("Add a website", [list,
+    field("Name", f.host, "The address people type, e.g. photos.local."),
+    field("Goes to", f.target, "Pick an app (a container, a device's web page, or “app” for SysAdmin.IA itself) or type an address and port."),
+    appNote,
+    el("label", { class: "check" }, f.https, " HTTPS (with this server's own certificate; browsers warn until it's trusted)"),
+    el("label", { class: "check" }, f.name, ` Also create the name, pointing to this server (${n.server_ip || "?"})`)],
+  async () => {
+    const r = await api("/api/network/sites", { method: "POST", body: JSON.stringify({ hostname: f.host.value, target: f.target.value,
+      https: f.https.checked, make_name: f.name.checked }) });
+    toast(r.note || "Website added.", r.note ? 8000 : 3500);
+    showNetTab("names");
+  }, "Add");
+}
+
+// ------------------------------------------------------------ Ports (this server's firewall)
+const FW_STATE = {
+  open: ["Open", "tag-ok", "Reachable from the network."],
+  limited: ["Some addresses", "tag-warn", "Reachable only from the addresses a rule allows."],
+  closed: ["Closed", "", "The firewall blocks it: other devices can't reach it."],
+  docker: ["Docker", "tag-warn", "Docker publishes this port itself: it's reachable from the network even when closed here."],
+  local: ["This server only", "", "Listens only on this server's own address (localhost); the network can't reach it."],
+};
+
+function fwProtoText(ports) {
+  const set = [...new Set(ports.map((p) => p[2]))];
+  return set.includes("any") || (set.includes("tcp") && set.includes("udp")) ? "TCP/UDP" : set.map((p) => p.toUpperCase()).join("/");
+}
+function fwPortText(ports) {
+  return [...new Set(ports.map(([lo, hi]) => (lo === hi ? `${lo}` : `${lo}–${hi}`)))].join(", ") || "–";
+}
+
+async function netFwCall(path, body, done) {
+  let ok = true;
+  try {
+    await api(`/api/network/firewall/${path}`, { method: "POST", body: JSON.stringify(body) });
+    if (done) toast(done);
+  } catch (ex) { toast(ex.message, 6000); ok = false; }
+  if (state.net.tab === "ports") showNetTab("ports");
+  return ok;
+}
+
+async function netPortsTab(pane) {
+  let st;
+  try { st = await api("/api/network/firewall"); } catch (ex) { pane.innerHTML = ""; pane.append(el("p", { class: "small error" }, ex.message)); return; }
+  state.net.fw = st;
+  pane.innerHTML = "";
+  if (!st.linux) { pane.append(el("p", { class: "muted" }, "The firewall can only be managed when SysAdmin.IA runs on Linux.")); return; }
+  if (st.setup_command) {
+    pane.append(el("div", { class: "net-card" }, el("h3", {}, "One-time setup needed"),
+      el("p", { class: "muted small" }, "Managing the firewall needs a newer version of the app's root helper. On the server, run:"),
+      el("pre", { class: "mono small", "data-no-i18n": "" }, st.setup_command)));
+    return;
+  }
+  if (st.error) { pane.append(el("p", { class: "small error" }, st.error)); return; }
+  if (st.backend === "none") {
+    pane.append(el("div", { class: "net-card" }, el("h3", {}, "No firewall tool installed"),
+      el("p", { class: "muted small" }, "Install ufw (sudo apt install ufw) or nftables on the server, then reload this page.")));
+    return;
+  }
+  pane.append(netFwSummary(st), netFwRules(st), netFwListening(st));
+}
+
+function netFwSummary(st) {
+  const keep = [`SysAdmin.IA (${st.app_ports.join(", ")})`, `SSH (${(st.ssh_ports.length ? st.ssh_ports : [22]).join(", ")})`, "local names (mDNS 5353/udp)"];
+  const box = el("div", { class: "net-card" },
+    el("div", { class: "net-card-head" },
+      el("h3", {}, iconEl("shield"), "Firewall of this server", " ",
+        el("span", { class: `status-pill ${st.active ? "ok" : "warn"}` }, st.active ? "on" : "off")),
+      st.active ? el("button", { type: "button", class: "small ghost danger", onclick: () => {
+        if (!confirm("Turn the firewall off? Every port a program listens on becomes reachable from the network.")) return;
+        netFwCall("enabled", { value: false }, "The firewall is off.");
+      } }, withIcon("stop", "Turn off")) : null),
+    el("p", { class: "muted small" }, `Controls which ports of this server other devices can connect to. Uses ${st.backend_label}${st.zone ? ` (zone ${st.zone})` : ""}.`));
+  if (!st.active) {
+    box.append(el("p", { class: "note warn small" }, "The firewall is off: every port a program listens on can be reached from the network."),
+      el("div", {}, el("button", { type: "button", onclick: () => {
+        if (!confirm(`Turn the firewall on with ports closed by default? These stay open: ${keep.join(", ")}, plus the ports in the table below.`)) return;
+        (async () => {
+          if (!(await netFwCall("enabled", { value: true }))) return;
+          if (!st.default_closed && !(await netFwCall("default", { value: true }))) return;
+          toast("The firewall is on.");
+        })();
+      } }, withIcon("shield", "Turn on (ports closed by default)"))));
+    return box;
+  }
+  if (st.default_closed) {
+    box.append(el("div", { class: "net-card-head" },
+      el("p", { class: "small" }, el("span", { class: "tag tag-ok" }, "Closed by default"), " ", "Only the ports in the table below can be reached."),
+      el("button", { type: "button", class: "small ghost", onclick: () => {
+        if (!confirm("Open all ports by default? Every program listening on the network becomes reachable, unless a rule blocks its port.")) return;
+        netFwCall("default", { value: false }, "All ports are open by default.");
+      } }, "Open all ports by default")));
+  } else {
+    box.append(el("p", { class: "note warn small" }, "All ports are open by default: anything listening on the network can be reached."),
+      el("div", {}, el("button", { type: "button", onclick: () => {
+        if (!confirm(`Close ports by default? These stay open: ${keep.join(", ")}, plus the ports in the table below.`)) return;
+        netFwCall("default", { value: true }, "Ports are now closed by default.");
+      } }, withIcon("shield", "Close ports by default (recommended)"))));
+  }
+  return box;
+}
+
+function netFwRules(st) {
+  const box = el("div", { class: "net-card" }, el("div", { class: "net-card-head" }, el("h3", {}, "Open ports"),
+    el("button", { type: "button", class: "small", onclick: () => netFwOpenDialog() }, withIcon("plus", "Open port"))));
+  if (!st.active) box.append(el("p", { class: "muted small" }, "These rules take effect when the firewall is on."));
+  if (!st.rules.length) { box.append(el("p", { class: "muted small" }, "No ports are open.")); return box; }
+  const rows = st.rules.map((r) => {
+    const users = [...new Set(r.in_use.flatMap((u) => u.used_by))];
+    const status = r.action === "deny" ? el("span", { class: "tag tag-warn" }, "Blocked")
+      : r.in_use.length ? el("span", { class: "tag tag-ok", title: r.in_use.map((u) => `${u.port}/${u.proto}`).join(", ") }, "In use")
+      : el("span", { class: "muted" }, "Not in use");
+    const del = el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Close this port",
+      title: r.protected || (!r.removable ? "Made outside SysAdmin.IA; change it with the firewall's own tools." : "Close this port (delete the rule)"),
+      disabled: !!r.protected || !r.removable, onclick: () => {
+        let msg = r.app ? `Close ${r.app} (${fwPortText(r.ports)})? Programs on it can no longer be reached from the network.`
+          : `Close the port ${fwPortText(r.ports)}? Programs on it can no longer be reached from the network.`;
+        if (r.ssh) msg += "\n\nThis is the SSH port: you could lose SSH access to this server (the Console here keeps working).";
+        if (st.active && !st.default_closed) msg += "\n\nPorts are open by default, so it stays reachable until you close ports by default.";
+        if (!confirm(msg)) return;
+        netFwCall("remove", { id: r.id }, "Port closed.");
+      } }, iconEl("trash"));
+    return el("tr", {},
+      el("td", {}, r.app ? el("span", {}, el("strong", { "data-no-i18n": "" }, r.app), " ", el("span", { class: "muted mono small" }, fwPortText(r.ports))) : el("span", { class: "mono" }, fwPortText(r.ports)),
+        r.limit ? el("span", { class: "tag", title: "Repeated connection attempts from one address are refused for a while (ufw limit)." }, "rate-limited") : null,
+        r.source !== "Anywhere" ? el("div", { class: "muted small" }, "only from ", el("span", { class: "mono" }, r.source)) : null,
+        r.note ? el("div", { class: "muted small fw-note", "data-no-i18n": "" }, r.note) : null),
+      el("td", {}, fwProtoText(r.ports)),
+      el("td", {}, status),
+      el("td", { class: "small" }, users.length ? users.join(", ") : "–"),
+      el("td", { class: "right" }, del));
+  });
+  box.append(el("div", { class: "table-wrap" }, el("table", { class: "table fw-table" },
+    el("thead", {}, el("tr", {}, ...["Port", "Protocol", "Status", "Used by", ""].map((h) => el("th", {}, h)))),
+    el("tbody", {}, ...rows))));
+  return box;
+}
+
+function netFwListening(st) {
+  const reach = st.listening.filter((e) => e.state !== "local");
+  const local = st.listening.filter((e) => e.state === "local");
+  const box = el("div", { class: "net-card" }, el("h3", {}, "Ports in use on this server"),
+    el("p", { class: "muted small" }, "Programs waiting for connections, and whether other devices can reach them."));
+  if (!reach.length) box.append(el("p", { class: "muted small" }, "No program listens on the network."));
+  else {
+    box.append(el("div", { class: "table-wrap" }, el("table", { class: "table fw-table" },
+      el("thead", {}, el("tr", {}, ...["Port", "Protocol", "Used by", "Reachable", ""].map((h) => el("th", {}, h)))),
+      el("tbody", {}, ...reach.map((e) => {
+        const [label, cls, why] = FW_STATE[e.state] || FW_STATE.open;
+        return el("tr", {},
+          el("td", { class: "mono" }, String(e.port)),
+          el("td", {}, e.proto.toUpperCase()),
+          el("td", { class: "small" }, e.used_by.length ? e.used_by.join(", ") : "–",
+            e.addresses.some((a) => !["*", "0.0.0.0", "::"].includes(a)) ? el("span", { class: "muted mono small" }, ` (${e.addresses.join(", ")})`) : null),
+          el("td", {}, el("span", { class: `tag ${cls}`, title: why }, label)),
+          el("td", { class: "right" }, e.state === "closed" || e.state === "limited"
+            ? el("button", { type: "button", class: "small ghost", onclick: () => netFwOpenDialog(e) }, "Open port") : null));
+      })))));
+  }
+  if (local.length) {
+    box.append(el("details", { class: "small" }, el("summary", { class: "muted" }, `Not reachable from other devices (${local.length})`),
+      el("p", { class: "muted small" }, "Programs listening only on this server's own address, and DHCP clients (they only receive replies to this server's requests)."),
+      el("p", { class: "muted small" }, local.map((e) => `${e.port}/${e.proto} ${e.used_by.length ? `(${e.used_by.join(", ")})` : ""}`.trim()).join(" · "))));
+  }
+  return box;
+}
+
+function netFwOpenDialog(e = null) {
+  const st = state.net.fw || { listening: [] };
+  const closed = st.listening.filter((x) => x.state === "closed" || x.state === "limited");
+  const list = el("datalist", { id: "fw-closed-ports" }, ...closed.map((x) => el("option", { value: String(x.port) }, x.used_by.join(", ") || x.proto)));
+  const f = {
+    port: el("input", { required: true, class: "mono", list: "fw-closed-ports", placeholder: "e.g. 8080 or 8000-8010", value: e ? String(e.port) : "",
+      autocomplete: "off", spellcheck: "false" }),
+    proto: el("select", {}, el("option", { value: "tcp" }, "TCP"), el("option", { value: "udp" }, "UDP"), el("option", { value: "both" }, "TCP and UDP")),
+    note: el("input", { maxlength: "80", placeholder: "e.g. Minecraft server", value: e && e.used_by.length ? e.used_by.join(", ") : "" }),
+  };
+  if (e) f.proto.value = e.proto;
+  f.port.addEventListener("change", () => {
+    const hit = closed.find((x) => String(x.port) === f.port.value.trim());
+    if (hit) { f.proto.value = hit.proto; if (!f.note.value) f.note.value = hit.used_by.join(", "); }
+  });
+  netDialog("Open a port", [list, field("Port", f.port, "A single port or a range."), field("Protocol", f.proto), field("Note", f.note, "(optional)"),
+    el("p", { class: "note warn small" }, "Every device that can reach this server can then connect to that port (and the internet too, if the router forwards it).")],
+  async () => {
+    await api("/api/network/firewall/open", { method: "POST", body: JSON.stringify({ port: f.port.value, proto: f.proto.value, note: f.note.value }) });
+    toast("Port opened.");
+    showNetTab("ports");
+  }, "Open port");
 }
 
 // ------------------------------------------------------------ shared dialog

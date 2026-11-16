@@ -810,6 +810,11 @@ button.tag-btn.tag-link { color: var(--accent); background: transparent; border-
 button.tag-btn .i { width: 12px; height: 12px; }
 button.tag-btn:disabled { opacity: .5; cursor: not-allowed; }
 .net-row.blocked .net-main > div:first-child strong { text-decoration: line-through; }
+.tag-ok { background: color-mix(in srgb, var(--ok) 18%, var(--surface)); color: var(--ok); font-weight: 600; }
+.fw-table td.right { text-align: right; white-space: nowrap; }
+.fw-table .fw-note { white-space: normal; max-width: 220px; }
+.fw-table button.icon-only { padding: 3px 6px; }
+.fw-table button.icon-only .i { width: 15px; height: 15px; }
 .console-tab-close { margin-left: 6px; padding: 0 4px; border-radius: 4px; opacity: .65; }
 .console-tab-close:hover { opacity: 1; background: color-mix(in srgb, var(--crit) 20%, transparent); }
 .net-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }

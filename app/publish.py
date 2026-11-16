@@ -265,19 +265,74 @@ def _remove_service_dns(s: dict, cf: dict) -> None:
 
 # ---------------------------------------------------------------- Caddy (port forwarding)
 
-def caddyfile(services: list[dict], email: str) -> str:
-    out = ["# Written by SysAdmin.IA (Network → Publish). Changes here are overwritten.", "{"]
+def _proxy_lines(tgt: str) -> list[str]:
+    if tgt.startswith("https://"):
+        return [f"\treverse_proxy {tgt} {{", "\t\ttransport http {", "\t\t\ttls_insecure_skip_verify", "\t\t}", "\t}"]
+    return [f"\treverse_proxy {tgt.removeprefix('http://')}"]
+
+
+def caddyfile(services: list[dict], email: str, local_sites: list[dict] | None = None) -> str:
+    """Public sites (Let's Encrypt) and local sites (Network → Names: plain HTTP, or HTTPS from Caddy's own
+    local CA) share ports 80/443; Caddy tells them apart by the name in each request."""
+    out = ["# Written by SysAdmin.IA (Network → Publish and Network → Names). Changes here are overwritten.", "{"]
     if email:
         out.append(f"\temail {email}")
     out += ["}", ""]
     for s in services:
-        tgt = s["target"]
-        if tgt.startswith("https://"):
-            out += [f"{s['hostname']} {{", f"\treverse_proxy {tgt} {{", "\t\ttransport http {", "\t\t\ttls_insecure_skip_verify",
-                    "\t\t}", "\t}", "}", ""]
+        out += [f"{s['hostname']} {{", *_proxy_lines(s["target"]), "}", ""]
+    for s in local_sites or []:
+        if s.get("https"):
+            out += [f"https://{s['hostname']} {{", "\ttls internal", *_proxy_lines(s["target"]), "}", ""]
         else:
-            out += [f"{s['hostname']} {{", f"\treverse_proxy {tgt.removeprefix('http://')}", "}", ""]
+            out += [f"http://{s['hostname']} {{", *_proxy_lines(s["target"]), "}", ""]
     return "\n".join(out)
+
+
+def _local_sites() -> list[dict]:
+    from . import lan_names
+    return lan_names.list_sites()
+
+
+def proxy_wanted() -> bool:
+    return bool((get_config()["caddy"] or {}).get("enabled")) or bool(_local_sites())
+
+
+def ports_free(ports: tuple[int, ...]) -> None:
+    """Raise if another program (not our proxy) listens on these ports of this server."""
+    if _container(CADDY_CONTAINER) and (_container(CADDY_CONTAINER) or {}).get("state") == "running":
+        return
+    used = containers.used_host_ports(CADDY_CONTAINER) if _docker_ok() else {}
+    for p in ports:
+        if p in used:
+            raise PublishError(f"Port {p} on this server is already used by {used[p]}. The proxy needs it.")
+        if _listening(p):
+            raise PublishError(f"Port {p} on this server is already used by another program. The proxy needs it "
+                               "(see Network → Ports for what's using it).")
+
+
+def _listening(port: int) -> bool:
+    try:
+        import psutil
+        return any(c.status == "LISTEN" and c.laddr and c.laddr.port == port for c in psutil.net_connections(kind="tcp"))
+    except Exception:  # noqa: BLE001 - not allowed / not Linux: don't block on it
+        return False
+
+
+def _ensure_proxy() -> None:
+    d = _dir() / "caddy"
+    _ensure_container({"name": CADDY_CONTAINER, "image": CADDY_IMAGE, "network": "host", "restart": "unless-stopped",
+                       "mounts": [{"type": "bind", "source": str(d / "Caddyfile"), "target": "/etc/caddy/Caddyfile", "readonly": True},
+                                  {"type": "bind", "source": str(d / "data"), "target": "/data"},
+                                  {"type": "bind", "source": str(d / "config"), "target": "/config"}]}, recreate=True)
+
+
+def local_ca_cert() -> bytes | None:
+    """Caddy's local certificate authority (signs the HTTPS certificates of local sites)."""
+    p = _dir() / "caddy" / "data" / "caddy" / "pki" / "authorities" / "local" / "root.crt"
+    try:
+        return p.read_bytes()
+    except OSError:
+        return None
 
 
 def caddy_setup(email: str, forward_ports: bool = True) -> dict:
@@ -285,19 +340,12 @@ def caddy_setup(email: str, forward_ports: bool = True) -> dict:
     if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise PublishError("That doesn't look like an email address.")
     with _lock:
-        used = containers.used_host_ports(CADDY_CONTAINER) if _docker_ok() else {}
-        for p in (80, 443):
-            if p in used:
-                raise PublishError(f"Port {p} on this server is already used by {used[p]}. Caddy needs ports 80 and 443.")
+        ports_free((80, 443))
         c = get_config()
         c["caddy"] = {"email": email, "enabled": True, "forwarded": False}
         _save_config(c)
         _write_caddy(restart=False)
-        d = _dir() / "caddy"
-        _ensure_container({"name": CADDY_CONTAINER, "image": CADDY_IMAGE, "network": "host", "restart": "unless-stopped",
-                           "mounts": [{"type": "bind", "source": str(d / "Caddyfile"), "target": "/etc/caddy/Caddyfile", "readonly": True},
-                                      {"type": "bind", "source": str(d / "data"), "target": "/data"},
-                                      {"type": "bind", "source": str(d / "config"), "target": "/config"}]}, recreate=True)
+        _ensure_proxy()
         note = ""
         if forward_ports:
             ip = lan_ip()
@@ -323,21 +371,32 @@ def _docker_ok() -> bool:
 
 
 def _write_caddy(restart: bool = True) -> None:
+    """Write the Caddyfile; with restart, also start/restart/remove the proxy container to match."""
     d = _dir() / "caddy"
     for sub in ("data", "config"):
         (d / sub).mkdir(parents=True, exist_ok=True)
-    (d / "Caddyfile").write_text(caddyfile(list_services("caddy"), get_config()["caddy"].get("email", "")), encoding="utf-8")
+    cfg = get_config()["caddy"] or {}
+    public = list_services("caddy") if cfg.get("enabled") else []
+    (d / "Caddyfile").write_text(caddyfile(public, cfg.get("email", ""), _local_sites()), encoding="utf-8")
     if restart:
         c = _container(CADDY_CONTAINER)
-        if c:
-            containers.container_action(c["id"], "restart")
+        if not proxy_wanted():
+            if c:
+                containers.remove_container(c["id"])
+        elif c:
+            containers.container_action(c["id"], "restart" if c["state"] == "running" else "start")
+        else:
+            _ensure_proxy()
 
 
 def caddy_remove() -> None:
     with _lock:
         for s in list_services("caddy"):
             db.execute("DELETE FROM published_services WHERE id=?", (s["id"],))
-        _remove_container(CADDY_CONTAINER)
+        c0 = get_config()
+        c0["caddy"] = {**(c0.get("caddy") or {}), "enabled": False}
+        _save_config(c0)
+        _write_caddy()     # keeps the proxy for local sites (Network → Names), removes it otherwise
         c = get_config()
         if (c.get("caddy") or {}).get("forwarded"):
             try:
