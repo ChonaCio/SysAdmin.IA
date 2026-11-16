@@ -52,6 +52,16 @@ CREATE TABLE IF NOT EXISTS ai_connections (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_usage (                -- tokens used per AI connection per day
+    connection_id INTEGER NOT NULL,
+    day TEXT NOT NULL,                            -- YYYY-MM-DD (server local time)
+    requests INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (connection_id, day)
+);
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,

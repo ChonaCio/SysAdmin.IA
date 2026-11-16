@@ -220,12 +220,23 @@ class ChatRunner:
         db.audit("chat", self.user.username, self.ip,
                  {"conversation": conv_id, "connection": conn["name"], "text": user_text})
 
+        turn_usage = {"input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "requests": 0}
         try:
             while not self.stop_event.is_set():
+                blocked = ai.limit_reached(conn)
+                if blocked:
+                    await self.send({"type": "error", "message": blocked})
+                    break
                 await self.send({"type": "assistant_start"})
                 result = await provider.turn(messages, SYSTEM_PROMPT, self.send, self.stop_event.is_set)
                 if result is None:  # stopped mid-stream
                     break
+                ai.set_rate(conn["id"], result.rate)
+                if result.usage:
+                    ai.record_usage(conn["id"], result.usage)
+                    for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"):
+                        turn_usage[k] += result.usage.get(k) or 0
+                    turn_usage["requests"] += 1
 
                 content = _sanitize_fallback(result.content)
                 messages.append({"role": "assistant", "content": content})
@@ -257,6 +268,10 @@ class ChatRunner:
             if _pending_tool_ids(messages):
                 messages.append({"role": "user", "content": _close_dangling(messages, "Stopped by user before execution.")})
             db.save_messages(conv_id, messages)
+            if turn_usage["requests"]:
+                limit = conn["config"].get("monthly_token_limit")
+                await self.send({"type": "usage", "conversation_id": conv_id, "connection": conn["name"], **turn_usage,
+                                 "month_tokens": ai.month_tokens(conn["id"]), "monthly_limit": limit})
             await self.send({"type": "done", "conversation_id": conv_id})
 
     async def _run_tools(self, conv_id: int, content: list[dict]) -> list[dict]:

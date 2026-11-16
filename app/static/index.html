@@ -395,6 +395,14 @@
         <select name="effort"></select>
         <span class="muted small">Higher effort is more thorough, but slower and more expensive.</span>
       </label>
+      <fieldset class="methods">
+        <legend>Usage limit <span class="muted small">(optional)</span></legend>
+        <label>Monthly token limit
+          <input name="monthly_token_limit" inputmode="numeric" placeholder="e.g. 5000000 — leave empty for no limit" autocomplete="off">
+          <span class="muted small">Shows how much of it this month's usage has used. Counts input, output and cached tokens.</span>
+        </label>
+        <label class="check"><input type="checkbox" name="block_at_limit"> Stop using this connection when the limit is reached</label>
+      </fieldset>
       <label class="check"><input type="checkbox" name="enabled" checked> Enabled (can be used in chats)</label>
       <label class="check"><input type="checkbox" name="is_default"> Use by default for new chats</label>
       <p class="small" id="ai-msg" hidden></p>

@@ -91,6 +91,8 @@ The **AI connections** module (left sidebar → Settings) manages which AI servi
 | **Ollama** | Local models, no sign-in |
 | **Other (OpenAI-compatible)** | Base URL + optional key (vLLM, LM Studio, Together, Fireworks, LiteLLM, …) |
 
+**Usage.** Each connection card shows the tokens used today, this month and in total (input, output and cached), and the rate limits the service reported with its last reply (for example "1.64M of 2.00M input tokens left · resets 5:00 PM"). Optionally set a **monthly token limit** per connection: the card then shows the percentage used and how much is left, and **Stop using this connection when the limit is reached** blocks new requests once it's used up. After each reply, the chat shows how many tokens it used. Some services (for example Ollama) don't report rate limits. Account balances and subscription quotas aren't available through these APIs, so they aren't shown.
+
 **Load models** asks the service which models your key can use, and **Test connection** checks the settings before you save. The assistant needs a model that supports tool (function) calling, which all the suggested models do. Claude gets the most capable tools: Anthropic's built-in shell and editor tools, adaptive thinking, and the effort setting. Other models get the same three tools as plain functions. A chat can change provider partway through.
 
 **Signing in to Claude with Google.** Choose **Anthropic Claude → Google account (Sign in with Google)**. Claude then runs on **Google Cloud Vertex AI** under your Google account, and usage is billed by Google Cloud. (Claude.ai and Claude Code *subscription* logins can't be used by other applications under Anthropic's terms, so the Google sign-in works through Vertex AI instead.)

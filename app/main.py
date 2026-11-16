@@ -406,6 +406,13 @@ async def ai_google_finish(body: GoogleFinishBody, request: Request, user: User 
     return r   # {"grant": "grant:…", "email": …}; the refresh token itself stays on the server
 
 
+@app.get("/api/ai/usage")
+async def ai_usage(user: User = Depends(admin_user)):
+    """Token usage per connection (today / this month / total, last 30 days), monthly limit
+    and the latest rate limits the service reported."""
+    return {str(c["id"]): ai.usage_summary(c) for c in ai.list_all()}
+
+
 @app.get("/api/chat/connections")
 async def chat_connections(user: User = Depends(admin_user)):
     """Enabled connections for the chat's picker."""

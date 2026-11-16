@@ -42,6 +42,36 @@ class TurnResult:
     content: list[dict]
     stop: str                 # end_turn | tool_use | max_tokens | refusal | pause_turn
     note: str | None = None   # e.g. a refusal explanation
+    usage: dict | None = None  # input_tokens, output_tokens, cache_read_tokens, cache_write_tokens
+    rate: dict | None = None   # rate-limit snapshot from the response headers
+
+
+def _int(v) -> int | None:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return None
+
+
+def rate_from_headers(headers) -> dict | None:
+    """Rate limits the service reported (Anthropic `anthropic-ratelimit-*`, OpenAI-style `x-ratelimit-*`)."""
+    if not headers:
+        return None
+    get = lambda k: headers.get(k)  # noqa: E731
+    out: dict[str, Any] = {}
+    if get("anthropic-ratelimit-requests-limit") or get("anthropic-ratelimit-tokens-limit") \
+            or get("anthropic-ratelimit-input-tokens-limit"):
+        for kind in ("requests", "tokens", "input-tokens", "output-tokens"):
+            key = kind.replace("-", "_")
+            lim, rem = _int(get(f"anthropic-ratelimit-{kind}-limit")), _int(get(f"anthropic-ratelimit-{kind}-remaining"))
+            if lim is not None:
+                out[key] = {"limit": lim, "remaining": rem, "reset": get(f"anthropic-ratelimit-{kind}-reset")}
+    else:
+        for kind in ("requests", "tokens"):
+            lim, rem = _int(get(f"x-ratelimit-limit-{kind}")), _int(get(f"x-ratelimit-remaining-{kind}"))
+            if lim is not None:
+                out[kind] = {"limit": lim, "remaining": rem, "reset": get(f"x-ratelimit-reset-{kind}")}
+    return out or None
 
 
 # ---------------------------------------------------------------- tools
@@ -255,6 +285,7 @@ class AnthropicProvider:
                         elif d.type == "thinking_delta" and d.thinking:
                             await send({"type": "thinking_delta", "text": d.thinking})
                 response = await stream.get_final_message()
+                headers = getattr(getattr(stream, "response", None), "headers", None)
         except anthropic.AuthenticationError:
             raise ProviderError(f"“{self.conn['name']}” was rejected: the API key or credentials are invalid. Check it in AI connections.")
         except anthropic.PermissionDeniedError as e:
@@ -280,7 +311,14 @@ class AnthropicProvider:
         if stop == "refusal":
             details = getattr(response, "stop_details", None)
             note = getattr(details, "explanation", None) if details else None
-        return TurnResult(content, stop, note)
+        u = getattr(response, "usage", None)
+        usage = {
+            "input_tokens": _int(getattr(u, "input_tokens", 0)) or 0,
+            "output_tokens": _int(getattr(u, "output_tokens", 0)) or 0,
+            "cache_read_tokens": _int(getattr(u, "cache_read_input_tokens", 0)) or 0,
+            "cache_write_tokens": _int(getattr(u, "cache_creation_input_tokens", 0)) or 0,
+        } if u is not None else None
+        return TurnResult(content, stop, note, usage, rate_from_headers(headers))
 
     async def test(self) -> str:
         client = self.client()
@@ -417,14 +455,22 @@ class OpenAICompatProvider:
         reasoning: list[str] = []
         calls: dict[int, dict] = {}
         finish = None
+        usage = None
+        headers = None
         try:
-            stream = await client.chat.completions.create(
-                model=self.model, messages=to_openai(messages, system, idmap),
-                tools=FUNCTION_TOOLS, stream=True)
+            stream, headers = await self._open_stream(client, model=self.model, tools=FUNCTION_TOOLS, stream=True,
+                                                      messages=to_openai(messages, system, idmap))
             async for chunk in stream:
                 if stopped():
                     await stream.close()
                     return None
+                u = getattr(chunk, "usage", None)
+                if u is not None:  # sent at the end of the stream when include_usage is supported
+                    prompt = _int(getattr(u, "prompt_tokens", 0)) or 0
+                    details = getattr(u, "prompt_tokens_details", None)
+                    cached = _int(getattr(details, "cached_tokens", 0)) or 0 if details is not None else 0
+                    usage = {"input_tokens": max(0, prompt - cached), "cache_read_tokens": cached,
+                             "output_tokens": _int(getattr(u, "completion_tokens", 0)) or 0, "cache_write_tokens": 0}
                 if not chunk.choices:
                     continue
                 ch = chunk.choices[0]
@@ -483,7 +529,34 @@ class OpenAICompatProvider:
             stop = "end_turn"
         if not content:
             content = [{"type": "text", "text": "(The model returned an empty reply.)"}]
-        return TurnResult(content, stop)
+        return TurnResult(content, stop, usage=usage, rate=rate_from_headers(headers))
+
+    # Services that rejected stream_options (so usage isn't requested from them again).
+    _no_stream_usage: set[str] = set()
+
+    async def _open_stream(self, client, **kwargs):
+        """Start a streamed completion; returns (stream, response headers).
+
+        Asks for token usage in the stream (stream_options.include_usage) and falls back
+        without it for services that don't accept the option."""
+        import inspect
+
+        import openai
+        key = f"{self.conn['provider']}|{self.cfg.get('base_url') or self.p.get('base_url') or self.cfg.get('endpoint')}"
+        if key not in self._no_stream_usage:
+            kwargs["stream_options"] = {"include_usage": True}
+        try:
+            raw = await client.chat.completions.with_raw_response.create(**kwargs)
+        except openai.BadRequestError as e:
+            if "stream_options" not in kwargs or "stream" not in str(e).lower():
+                raise
+            self._no_stream_usage.add(key)
+            kwargs.pop("stream_options")
+            raw = await client.chat.completions.with_raw_response.create(**kwargs)
+        stream = raw.parse()
+        if inspect.isawaitable(stream):
+            stream = await stream
+        return stream, getattr(raw, "headers", None)
 
     async def test(self) -> str:
         client = self.client()

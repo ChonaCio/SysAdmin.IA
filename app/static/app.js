@@ -507,8 +507,12 @@ function handleEvent(ev) {
     case "auto_approve":
       $("#auto-approve").checked = ev.value;
       break;
+    case "usage":   // tokens this reply used (sent just before "done")
+      state.lastUsage = turnUsageText(ev);
+      break;
     case "done":
       setBusy(false);
+      if (state.lastUsage) { setStatus(state.lastUsage); state.lastUsage = null; }
       state.currentAssistant = null;
       loadConversations();
       break;
@@ -631,6 +635,21 @@ function setToolResult(id, output, isError) {
 }
 
 function setStatus(s) { $("#status").textContent = s; }
+
+// 1234 → "1.2k", 5_300_000 → "5.3M"
+function fmtTok(n) {
+  n = Number(n) || 0;
+  if (n < 1000) return String(n);
+  if (n < 1e6) return `${(n / 1e3).toFixed(n < 1e4 ? 1 : 0)}k`;
+  if (n < 1e9) return `${(n / 1e6).toFixed(n < 1e7 ? 2 : 1)}M`;
+  return `${(n / 1e9).toFixed(2)}B`;
+}
+function turnUsageText(u) {
+  const input = u.input_tokens + u.cache_read_tokens + u.cache_write_tokens;
+  let s = `${u.connection}: ${fmtTok(input + u.output_tokens)} tokens (${fmtTok(input)} in · ${fmtTok(u.output_tokens)} out)`;
+  if (u.monthly_limit) s += ` · ${Math.round(100 * u.month_tokens / u.monthly_limit)}% of monthly limit`;
+  return s;
+}
 function setBusy(b) {
   state.busy = b;
   $("#send").hidden = b;
@@ -849,10 +868,56 @@ async function loadAiCatalog() {
   return state.aiCatalog;
 }
 
+// Usage panel of a connection card.
+function rateReset(v) {
+  if (!v) return "";
+  const d = new Date(v);
+  if (!isNaN(d) && /\d{4}-\d{2}-\d{2}/.test(v)) return ` · resets ${d.toLocaleTimeString()}`;
+  return ` · resets in ${v}`;   // OpenAI-style durations, e.g. "6m0s"
+}
+function usageBlock(c, u) {
+  const box = el("div", { class: "ai-usage" });
+  if (!u) return box;
+  const stat = (label, value, sub) => el("div", { class: "u-stat" },
+    el("div", { class: "label" }, label), el("div", { class: "u-value" }, value), el("div", { class: "muted small" }, sub));
+  const tokIn = (t) => t.input_tokens + t.cache_read_tokens + t.cache_write_tokens;
+  box.append(el("div", { class: "u-stats" },
+    stat("Today", fmtTok(u.today.tokens), `${u.today.requests} request${u.today.requests === 1 ? "" : "s"}`),
+    stat("This month", fmtTok(u.month.tokens), `${fmtTok(tokIn(u.month))} in · ${fmtTok(u.month.output_tokens)} out`),
+    stat("All time", fmtTok(u.total.tokens), `${u.total.requests} requests`)));
+  if (u.limit) {
+    const pct = Math.min(100, u.used_pct);
+    box.append(el("div", { class: "u-meter" },
+      el("div", { class: "small" }, el("strong", {}, `${u.used_pct}%`), ` of the ${fmtTok(u.limit)}-token monthly limit · ${fmtTok(u.remaining)} left`,
+         u.block_at_limit ? el("span", { class: "muted" }, " · stops at the limit") : null),
+      usageBar(pct)));
+  }
+  const r = u.rate;
+  if (r) {
+    const rows = [["tokens", "tokens"], ["input_tokens", "input tokens"], ["output_tokens", "output tokens"], ["requests", "requests"]]
+      .filter(([k]) => r[k] && r[k].limit);
+    if (rows.length) {
+      const age = Math.round((Date.now() / 1000 - r.at) / 60);
+      const meter = el("div", { class: "u-meter" }, el("div", { class: "small muted" },
+        `Rate limits reported by the service ${age < 1 ? "just now" : `${age} min ago`}`));
+      for (const [k, label] of rows) {
+        const x = r[k], rem = x.remaining ?? x.limit;
+        meter.append(el("div", { class: "u-rate" },
+          el("span", { class: "small" }, `${fmtTok(rem)} of ${fmtTok(x.limit)} ${label} left${rateReset(x.reset)}`),
+          usageBar(100 - (100 * rem / x.limit))));
+      }
+      box.append(meter);
+    }
+  } else if (c.provider !== "ollama") {
+    box.append(el("div", { class: "small muted" }, "Rate limits appear here after the next reply."));
+  }
+  return box;
+}
+
 async function loadAi() {
   const list = $("#ai-list");
-  let conns;
-  try { [conns] = await Promise.all([api("/api/ai/connections"), loadAiCatalog()]); }
+  let conns, usage = {};
+  try { [conns, , usage] = await Promise.all([api("/api/ai/connections"), loadAiCatalog(), api("/api/ai/usage").catch(() => ({}))]); }
   catch (ex) { list.textContent = ex.message; return; }
   state.aiConnections = conns;
   list.innerHTML = "";
@@ -900,6 +965,7 @@ async function loadAi() {
           el("div", { class: "small" }, el("span", { class: "muted" }, "Model "), el("span", { class: "mono" }, c.model),
              el("span", { class: "muted" }, ` · ${cred}`))),
         actions),
+      usageBlock(c, usage[String(c.id)]),
       result));
   }
   state.me.ai_ready = conns.some((c) => c.enabled);
@@ -922,6 +988,8 @@ async function openAiEditor(conn = null) {
   f.effort.innerHTML = cat.effort_levels.map((e) => `<option value="${e}">${e}</option>`).join("");
   f.name.value = conn ? conn.name : "";
   f.enabled.checked = conn ? conn.enabled : true;
+  f.monthly_token_limit.value = conn && conn.config.monthly_token_limit ? conn.config.monthly_token_limit : "";
+  f.block_at_limit.checked = !!(conn && conn.config.block_at_limit);
   f.is_default.checked = conn ? conn.is_default : !(state.aiConnections || []).length;
   state.aiMethod = conn ? conn.method : null;
   renderAiProvider(conn);
@@ -1056,7 +1124,9 @@ function googleSignInField(fd, conn) {
 function aiFormBody() {
   const f = $("#ai-form");
   const body = { name: f.name.value.trim(), provider: $("#ai-provider").value, method: state.aiMethod,
-                 config: { model: f.model.value.trim(), effort: f.effort.value }, secrets: {}, clear_secrets: [],
+                 config: { model: f.model.value.trim(), effort: f.effort.value,
+                           monthly_token_limit: f.monthly_token_limit.value.replace(/[\s,._]/g, "") || null,
+                           block_at_limit: f.block_at_limit.checked }, secrets: {}, clear_secrets: [],
                  enabled: f.enabled.checked, is_default: f.is_default.checked };
   $$("#ai-fields [data-key]").forEach((i) => {
     if (i.dataset.secret) { if (i.value.trim()) body.secrets[i.dataset.key] = i.value.trim(); }

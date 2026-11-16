@@ -372,6 +372,20 @@ def _clean(data: dict, existing: dict | None = None, consume: bool = True) -> tu
         if effort not in EFFORT_LEVELS:
             raise ConnectionError_("Invalid effort level.")
         config["effort"] = effort
+    # Optional monthly token limit (any provider): shown as % used / remaining, optionally enforced.
+    raw_limit = incoming.get("monthly_token_limit", old_cfg.get("monthly_token_limit"))
+    if raw_limit in (None, "", 0, "0"):
+        config["monthly_token_limit"] = None
+    else:
+        try:
+            limit = int(str(raw_limit).replace(",", "").replace("_", "").strip())
+        except ValueError:
+            raise ConnectionError_("The monthly token limit must be a whole number.")
+        if limit < 1000 or limit > 10**13:
+            raise ConnectionError_("The monthly token limit must be at least 1,000 tokens.")
+        config["monthly_token_limit"] = limit
+    config["block_at_limit"] = bool(incoming.get("block_at_limit", old_cfg.get("block_at_limit", False))) \
+        and bool(config["monthly_token_limit"])
     fields = {"name": name, "provider": provider, "method": method,
               "enabled": bool(data.get("enabled", (existing or {}).get("enabled", True)))}
     return fields, config, secrets
@@ -415,6 +429,8 @@ def draft(data: dict, conn_id: int | None = None) -> dict:
 def delete(conn_id: int) -> None:
     was_default = db.query_one("SELECT is_default FROM ai_connections WHERE id=?", (conn_id,))
     db.execute("UPDATE conversations SET connection_id=NULL WHERE connection_id=?", (conn_id,))
+    db.execute("DELETE FROM ai_usage WHERE connection_id=?", (conn_id,))
+    _rates.pop(conn_id, None)
     db.execute("DELETE FROM ai_connections WHERE id=?", (conn_id,))
     if was_default and was_default["is_default"]:
         nxt = db.query_one("SELECT id FROM ai_connections WHERE enabled=1 ORDER BY id LIMIT 1")
@@ -437,6 +453,78 @@ def secret(conn: dict, key: str) -> str | None:
         env_key = PROVIDERS.get(conn["provider"], {}).get("env_key")
         if env_key:
             return (os.environ.get(env_key) or "").strip() or None
+    return None
+
+
+# ---------------------------------------------------------------- usage
+
+_rates: dict[int, dict] = {}   # latest rate-limit snapshot per connection (from response headers)
+
+
+def record_usage(conn_id: int, usage: dict) -> None:
+    """Add one API request's token counts to today's totals for this connection."""
+    if not conn_id or not usage:
+        return
+    day = time.strftime("%Y-%m-%d")
+    vals = tuple(int(usage.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
+    db.execute(
+        "INSERT INTO ai_usage (connection_id, day, requests, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens) "
+        "VALUES (?,?,1,?,?,?,?) ON CONFLICT(connection_id, day) DO UPDATE SET requests=requests+1, "
+        "input_tokens=input_tokens+excluded.input_tokens, output_tokens=output_tokens+excluded.output_tokens, "
+        "cache_read_tokens=cache_read_tokens+excluded.cache_read_tokens, "
+        "cache_write_tokens=cache_write_tokens+excluded.cache_write_tokens",
+        (conn_id, day, *vals))
+
+
+def set_rate(conn_id: int, rate: dict | None) -> None:
+    if conn_id and rate:
+        _rates[conn_id] = {**rate, "at": time.time()}
+
+
+def _totals(conn_id: int, where: str = "", params: tuple = ()) -> dict:
+    r = db.query_one(
+        "SELECT COALESCE(SUM(requests),0) AS requests, COALESCE(SUM(input_tokens),0) AS input_tokens, "
+        "COALESCE(SUM(output_tokens),0) AS output_tokens, COALESCE(SUM(cache_read_tokens),0) AS cache_read_tokens, "
+        f"COALESCE(SUM(cache_write_tokens),0) AS cache_write_tokens FROM ai_usage WHERE connection_id=? {where}",
+        (conn_id, *params))
+    d = dict(r)
+    d["tokens"] = d["input_tokens"] + d["output_tokens"] + d["cache_read_tokens"] + d["cache_write_tokens"]
+    return d
+
+
+def month_tokens(conn_id: int) -> int:
+    return _totals(conn_id, "AND day >= ?", (time.strftime("%Y-%m-01"),))["tokens"]
+
+
+def usage_summary(conn: dict) -> dict:
+    cid = conn["id"]
+    month = _totals(cid, "AND day >= ?", (time.strftime("%Y-%m-01"),))
+    limit = conn["config"].get("monthly_token_limit")
+    out = {
+        "today": _totals(cid, "AND day = ?", (time.strftime("%Y-%m-%d"),)),
+        "month": month,
+        "total": _totals(cid),
+        "limit": limit,
+        "block_at_limit": bool(conn["config"].get("block_at_limit")),
+        "used_pct": round(100 * month["tokens"] / limit, 1) if limit else None,
+        "remaining": max(0, limit - month["tokens"]) if limit else None,
+        "rate": _rates.get(cid),
+    }
+    days = db.query("SELECT day, input_tokens+output_tokens+cache_read_tokens+cache_write_tokens AS tokens, requests "
+                    "FROM ai_usage WHERE connection_id=? AND day >= date('now','localtime','-29 day') ORDER BY day", (cid,))
+    out["daily"] = [dict(d) for d in days]
+    return out
+
+
+def limit_reached(conn: dict) -> str | None:
+    """A message if this connection's monthly limit is reached and should be enforced."""
+    limit = conn["config"].get("monthly_token_limit")
+    if not (limit and conn["config"].get("block_at_limit")):
+        return None
+    used = month_tokens(conn["id"])
+    if used >= limit:
+        return (f"“{conn['name']}” has used its monthly limit ({used:,} of {limit:,} tokens). "
+                "Raise the limit in AI connections, or pick another connection for this chat.")
     return None
 
 
