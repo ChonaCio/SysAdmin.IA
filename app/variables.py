@@ -2,8 +2,9 @@
 
 In any job text field, write {{var.NAME}} to insert a variable. Built-in values are also
 available: {{sys.hostname}}, {{sys.date}}, {{sys.time}}, {{sys.datetime}}, {{sys.ip}},
-{{sys.os}}, {{sys.version}}, {{sys.url}}, plus whatever the job's trigger and earlier actions
-provide ({{trigger.summary}}, {{trigger.value}}, …).
+{{sys.os}}, {{sys.version}}, {{sys.url}}; live monitor values such as {{mon.cpu_percent}},
+{{mon.temp_avg}}, {{mon.temp.<sensor>}}, {{mon.disk.root.percent}} (see monitor_values()); plus
+whatever the job's trigger and earlier actions provide ({{trigger.summary}}, {{trigger.value}}, …).
 
 Secret variables (passwords, tokens) can be used the same way but are never shown again in
 the UI, and their values are masked in job logs.
@@ -109,15 +110,121 @@ def system_values() -> dict:
     }
 
 
+# ---------------------------------------------------------------- monitor values ({{mon.*}})
+
+_mon_cache: tuple[float, list[dict]] = (0.0, [])
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", (s or "").lower()).strip("_")
+
+
+def _size(b: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB", "PB"):
+        if abs(b) < 1024 or unit == "PB":
+            return f"{b:.0f} {unit}" if unit == "B" else f"{b:.1f} {unit}"
+        b /= 1024
+    return f"{b:.1f} PB"
+
+
+def _duration(sec: float) -> str:
+    d, rem = divmod(int(sec), 86400)
+    h, m = divmod(rem // 60, 60)
+    return f"{d}d {h}h {m}m" if d else (f"{h}h {m}m" if h else f"{m}m")
+
+
+def monitor_values(max_age: float = 5.0) -> list[dict]:
+    """Live server measurements as {{mon.KEY}} values: [{key, value, label, group}].
+
+    Numbers are plain (e.g. 37.5 for a percentage, 54 for °C) so they read well in text
+    ("CPU {{mon.cpu_percent}}%"); sizes and speeds are already formatted ("12.3 GB")."""
+    global _mon_cache
+    if time.time() - _mon_cache[0] < max_age:
+        return _mon_cache[1]
+    import os
+
+    from . import monitor
+    s = monitor.stats()
+    out: list[dict] = []
+
+    def add(group: str, key: str, value, label: str) -> None:
+        out.append({"group": group, "key": key, "value": value, "label": label})
+
+    r1 = lambda x: round(float(x), 1)  # noqa: E731
+    cores = os.cpu_count() or 1
+    load = list(s.get("load") or (0, 0, 0))
+    add("CPU & load", "cpu_percent", r1(s.get("cpu_percent") or 0), "CPU usage (%)")
+    add("CPU & load", "cpu_cores", cores, "CPU cores")
+    add("CPU & load", "load_1", round(load[0], 2), "Load average, 1 minute")
+    add("CPU & load", "load_5", round(load[1], 2), "Load average, 5 minutes")
+    add("CPU & load", "load_15", round(load[2], 2), "Load average, 15 minutes")
+    add("CPU & load", "load_per_core", round(load[1] / cores, 2), "5-minute load per core (1.0 = fully busy)")
+    add("CPU & load", "processes", s.get("process_count", 0), "Running processes")
+
+    mem, swap = s.get("mem") or {}, s.get("swap") or {}
+    add("Memory", "mem_percent", r1(mem.get("percent", 0)), "Memory used (%)")
+    add("Memory", "mem_used", _size(mem.get("used", 0)), "Memory used")
+    add("Memory", "mem_available", _size(mem.get("available", 0)), "Memory available")
+    add("Memory", "mem_total", _size(mem.get("total", 0)), "Total memory")
+    add("Memory", "swap_percent", r1(swap.get("percent", 0)), "Swap used (%)")
+
+    disks = s.get("disks") or []
+    if disks:
+        fullest = max(disks, key=lambda d: d["percent"])
+        add("Disks", "disk_max_percent", r1(fullest["percent"]), "Fullest drive (% used)")
+        add("Disks", "disk_max_mount", fullest["mount"], "Fullest drive (mount point)")
+        add("Disks", "disk_count", len(disks), "Mounted drives")
+        used_keys: set[str] = set()
+        for d in disks:
+            slug = _slug(d["mount"]) or "root"
+            while slug in used_keys:
+                slug += "_"
+            used_keys.add(slug)
+            add("Disks", f"disk.{slug}.percent", r1(d["percent"]), f"{d['mount']}: used (%)")
+            add("Disks", f"disk.{slug}.free", _size(d["free"]), f"{d['mount']}: free space")
+            add("Disks", f"disk.{slug}.used", _size(d["used"]), f"{d['mount']}: used space")
+            add("Disks", f"disk.{slug}.total", _size(d["total"]), f"{d['mount']}: size")
+
+    temps = s.get("temps") or []
+    if temps:
+        vals = [t["current"] for t in temps]
+        hottest = max(temps, key=lambda t: t["current"])
+        add("Temperatures", "temp_max", r1(max(vals)), "Hottest sensor (°C)")
+        add("Temperatures", "temp_max_sensor", hottest["label"], "Hottest sensor (name)")
+        add("Temperatures", "temp_avg", r1(sum(vals) / len(vals)), "Average of all sensors (°C)")
+        add("Temperatures", "temp_min", r1(min(vals)), "Coolest sensor (°C)")
+        add("Temperatures", "temp_count", len(vals), "Number of sensors")
+        used_keys = set()
+        for t in temps:
+            slug = _slug(t["label"]) or _slug(t["chip"]) or "sensor"
+            if slug in used_keys:
+                slug = _slug(f"{t['chip']}_{t['label']}")
+            while slug in used_keys:
+                slug += "_"
+            used_keys.add(slug)
+            add("Temperatures", f"temp.{slug}", r1(t["current"]), f"{t['label']} ({t['chip']}) (°C)")
+
+    add("Network & disk activity", "net_rx", _size(s.get("net_rx_bps", 0)) + "/s", "Network download speed")
+    add("Network & disk activity", "net_tx", _size(s.get("net_tx_bps", 0)) + "/s", "Network upload speed")
+    add("Network & disk activity", "disk_read", _size(s.get("disk_read_bps", 0)) + "/s", "Disk read speed")
+    add("Network & disk activity", "disk_write", _size(s.get("disk_write_bps", 0)) + "/s", "Disk write speed")
+    add("System", "uptime", _duration(s.get("uptime", 0)), "Time since the server started")
+    add("System", "uptime_days", round((s.get("uptime", 0)) / 86400, 1), "Uptime in days")
+
+    _mon_cache = (time.time(), out)
+    return out
+
+
 def render(text: str, context: dict) -> str:
     """Replace {{var.x}}, {{sys.x}}, {{trigger.x}}, … in text. Unknown placeholders are left as they are."""
     if not text or "{{" not in text:
         return text or ""
     variables = {r["name"]: r["value"] for r in db.query("SELECT name, value FROM variables")}
     sysvals: dict | None = None
+    monvals: dict | None = None
 
     def lookup(path: str):
-        nonlocal sysvals
+        nonlocal sysvals, monvals
         parts = path.split(".")
         if parts[0] == "var" and len(parts) == 2:
             return variables.get(parts[1])
@@ -125,6 +232,10 @@ def render(text: str, context: dict) -> str:
             if sysvals is None:
                 sysvals = system_values()
             return sysvals.get(parts[1])
+        if parts[0] == "mon" and len(parts) >= 2:
+            if monvals is None:
+                monvals = {m["key"]: m["value"] for m in monitor_values()}
+            return monvals.get(".".join(parts[1:]))
         cur = context
         for p in parts:
             if isinstance(cur, dict) and p in cur:

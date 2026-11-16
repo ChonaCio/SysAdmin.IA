@@ -486,6 +486,13 @@ canvas { width: 100%; height: 160px; display: block; }
 .var-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .var-value { overflow-wrap: anywhere; white-space: pre-wrap; max-height: 4.5em; overflow: hidden; }
 .var-actions { display: flex; gap: 4px; }
+.mon-groups { display: flex; flex-direction: column; gap: 6px; }
+.mon-group > summary { cursor: pointer; font-weight: 600; font-size: 13px; padding: 4px 0; }
+.mon-group .var-list { padding-left: 4px; }
+.var-row.mon-row { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) minmax(0, 1.5fr) 0; }
+.var-name { min-width: 0; }
+.var-name code { overflow-wrap: anywhere; }
+details.ph-group > summary { cursor: pointer; }
 .copyable { cursor: pointer; }
 .copyable:hover { outline: 1px solid var(--accent); }
 @media (max-width: 700px) { .var-row { grid-template-columns: 1fr auto; } .var-value, .var-desc { grid-column: 1 / -1; } .var-actions { grid-column: 2; grid-row: 1; } }

@@ -190,6 +190,18 @@ Condition triggers (disk, CPU, memory, load, temperature, service) fire when the
 - `{{var.NAME}}` inserts one of your variables.
 - `{{sys.hostname}}`, `{{sys.ip}}`, `{{sys.datetime}}`, `{{sys.url}}`, … are built in.
 
+**Monitor values** are live measurements, read at the moment a job uses them. They're listed with their current values in **Variables → Monitor values**:
+
+| Group | Placeholders |
+|---|---|
+| CPU & load | `{{mon.cpu_percent}}`, `{{mon.cpu_cores}}`, `{{mon.load_1}}` / `_5` / `_15`, `{{mon.load_per_core}}`, `{{mon.processes}}` |
+| Memory | `{{mon.mem_percent}}`, `{{mon.mem_used}}`, `{{mon.mem_available}}`, `{{mon.mem_total}}`, `{{mon.swap_percent}}` |
+| Disks | `{{mon.disk_max_percent}}` and `{{mon.disk_max_mount}}` (the fullest drive), and per drive `{{mon.disk.root.percent}}`, `.free`, `.used`, `.total` (`/mnt/backup` → `disk.mnt_backup`) |
+| Temperatures | `{{mon.temp_max}}`, `{{mon.temp_max_sensor}}`, `{{mon.temp_avg}}`, `{{mon.temp_min}}`, and per sensor `{{mon.temp.package_id_0}}`, … |
+| Activity & system | `{{mon.net_rx}}`, `{{mon.net_tx}}`, `{{mon.disk_read}}`, `{{mon.disk_write}}`, `{{mon.uptime}}`, `{{mon.uptime_days}}` |
+
+Percentages and temperatures are plain numbers (`CPU {{mon.cpu_percent}}%`), and sizes and speeds come formatted (`21.0 GB`, `1.5 MB/s`).
+
 **Variables** are named values you define once and reuse, e.g. `alert_email` and then `{{var.alert_email}}` in every job. Mark a variable **secret** for passwords and tokens: its value is never shown again and is masked in job logs.
 
 **Mail accounts** let jobs send mail (SMTP) and read mail (IMAP). Presets fill in the servers for Gmail, Outlook / Microsoft 365, Yahoo, iCloud and a local mail relay. Use an *app password* where the provider requires one, and use **Test** to check the settings (optionally sending a test message).

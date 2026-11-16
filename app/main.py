@@ -433,7 +433,14 @@ class VariableBody(BaseModel):
 
 @app.get("/api/variables")
 async def variables_list(user: User = Depends(admin_user)):
-    return {"variables": variables.list_all(), "builtins": await asyncio.to_thread(variables.system_values)}
+    return {"variables": variables.list_all(), "builtins": await asyncio.to_thread(variables.system_values),
+            "monitor": await asyncio.to_thread(variables.monitor_values)}
+
+
+@app.get("/api/variables/monitor")
+async def variables_monitor(user: User = Depends(admin_user)):
+    """Live monitor values only (the Variables page refreshes them every few seconds)."""
+    return await asyncio.to_thread(variables.monitor_values)
 
 
 @app.post("/api/variables")

@@ -440,6 +440,12 @@
       </div>
       <div class="card"><div id="var-list" class="var-list"></div></div>
       <div class="card">
+        <h3>Monitor values <span class="muted small" id="mon-updated"></span></h3>
+        <p class="muted small">Live measurements from this server, read at the moment a job uses them — e.g.
+          <code>CPU at {{mon.cpu_percent}}%</code> or <code>{{mon.temp_max_sensor}} is {{mon.temp_max}} °C</code>. Click a name to copy it.</p>
+        <div id="var-monitor" class="mon-groups"></div>
+      </div>
+      <div class="card">
         <h3>Built-in values</h3>
         <p class="muted small">Always available, no need to create them. Shown with their current value.</p>
         <div id="var-builtins" class="var-list"></div>

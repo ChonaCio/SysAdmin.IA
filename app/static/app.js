@@ -1969,6 +1969,12 @@ async function loadVariables() {
           } catch (ex) { toast(ex.message); }
         } }, withIcon("trash", "Delete")))));
   }
+  renderMonitorValues(r.monitor);
+  clearInterval(state.monTimer);
+  state.monTimer = setInterval(async () => {
+    if (state.view !== "variables" || document.hidden) return;
+    try { renderMonitorValues(await api("/api/variables/monitor")); } catch { /* keep the last values */ }
+  }, 5000);
   const b = $("#var-builtins");
   b.innerHTML = "";
   const labels = { hostname: "Server name", ip: "Server IP address", os: "Operating system", date: "Today's date",
@@ -1980,6 +1986,36 @@ async function loadVariables() {
       el("div", { class: "muted small var-desc" }, labels[k] || ""), el("div")));
   }
 }
+// Monitor values, grouped (CPU & load, Memory, Disks, Temperatures, …). Rows are reused on refresh
+// so an open group and the scroll position stay put.
+function renderMonitorValues(list) {
+  const box = $("#var-monitor");
+  $("#mon-updated").textContent = `· updated ${new Date().toLocaleTimeString()}`;
+  const groups = {};
+  for (const m of list || []) (groups[m.group] ||= []).push(m);
+  const known = new Set(Object.keys(groups));
+  box.querySelectorAll(":scope > details").forEach((d) => { if (!known.has(d.dataset.group)) d.remove(); });
+  for (const [g, items] of Object.entries(groups)) {
+    let det = box.querySelector(`:scope > details[data-group="${CSS.escape(g)}"]`);
+    if (!det) {
+      det = el("details", { class: "mon-group", open: ["CPU & load", "Memory", "Disks", "Temperatures"].includes(g) },
+        el("summary", {}, g), el("div", { class: "var-list" }));
+      det.dataset.group = g;
+      box.append(det);
+    }
+    const rows = det.querySelector(".var-list");
+    rows.innerHTML = "";
+    for (const m of items) {
+      const name = `mon.${m.key}`;
+      rows.append(el("div", { class: "var-row mon-row" },
+        el("div", { class: "var-name" }, el("code", { class: "copyable", title: "Click to copy", onclick: () => copyText(ph(name)) }, ph(name))),
+        el("div", { class: "var-value mono small" }, String(m.value)),
+        el("div", { class: "muted small var-desc" }, m.label), el("div")));
+    }
+  }
+  if (!list || !list.length) box.textContent = "No measurements available.";
+}
+
 function copyText(t) {
   navigator.clipboard?.writeText(t).then(() => toast(`Copied ${t}`), () => toast(t));
 }
@@ -2382,11 +2418,21 @@ function renderPlaceholders() {
   $$("#job-actions .item-type").forEach((s) => (cat.actions[s.value]?.provides || []).forEach((p) => prov.add(p)));
   groups.push(["From earlier actions", [...prov]]);
   if (cat.variables.length) groups.push(["Your variables", cat.variables.map((v) => `var.${v.name}`)]);
+  const mon = cat.monitor_placeholders || [];
+  const mainMon = mon.filter((m) => !/^mon\.(disk|temp)\./.test(m.key));       // summary values
+  const perItem = mon.filter((m) => /^mon\.(disk|temp)\./.test(m.key));        // per drive / per sensor
+  if (mainMon.length) groups.push(["Monitor values", mainMon.map((m) => [m.key, m.label])]);
+  if (perItem.length) groups.push(["Per drive / sensor", perItem.map((m) => [m.key, m.label]), true]);
   groups.push(["Built-in", cat.system_placeholders]);
   box.innerHTML = "";
-  for (const [title, items] of groups) {
-    box.append(el("div", { class: "ph-group" }, el("div", { class: "flow-label" }, title),
-      el("div", { class: "ph-chips" }, items.map((p) => el("button", { type: "button", class: "ph-chip", onclick: () => insertPlaceholder(p) }, ph(p))))));
+  for (const [title, items, collapsed] of groups) {
+    const chips = el("div", { class: "ph-chips" }, items.map((p) => {
+      const [key, label] = Array.isArray(p) ? p : [p, ""];
+      return el("button", { type: "button", class: "ph-chip", title: label || null, onclick: () => insertPlaceholder(key) }, ph(key));
+    }));
+    box.append(collapsed
+      ? el("details", { class: "ph-group" }, el("summary", { class: "flow-label" }, title), chips)
+      : el("div", { class: "ph-group" }, el("div", { class: "flow-label" }, title), chips));
   }
 }
 document.addEventListener("focusin", (e) => {

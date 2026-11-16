@@ -229,6 +229,8 @@ def catalog() -> dict:
         "variables": [{"name": v["name"], "description": v["description"], "secret": v["secret"]} for v in V.list_all()],
         "system_placeholders": ["sys.hostname", "sys.ip", "sys.date", "sys.time", "sys.datetime", "sys.weekday",
                                 "sys.os", "sys.version", "sys.url"],
+        "monitor_placeholders": [{"key": f"mon.{m['key']}", "label": m["label"], "group": m["group"]}
+                                 for m in V.monitor_values()],
     }
 
 
