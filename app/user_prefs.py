@@ -9,7 +9,9 @@ import json
 
 from . import db
 
-LANGS = {"en": "English", "es": "Spanish"}       # keep in sync with LANGS in static/prefs.js
+# keep in sync with LANGS in static/prefs.js (names here are for the chat assistant's instructions)
+LANGS = {"en": "English", "es": "Spanish", "pt": "Brazilian Portuguese", "fr": "French", "de": "German",
+         "it": "Italian", "ja": "Japanese", "zh": "Simplified Chinese"}
 DEFAULTS = {"theme": "system", "accent": "orange", "text": "100", "contrast": False, "motion": True, "lang": "en"}
 CHOICES = {
     "theme": ("system", "light", "dark", "black"),

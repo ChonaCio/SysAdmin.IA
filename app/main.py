@@ -1232,21 +1232,28 @@ async def update_settings(body: UpdateSettingsBody, request: Request, user: User
     return await asyncio.to_thread(updater.status)
 
 
+class UpdateApplyBody(BaseModel):
+    version: str | None = None      # a published version; None = the newest
+    downgrade: bool = False         # required to install an older version
+
+
 @app.post("/api/update/apply")
-async def update_apply(request: Request, user: User = Depends(admin_user)):
+async def update_apply(request: Request, body: UpdateApplyBody | None = None, user: User = Depends(admin_user)):
     ip = auth.client_ip(request)
     before = updater.current_version()
+    body = body or UpdateApplyBody()
     try:
-        result = await updater.apply()
+        result = await updater.apply(body.version, allow_downgrade=body.downgrade)
     except updater.UpdateError as e:
-        db.audit("update_failed", user.username, ip, {"from": before, "error": str(e)})
+        db.audit("update_failed", user.username, ip, {"from": before, "to": body.version, "error": str(e)})
         raise HTTPException(400, str(e))
+    kind = "downgrade" if result.get("downgrade") else "update"
     if result["mode"] == "full":
         # The root helper runs the new install.sh in the background; it restarts the app.
-        db.audit("update_started", user.username, ip, {"from": result["from"], "to": result["to"]})
+        db.audit(f"{kind}_started", user.username, ip, {"from": result["from"], "to": result["to"]})
         return result
-    db.audit("update", user.username, ip, {"from": result["from"], "to": result["to"],
-                                           "files": len(result["changed"]), "mode": "code"})
+    db.audit(kind, user.username, ip, {"from": result["from"], "to": result["to"],
+                                       "files": len(result["changed"]), "mode": "code"})
     if result["restart"]:
         _schedule_restart()
     return result

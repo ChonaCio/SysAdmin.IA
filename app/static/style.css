@@ -733,6 +733,13 @@ button.big { padding: 8px 18px; font-size: 14px; }
 .pending-list summary { cursor: pointer; }
 .update-card #update-msg { margin: 10px 0 0; }
 .update-card #update-msg.busy { display: flex; align-items: center; gap: 8px; color: var(--text); }
+.update-target { display: flex; align-items: center; gap: 6px; }
+.update-releases { margin-top: 12px; }
+.update-releases summary { cursor: pointer; }
+.release-list { display: flex; flex-direction: column; max-height: 360px; overflow-y: auto; border-top: 1px solid var(--border); }
+.release-row { display: flex; align-items: center; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.release-row.current { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.release-name { font-weight: 600; overflow-wrap: anywhere; }
 .update-token { margin-top: 12px; }
 .update-token summary { cursor: pointer; }
 .update-token form { margin-top: 8px; }

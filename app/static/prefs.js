@@ -17,7 +17,8 @@
  * only for text that never reaches the DOM.
  */
 (function () {
-  const LANGS = { en: "English", es: "Español" };
+  const LANGS = { en: "English", es: "Español", pt: "Português (Brasil)", fr: "Français", de: "Deutsch",
+                  it: "Italiano", ja: "日本語", zh: "简体中文" };
   const DEFAULTS = { theme: "system", accent: "orange", text: "100", contrast: false, motion: true, lang: "en" };
   const CHOICES = {
     theme: ["system", "light", "dark", "black"],
@@ -120,7 +121,7 @@
     if (out === undefined) {
       const dot = /\.$/.test(core) ? "." : "";
       const body = dot ? core.slice(0, -1) : core;
-      for (const sep of ["; ", ", ", " · "]) {
+      for (const sep of [" · ", "; ", ", "]) {
         if (!body.includes(sep)) continue;
         const parts = body.split(sep);
         const tr = parts.map((x) => exact(x, t) ?? viaPattern(x, t, depth + 1));

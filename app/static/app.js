@@ -1459,9 +1459,17 @@ function renderUpdate(s) {
   else if (!s.checked_at) { pill.textContent = ""; pill.className = "status-pill"; }
   else if (s.update_available) { pill.textContent = "update available"; pill.className = "status-pill warn"; }
   else { pill.textContent = "up to date"; pill.className = "status-pill ok"; }
+  // Several newer versions: pick which one to install (default: the newest, which includes the rest).
+  const sel = $("#update-target");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  [...pending].reverse().forEach((v, i) => sel.add(new Option(i === 0 ? `${v.version} (latest)` : v.version, v.version)));
+  if ([...sel.options].some((o) => o.value === prev)) sel.value = prev;
+  $("#update-target-wrap").hidden = !(s.update_available && s.can_apply && pending.length > 1);
   const apply = $("#update-apply");
   apply.hidden = !s.update_available || !s.can_apply;
-  if (latest) apply.textContent = `Update to ${latest.version}`;
+  if (latest) apply.textContent = `Update to ${sel.value || latest.version}`;
+  renderReleases(s);
   $("#update-check").className = s.update_available ? "ghost big" : "primary big";
   if (state.updating) { /* keep the progress message */ }
   else if (s.error) setUpdateMsg(s.error, false);
@@ -1522,22 +1530,61 @@ function hideUpdating() {
 
 $("#updating-details").addEventListener("click", () => openConsole("update"));
 
-$("#update-apply").addEventListener("click", async () => {
+$("#update-target").addEventListener("change", (e) => { $("#update-apply").textContent = `Update to ${e.target.value}`; });
+
+// All published versions, each linked to its GitHub release page, with Install / Downgrade.
+function renderReleases(s) {
+  const rels = s.releases || [];
+  const box = $("#update-releases");
+  box.hidden = !rels.length || (rels.length === 1 && rels[0].source === "branch");
+  $("#update-releases-count").textContent = rels.length ? `(${rels.length})` : "";
+  const list = $("#update-release-list");
+  list.innerHTML = "";
+  for (const v of rels) {
+    const link = el("a", { href: v.url, target: "_blank", rel: "noopener noreferrer", class: "release-name", "data-no-i18n": "" },
+      v.name && v.name.replace(/^v/i, "") !== v.version ? `${v.version} · ${v.name}` : v.version);
+    const tag = v.status === "current" ? el("span", { class: "tag tag-accent" }, "Installed")
+      : v.status === "newer" ? el("span", { class: "tag" }, "Newer") : el("span", { class: "tag muted" }, "Older");
+    let btn = null;
+    if (v.status !== "current" && s.can_apply) {
+      btn = el("button", { type: "button", class: `small ${v.status === "older" ? "ghost" : "primary"}`,
+        title: v.status === "older" ? "Go back to this version" : "Install this version",
+        onclick: () => installVersion(v.version, v.status === "older") },
+        v.status === "older" ? "Downgrade" : "Install");
+    }
+    list.append(el("div", { class: `release-row ${v.status}` }, link, tag,
+      el("span", { class: "muted" }, v.published_at ? fmtDate(v.published_at) : ""), el("span", { class: "spacer" }), btn));
+  }
+}
+
+$("#update-apply").addEventListener("click", () => {
   const s = state.update;
-  const included = (s.pending || []).length > 1 ? ` (includes ${s.pending.length} versions)` : "";
-  if (!confirm(`Update SysAdmin.IA from ${s.current} to ${s.latest.version}${included}?\n\n` +
-      (s.full_upgrade ? "The new version's installer runs exactly as a fresh install would (system packages, " +
+  installVersion($("#update-target").value || s.latest.version, false);
+});
+
+async function installVersion(target, downgrade) {
+  const s = state.update;
+  if (state.updating) return;
+  const included = (s.pending || []).filter((v) => !downgrade && v.version !== target && compareVersions(v.version, target) < 0).length;
+  const between = included ? ` (includes ${included + 1} versions)` : "";
+  const intro = downgrade
+    ? `Downgrade SysAdmin.IA from ${s.current} to ${target}?\n\n` +
+      "Features added after that version disappear, but your settings, users and data are kept (the older version ignores what it doesn't know). " +
+      "You can update again at any time.\n\n"
+    : `Update SysAdmin.IA from ${s.current} to ${target}${between}?\n\n`;
+  if (!confirm(intro +
+      (s.full_upgrade ? "That version's installer runs exactly as a fresh install would (system packages, " +
         "service, helpers, app code); your settings, users and data are kept. " : "") +
       "The current code is backed up first and restored automatically if the update fails. " +
       "Changes Claude made to this app's own files may be overwritten (they stay in the app's git history).")) return;
   state.updateConsole = s.full_upgrade ? "log" : "local";
   resetUpdateConsole();
-  showUpdating(`Updating to ${s.latest.version}…`);
+  showUpdating(`${downgrade ? "Downgrading" : "Updating"} to ${target}…`);
   if (state.updateConsole === "local") {
-    updateConsoleWrite(`Updating ${s.current} -> ${s.latest.version} (app code only)\r\nDownloading and installing…\r\n`);
+    updateConsoleWrite(`${downgrade ? "Downgrading" : "Updating"} ${s.current} -> ${target} (app code only)\r\nDownloading and installing…\r\n`);
   }
   try {
-    const r = await api("/api/update/apply", { method: "POST" });
+    const r = await api("/api/update/apply", { method: "POST", body: JSON.stringify({ version: target, downgrade }) });
     if (r.mode === "full") { followUpgrade(r.to); return; }
     updateConsoleWrite((r.log || []).join("\r\n") + "\r\n");
     if (r.restart) {
@@ -1554,7 +1601,12 @@ $("#update-apply").addEventListener("click", async () => {
     updateConsoleWrite(`\r\n\x1b[31mUpdate failed: ${ex.message}\x1b[0m\r\n`);
     setUpdateMsg(ex.message, false);
   }
-});
+}
+function compareVersions(a, b) {
+  const pa = String(a).split(/[.-]/).map((x) => parseInt(x, 10) || 0), pb = String(b).split(/[.-]/).map((x) => parseInt(x, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+  return 0;
+}
 
 // Follow a full upgrade (install.sh running as root in the background). The app restarts
 // during it, so failed requests are expected for a few seconds.

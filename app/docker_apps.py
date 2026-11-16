@@ -5,8 +5,10 @@ Each app pre-fills the "New container" form:
   folders – data folders inside the container; stored on a drive as <drive>/appdata/<name>/<sub>.
             kind "media" = an existing folder of yours (e.g. movies): must be chosen before creating.
             kind "host" = a fixed server path in `source` (e.g. the Docker socket; needs "allow system folders").
-  env     – settings; `required` must be filled before creating (empty to start with), `generate` = offer a Generate button,
-            `secret` = shown as a password.
+  env     – settings with their default `value` (user names use the image's documented default, e.g.
+            POSTGRES_USER=postgres); `required` must not be empty when creating, `generate` = offer a Generate
+            button, `autogen` = start with a random password, `secret` = shown as a password.
+            The same presets load when "New container" is used with a catalog app's image (e.g. typing postgres).
   network – "host" for apps that need the server's network directly (device discovery).
   open    – what to open in the browser: "/path" on the first port, ":PORT/path" on that container port,
             "https://:PORT/path" for HTTPS (None = not a web app).
@@ -25,8 +27,8 @@ _TZ = {"key": "TZ", "value": "Etc/UTC", "label": "Time zone, e.g. Europe/Madrid"
 
 
 def _pw(key: str, label: str = "Password") -> dict:
-    # required and empty: the user must type one (or click Generate)
-    return {"key": key, "value": "", "label": label, "required": True, "secret": True, "generate": True}
+    # required; the form starts with a freshly generated random password (shown, editable, Generate for another)
+    return {"key": key, "value": "", "label": label, "required": True, "secret": True, "generate": True, "autogen": True}
 
 
 APPS = [
@@ -35,7 +37,7 @@ APPS = [
      "about": "Powerful open-source SQL database. Used by many apps (Nextcloud, Gitea, n8n…).",
      "ports": [{"container": 5432, "label": "Database connections"}],
      "folders": [{"target": "/var/lib/postgresql/data", "sub": "data", "label": "Database files"}],
-     "env": [{"key": "POSTGRES_USER", "value": "", "label": "Superuser name", "required": True, "placeholder": "e.g. admin"},
+     "env": [{"key": "POSTGRES_USER", "value": "postgres", "label": "Superuser name", "required": True, "placeholder": "e.g. admin"},
              _pw("POSTGRES_PASSWORD", "Superuser password"),
              {"key": "POSTGRES_DB", "value": "", "label": "Database to create (optional; default = user name)"}],
      "open": None, "notes": "Connect with host = this server, the port below, and the superuser name and password you choose here."},
@@ -58,7 +60,7 @@ APPS = [
      "about": "Document (NoSQL) database storing JSON-like records.",
      "ports": [{"container": 27017, "label": "Database connections"}],
      "folders": [{"target": "/data/db", "sub": "db", "label": "Database files"}],
-     "env": [{"key": "MONGO_INITDB_ROOT_USERNAME", "value": "", "label": "Admin user name", "required": True, "placeholder": "e.g. admin"}, _pw("MONGO_INITDB_ROOT_PASSWORD", "Admin password")],
+     "env": [{"key": "MONGO_INITDB_ROOT_USERNAME", "value": "admin", "label": "Admin user name", "required": True, "placeholder": "e.g. admin"}, _pw("MONGO_INITDB_ROOT_PASSWORD", "Admin password")],
      "open": None, "notes": "MongoDB 5+ needs a CPU with AVX (most x86 CPUs from 2011 on)."},
     {"id": "redis", "cat": "db", "title": "Redis", "image": "redis:7", "logo": "🟥",
      "about": "In-memory key-value store, used as a cache or message queue.",
@@ -240,7 +242,7 @@ APPS = [
      "about": "Message broker for applications, with a management web page.",
      "ports": [{"container": 5672, "label": "AMQP"}, {"container": 15672, "label": "Management web page"}],
      "folders": [{"target": "/var/lib/rabbitmq", "sub": "data", "label": "Data"}],
-     "env": [{"key": "RABBITMQ_DEFAULT_USER", "value": "", "label": "Admin user name", "required": True, "placeholder": "e.g. admin"}, _pw("RABBITMQ_DEFAULT_PASS", "Admin password")],
+     "env": [{"key": "RABBITMQ_DEFAULT_USER", "value": "admin", "label": "Admin user name", "required": True, "placeholder": "e.g. admin"}, _pw("RABBITMQ_DEFAULT_PASS", "Admin password")],
      "open": ":15672/"},
     {"id": "registry", "cat": "dev", "title": "Docker Registry", "image": "registry:2", "logo": "📦",
      "about": "Store your own Docker images on this server.",
@@ -269,6 +271,12 @@ _BY_ID = {a["id"]: a for a in APPS}
 
 def get(app_id: str) -> dict | None:
     return _BY_ID.get(app_id)
+
+
+def for_image(image: str) -> dict | None:
+    """The catalog app whose image this is (any tag), e.g. 'postgres:16-alpine' → PostgreSQL."""
+    r = repo(image or "")
+    return next((a for a in APPS if repo(a["image"]) == r), None)
 
 
 def repo(image: str) -> str:

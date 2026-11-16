@@ -374,8 +374,9 @@ async function dkPrepare() {
     }
     state.dk.pendingPrepare = null;
     Object.assign(f, { image: r.image, name: f.name || r.name, ports: r.ports, mounts: r.mounts, env: r.env, prepared: true });
-    if (r.app) Object.assign(f, { app: r.app, network: r.network, command: r.command, privileged: r.privileged,
-                                  sysctls: r.sysctls, allow_system_paths: r.allow_system_paths });
+    if (r.app) Object.assign(f, { app: r.app, app_id: r.app.id, app_image: r.image, network: r.network, command: r.command,
+                                  privileged: r.privileged, sysctls: r.sysctls, allow_system_paths: r.allow_system_paths });
+    else f.app = null;
     f.details = r.details;
     renderDockerForm();
     const m2 = $("#dk-image-msg");
@@ -404,9 +405,14 @@ function renderDockerForm() {
     el("input", { type: "checkbox", checked: f.pull, onchange: (e) => (f.pull = e.target.checked) }), " Download the newest version of the image (update the app)"));
   if (!f.prepared) return;
   if (f.app?.notes) body.append(el("p", { class: "note small dk-app-note" }, el("strong", {}, `${f.app.title}: `), f.app.notes));
-  const needs = [...f.env.filter((x) => x.required).map((x) => x.label || x.key), ...f.mounts.filter((m) => m.required).map((m) => m.label)];
+  const needs = [...f.env.filter((x) => x.required && !x.value).map((x) => x.label || x.key),
+                 ...f.mounts.filter((m) => m.required && !m.source).map((m) => m.label)];
   if (needs.length && !state.dk.edit) body.append(el("p", { class: "note warn small dk-app-note" },
     el("strong", {}, "You must choose: "), needs.join("; "), ". They're marked * below."));
+  const generated = f.env.filter((x) => x.generated && x.value);
+  if (generated.length && !state.dk.edit) body.append(el("p", { class: "note small dk-app-note" },
+    el("strong", {}, "Random passwords were filled in: "), generated.map((x) => x.label || x.key).join("; "),
+    ". Copy them somewhere safe before creating the container, or type your own."));
 
   // name, restart, network
   body.append(el("div", { class: "two-col" },
@@ -524,9 +530,11 @@ function renderDockerForm() {
     for (const i of order) {
       const e = f.env[i];
       if (e.label) envBox.append(el("div", { class: "small dk-env-label" }, el("strong", {}, e.label), e.required ? el("span", { class: "error" }, " * required") : null));
-      const val = el("input", { value: e.value, class: `mono ${e.required && !e.value ? "invalid" : ""}`, type: e.secret ? "password" : "text",
+      // generated passwords start visible so they can be copied; typed ones stay hidden
+      const val = el("input", { value: e.value, class: `mono ${e.required && !e.value ? "invalid" : ""}`,
+        type: e.secret && !(e.generated && !state.dk.edit) ? "password" : "text",
         placeholder: e.placeholder || (e.required ? "required" : "value"), required: !!e.required, spellcheck: "false", autocomplete: "new-password",
-        "aria-label": e.label || "Value", oninput: (ev) => { e.value = ev.target.value; ev.target.classList.toggle("invalid", !!e.required && !e.value); } });
+        "aria-label": e.label || "Value", oninput: (ev) => { e.value = ev.target.value; e.generated = false; ev.target.classList.toggle("invalid", !!e.required && !e.value); } });
       envBox.append(el("div", { class: "dk-env" },
         el("input", { value: e.key, class: "mono", placeholder: "NAME", spellcheck: "false", "aria-label": "Variable name", readonly: !!e.preset,
           title: e.preset ? "Name expected by the app" : "", oninput: (ev) => (e.key = ev.target.value) }),

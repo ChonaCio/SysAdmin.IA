@@ -128,6 +128,9 @@ The app can update itself from [github.com/ChonaCio/SysAdmin.IA](https://github.
 - **Web UI:** **Admin → Updates** (the first card) has the **Check for updates** button and turns it into **Update to X.Y.Z** when a newer version exists, listing every version the update includes with its release notes. While an update runs, a bar with a spinner shows its progress on every page; **See details** opens the installer's output in the **Console**. The page reloads when the new version is running.
 - **Command line:** `sudo sysadmin-ia check-update`, then `sudo sysadmin-ia update` (it prints the installer's output until it's done).
 
+- **Choosing a version:** when several newer versions are out, a **Version to install** list next to the button lets you install one of them instead of the latest (the latest is preselected and includes everything before it).
+- **All releases:** under the update notes, **All releases** lists every published version, newest first, marked Newer / Installed / Older. Each name links to its release page on GitHub. **Install** installs a newer one; **Downgrade** goes back to an older one after a confirmation. A downgrade runs that version's own installer exactly like an update: your settings, users and data are kept (the database only ever gains columns, which older versions ignore), but features added later disappear until you update again.
+
 Updates are cumulative: the latest version is the **highest version number** among the repository's GitHub releases and version tags (`v1.3.3`), and an update installs it directly, whatever the installed version. Only if the repository has neither, the `VERSION` file on the `main` branch is used. To publish a new version, push a tag (or create a release) such as `v1.3.3`.
 
 The installed version is the `VERSION` file in `/opt/sysadmin-ia`. `install.sh` sets it from the tag it's installed from (a `git clone` checked out at a tag, or a release's "Source code" archive such as `SysAdmin.IA-1.3.3`), so `VERSION` in the repository doesn't have to be bumped by hand. A copy of a branch without a tag (for example "Download ZIP" of `main`) falls back to the `VERSION` file.
@@ -165,13 +168,13 @@ Supported filesystems: ext2/3/4, XFS, Btrfs, FAT32, exFAT, NTFS, F2FS, ISO 9660/
 
 Profile card → **Appearance & language**. Each user has their own settings, saved to their account so they follow them to other devices (and remembered in the browser, so the page is drawn correctly from the first moment):
 
-- **Language**: English (default) or Español. The whole interface switches immediately, including the job, app and model catalogs and most server messages, and the chat assistant replies in that language (unless you write to it in another one). The sign-in page has its own language picker.
+- **Language**: English (default), Español, Português (Brasil), Français, Deutsch, Italiano, 日本語 (Japanese) or 简体中文 (Simplified Chinese). The whole interface switches immediately, including the job, app and model catalogs and most server messages, and the chat assistant replies in that language (unless you write to it in another one). The sign-in page has its own language picker.
 - **Theme**: Automatic (follows your device's light/dark setting), Light, Dark, or Black (true black, for OLED screens). The sun/moon button in the top bar switches between light and dark in one click.
 - **Accent colour**: orange, blue, green, purple, pink, teal or graphite (buttons, links, highlights, charts).
 - **Text size**: Small, Normal, Large, Extra large (scales the whole interface).
 - **High contrast** (stronger text and borders) and **Reduce motion** (no animations or sliding panels).
 
-Names you choose (files, chats, containers, jobs…), command output, logs and code are never translated. Adding a language: copy `app/static/i18n/es.js` and `es-server.js`, translate the values, and add the language code to `LANGS` in `app/static/prefs.js` and `app/user_prefs.py`.
+Names you choose (files, chats, containers, jobs…), command output, logs and code are never translated. The translations were written for this app (not by a translation service), so a native speaker may want to polish some wording; each language is two plain files, `app/static/i18n/<code>.js` (interface) and `<code>-server.js` (catalogs and server messages), with the English text as the key. Adding a language: copy the Spanish files `es.js` and `es-server.js`, translate the values, and add the language code to `LANGS` in `app/static/prefs.js` and `app/user_prefs.py`.
 
 ### Containers (Docker)
 
@@ -209,7 +212,9 @@ The **Containers** module (Server) runs apps in [Docker](https://www.docker.com)
   - its settings, with descriptions, and the time zone set to the server's;
   - anything special it needs: the server's network for Home Assistant and Plex, kernel network settings for WireGuard, the Docker socket for Portainer.
 
-  **What you must choose yourself** is listed at the top of the form and marked `*`: for example the PostgreSQL superuser name and password, MariaDB/MySQL root passwords, admin users and passwords for pgAdmin, Grafana, RabbitMQ, code-server and Pi-hole, and the folder with your movies or music for Jellyfin, Plex, Navidrome, Audiobookshelf and File Browser. These start empty, and the container can't be created until they're filled in. Password fields have **Generate** (a random password; copy it somewhere safe) and **Show**.
+  **Every setting the app needs is loaded with a default value** and marked `*` when it's required: for example the PostgreSQL superuser `POSTGRES_USER` (default `postgres`, as in the image's documentation) and `POSTGRES_PASSWORD`, MariaDB/MySQL root passwords, and admin users and passwords for MongoDB, RabbitMQ, Grafana, code-server and Pi-hole. Passwords start with a **freshly generated random password**, shown so you can copy it (a note at the top of the form lists them); type your own or click **Generate** for another. Required settings can't be left empty. A few things have no sensible default and **must be chosen by you**, listed at the top of the form: the pgAdmin login email, and the folder with your movies or music for Jellyfin, Plex, Navidrome, Audiobookshelf and File Browser.
+
+  The same settings load when you use **New container** and type a catalog app's image yourself, with any tag: for example `postgres:16` gets the PostgreSQL settings above (for version 16).
 
   Notes from each app's documentation are shown at the top of the form. Apps you already run show **Running as …** and an **Open** button. **Install again** adds another copy with its own name and ports (e.g. `postgres-2` on port 5433).
 - **Edit** changes ports, folders, settings or the image version (**Download the newest version** updates the app). Docker can't change a container's ports or folders in place, so the container is recreated. The old one is kept until the new one starts, and put back if the new one fails. Data in shared folders and volumes is kept.

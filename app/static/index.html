@@ -203,6 +203,8 @@
           </div>
           <div class="update-actions">
             <button type="button" id="update-check" class="primary big"><span data-icon="refresh"></span> Check for updates</button>
+            <label class="update-target small" id="update-target-wrap" hidden>Version to install
+              <select id="update-target"></select></label>
             <button type="button" id="update-apply" class="primary big" hidden>Update</button>
           </div>
         </div>
@@ -212,6 +214,11 @@
         </div>
         <p class="small" id="update-msg" hidden></p>
         <p class="small muted" id="update-mode" hidden></p>
+        <details class="small update-releases" id="update-releases" hidden>
+          <summary>All releases <span class="muted" id="update-releases-count"></span></summary>
+          <p class="muted">Every published version, newest first. Click a name to open its release page on GitHub. Installing an older version (downgrade) keeps your settings, users and data.</p>
+          <div id="update-release-list" class="release-list"></div>
+        </details>
         <details class="small update-token">
           <summary>GitHub token <span class="muted">(only needed if the repository is private)</span></summary>
           <form id="update-token-form" class="settings-form" autocomplete="off">

@@ -19,6 +19,11 @@ Admin → Updates, with `sysadmin-ia set-github-token`, or as SAI_GITHUB_TOKEN.
 
 Before anything is overwritten, the current code is saved to <data>/backups/app-*.tar.gz
 and restored automatically if the new version fails to install or import.
+
+Any published version can be installed on purpose (apply(version=…)): a newer one other than the
+latest, or an older one (a downgrade, which needs allow_downgrade=True). A downgrade runs that
+version's own installer exactly like an update. Data is kept; the database only ever gains
+columns/tables, which older versions ignore.
 """
 from __future__ import annotations
 
@@ -185,7 +190,7 @@ def _versions_blocking() -> list[dict]:
         found[_vkey(tag)] = {
             "version": tag.lstrip("vV"), "source": "release", "ref": tag,
             "name": rel.get("name") or tag, "notes": (rel.get("body") or "")[:5000],
-            "published_at": rel.get("published_at"), "url": rel.get("html_url"),
+            "published_at": rel.get("published_at"), "url": rel.get("html_url") or release_page(tag),
         }
     body = _get(f"{base}/tags?per_page=100", "Tags", missing_ok=True)
     for t in json.loads(body or b"[]"):
@@ -193,7 +198,7 @@ def _versions_blocking() -> list[dict]:
         if STABLE_RE.fullmatch(tag) and _vkey(tag) not in found:
             found[_vkey(tag)] = {
                 "version": tag.lstrip("vV"), "source": "tag", "ref": tag, "name": tag, "notes": "",
-                "published_at": None, "url": f"https://github.com/{repo()}/tree/{tag}",
+                "published_at": None, "url": release_page(tag),
                 "_sha": t.get("commit", {}).get("sha"),
             }
     versions = [found[k] for k in sorted(found, reverse=True)]
@@ -231,15 +236,25 @@ def _branch_version(base: str) -> dict:
     return info
 
 
+def release_page(tag: str) -> str:
+    """GitHub's page for a release (for a plain tag GitHub shows the tag there)."""
+    return f"https://github.com/{repo()}/releases/tag/{urllib.parse.quote(tag, safe='')}"
+
+
 def _with_pending(result: dict) -> dict:
-    """Add the versions between the installed one and the newest ("pending", oldest first)."""
+    """Add the versions between the installed one and the newest ("pending", oldest first) and
+    the full list of published versions ("releases", newest first, each marked newer/current/older)."""
     current = current_version()
     versions = result.get("versions") or []
     pending = [{k: v[k] for k in ("version", "name", "notes", "published_at", "url")}
                for v in reversed(versions) if is_newer(v["version"], current)]
+    releases = []
+    for v in versions:
+        rel = "newer" if is_newer(v["version"], current) else "older" if is_newer(current, v["version"]) else "current"
+        releases.append({k: v[k] for k in ("version", "name", "notes", "published_at", "url", "source")} | {"status": rel})
     latest = result.get("latest")
     out = {k: v for k, v in result.items() if k != "versions"}
-    return {**out, "current": current, "pending": pending,
+    return {**out, "current": current, "pending": pending, "releases": releases,
             "update_available": bool(latest) and is_newer(latest["version"], current)}
 
 
@@ -455,19 +470,38 @@ def _upgrade_mode() -> dict:
     return {"full_upgrade": full, "setup_command": hint}
 
 
-async def _apply_full(info: dict) -> dict:
-    """Start a full upgrade (the new install.sh, as root, in the background)."""
+async def _apply_full(info: dict, target: dict) -> dict:
+    """Start a full upgrade (the target version's install.sh, as root, in the background)."""
     from . import server_name
-    latest = info["latest"]
     tok, _ = token()
-    out = await asyncio.to_thread(server_name.run_helper, "upgrade", latest["ref"], latest["version"],
+    out = await asyncio.to_thread(server_name.run_helper, "upgrade", target["ref"], target["version"],
                                   timeout=60, input=(tok or "") + "\n")
-    return {"ok": True, "mode": "full", "from": info["current"], "to": latest["version"],
-            "changed": [], "log": [out], "restart": True}
+    return {"ok": True, "mode": "full", "from": info["current"], "to": target["version"],
+            "changed": [], "log": [out], "restart": True,
+            "downgrade": is_newer(info["current"], target["version"])}
 
 
-async def apply() -> dict:
-    """Install the latest version.
+def _pick(versions: list[dict], version: str | None, current: str, allow_downgrade: bool) -> dict:
+    """The version to install: `version` if given (any published one), else the newest."""
+    if not version:
+        target = versions[0]
+    else:
+        want = _vkey(version.strip().lstrip("vV"))
+        target = next((v for v in versions if _vkey(v["version"]) == want), None)
+        if target is None:
+            raise UpdateError(f"Version {version} isn't published on github.com/{repo()}.")
+    if not is_newer(target["version"], current):
+        if not is_newer(current, target["version"]):
+            raise UpdateError(f"Version {target['version']} is already installed.")
+        if not allow_downgrade:
+            raise UpdateError(f"Version {target['version']} is older than the installed {current}; "
+                              "confirm the downgrade to install it.")
+    return target
+
+
+async def apply(version: str | None = None, allow_downgrade: bool = False) -> dict:
+    """Install the latest version, or a chosen published `version` (older ones need
+    allow_downgrade: going back reinstalls that version exactly like an update).
 
     Preferred ("full" mode): the root helper downloads the release and runs its install.sh
     non-interactively, exactly like a manual install/upgrade (system packages, systemd unit,
@@ -477,6 +511,7 @@ async def apply() -> dict:
     Fallback ("code" mode, when the helper isn't available): replace the app code and Python
     packages only. The caller restarts the app afterwards.
     """
+    global _last_check
     if _lock.locked():
         raise UpdateError("An update is already running.")
     async with _lock:
@@ -485,15 +520,16 @@ async def apply() -> dict:
         info = await check(force=True)
         if info["error"]:
             raise UpdateError(info["error"])
-        if not info["update_available"]:
+        if not version and not info["update_available"]:
             raise UpdateError(f"Already up to date (version {info['current']}).")
-        latest = info["latest"]
+        latest = _pick(_last_check.get("versions") or [], version, info["current"], allow_downgrade)
         if re.fullmatch(r"\d+(\.\d+){0,3}", latest["version"]) and await asyncio.to_thread(full_upgrade_available):
             try:
-                return await _apply_full(info)
+                return await _apply_full(info, latest)
             except RuntimeError as e:
                 raise UpdateError(str(e)) from e
-        log: list[str] = [f"Updating {info['current']} -> {latest['version']} ({latest['source']} {latest['ref']})"]
+        log: list[str] = [f"{'Downgrading' if is_newer(info['current'], latest['version']) else 'Updating'} "
+                          f"{info['current']} -> {latest['version']} ({latest['source']} {latest['ref']})"]
         work = Path(tempfile.mkdtemp(prefix="update-", dir=settings.data_dir))
         try:
             archive = work / "src.tar.gz"
@@ -505,9 +541,9 @@ async def apply() -> dict:
             changed = await asyncio.to_thread(_install, src, latest["version"], log)
         finally:
             shutil.rmtree(work, ignore_errors=True)
-        global _last_check
         _last_check = None
         from . import server_name
         return {"ok": True, "mode": "code", "from": info["current"], "to": latest["version"],
                 "changed": changed, "log": log, "restart": under_supervisor(),
+                "downgrade": is_newer(info["current"], latest["version"]),
                 "setup_command": server_name.setup_command() if sys.platform.startswith("linux") else None}

@@ -519,14 +519,16 @@ def apps_catalog() -> dict:
         apps.append({k: a.get(k) for k in ("id", "cat", "title", "image", "logo", "about", "notes", "open", "network")} |
                     {"ports": [{"container": p["container"], "proto": p.get("proto", "tcp"), "label": p.get("label")} for p in a["ports"]],
                      "containers": have.get(docker_apps.repo(a["image"]), []),
-                     "needs": [e["label"] for e in a["env"] if e.get("required")] +
+                     "needs": [e["label"] for e in a["env"] if e.get("required") and not e.get("value") and not e.get("autogen")] +
                               [f["label"] for f in a["folders"] if f.get("kind") == "media"]})
     return {"categories": [{"id": i, "title": t} for i, t in docker_apps.CATEGORIES], "apps": apps}
 
 
-def _prepare_app(app: dict, det: dict, name: str, used: dict[int, str]) -> dict:
-    """Form values from a catalog app's preset. Essential settings (user names, passwords, your media
-    folders) start empty and must be filled in before the container can be created."""
+def _prepare_app(app: dict, det: dict, name: str, used: dict[int, str], image: str | None = None) -> dict:
+    """Form values from a catalog app's preset: every setting the app needs, with its default value
+    (user names as documented by the image, passwords freshly generated). Required settings can't be
+    emptied, and your media folders must be chosen, before the container can be created."""
+    import secrets as _secrets
     base = re.sub(r"[^a-z0-9_.-]", "-", (name or app["id"]).lower()).strip("-.") or app["id"]
     if not name:   # a second copy of the same app gets postgres-2, postgres-3…
         try:
@@ -570,10 +572,12 @@ def _prepare_app(app: dict, det: dict, name: str, used: dict[int, str]) -> dict:
         v = e.get("value", "")
         if e["key"] in ("TZ", "GENERIC_TIMEZONE") and v == "Etc/UTC" and tz:
             v = tz   # the server's own time zone
+        if e.get("autogen") and not v:
+            v = _secrets.token_urlsafe(18)   # 24 characters, letters/digits/-/_ (safe in URLs and env files)
         env.append({"key": e["key"], "value": v, "label": e.get("label"), "required": bool(e.get("required")),
                     "secret": bool(e.get("secret")), "generate": bool(e.get("generate")), "placeholder": e.get("placeholder", ""),
-                    "preset": True})
-    return {"present": True, "image": app["image"], "details": det, "name": base, "ports": ports, "mounts": mounts, "env": env,
+                    "generated": bool(e.get("autogen")), "preset": True})
+    return {"present": True, "image": image or app["image"], "details": det, "name": base, "ports": ports, "mounts": mounts, "env": env,
             "network": app.get("network") or "bridge", "command": app.get("command", ""), "privileged": bool(app.get("privileged")),
             "sysctls": app.get("sysctls") or {}, "allow_system_paths": any(f.get("kind") == "host" for f in app["folders"]),
             "app": {"id": app["id"], "title": app["title"], "notes": app.get("notes"), "open": app.get("open"), "logo": app.get("logo")},
@@ -586,13 +590,20 @@ def prepare(image: str, name: str = "", app_id: str = "") -> dict:
     app = docker_apps.get(app_id) if app_id else None
     if app_id and not app:
         raise DockerError("Unknown app.")
-    image = _check_image(app["image"] if app else image)
+    # A catalog app's image typed by hand (e.g. "postgres" or "postgres:16") gets the same preset,
+    # with the tag the user typed.
+    typed = _check_image(image) if image else None
+    if typed and not app:
+        app = docker_apps.for_image(typed)
+    if app and not (typed and docker_apps.repo(typed) == docker_apps.repo(app["image"])):
+        typed = None   # another image than the app's: use the app's own
+    image = typed or _check_image(app["image"])
     det = image_details(image)
     if det is None:
         return {"present": False, "image": image}
     used = used_host_ports()
     if app:
-        return _prepare_app(app, det, name, used)
+        return _prepare_app(app, det, name, used, image)
     taken: set[int] = set()
     ports = []
     for p in det["ports"]:
