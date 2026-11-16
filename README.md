@@ -157,6 +157,45 @@ Supported filesystems: ext2/3/4, XFS, Btrfs, FAT32, exFAT, NTFS, F2FS, ISO 9660/
 - **Users** tab (admins only): everyone who can sign in, with their picture. Change roles (admin or viewer), set a new password for someone, delete users, and add new ones. There's always at least one admin.
 - **Your profile card** (top right) shows your picture and username. Click it for **Edit profile** (picture, username, display name, email), **Change password**, and **Sign out**. Pictures are cropped to a square in the browser and stored in the app database.
 
+### Jobs, variables and mail accounts (Automation)
+
+**Jobs** are automations: *when* something happens, *then* do something. A job has one or more triggers (it runs when any of them fires) and a list of actions that run in order. **Run now** tests a job straight away, and **History** shows the last 100 runs with what each action did.
+
+| Triggers (When) | |
+|---|---|
+| Schedule | Every N minutes, daily, weekly, monthly, or a cron expression |
+| Disk space | A drive (or any drive) is over N % full |
+| CPU usage / Memory usage | Over N %, optionally for at least N minutes |
+| System load | 5-minute load per CPU core over N |
+| Temperature | A sensor (or any sensor) over N °C |
+| Service failed | A systemd service (or any service) has failed |
+| Update available | A new SysAdmin.IA version is published (checked hourly) |
+| App started | SysAdmin.IA starts (e.g. after a reboot) |
+| Mail received | New unread mail in a mail account, optionally from someone or with a subject |
+
+Condition triggers (disk, CPU, memory, load, temperature, service) fire when the problem starts. They fire again every N minutes while it lasts (0 = only once), and optionally once more when it's back to normal: in actions, `{{trigger.state}}` is `alert` or `recovered`. The engine checks every 20 seconds.
+
+| Actions (Then) | |
+|---|---|
+| Send an email | Through a mail account, with subject and message filled from placeholders |
+| Call a webhook | POST/GET to Slack, Teams, Discord, ntfy or any URL |
+| Run a command | A shell command as the `sysadmin-ia` user; its output is available to later actions |
+| Ask the AI | Ask an AI connection (no tools); its answer is `{{ai.answer}}` |
+| Check for updates | Optionally install the update |
+| Set a variable | Store a value, e.g. the time of the last alert |
+
+**Placeholders** in any action text are replaced when the job runs. The editor lists the ones available (click one to insert it):
+- `{{trigger.summary}}`, `{{trigger.value}}`, `{{trigger.mount}}`, `{{mail.subject}}`, … come from the trigger.
+- `{{last.output}}` and `{{steps.2.output}}` come from earlier actions.
+- `{{var.NAME}}` inserts one of your variables.
+- `{{sys.hostname}}`, `{{sys.ip}}`, `{{sys.datetime}}`, `{{sys.url}}`, … are built in.
+
+**Variables** are named values you define once and reuse, e.g. `alert_email` and then `{{var.alert_email}}` in every job. Mark a variable **secret** for passwords and tokens: its value is never shown again and is masked in job logs.
+
+**Mail accounts** let jobs send mail (SMTP) and read mail (IMAP). Presets fill in the servers for Gmail, Outlook / Microsoft 365, Yahoo, iCloud and a local mail relay. Use an *app password* where the provider requires one, and use **Test** to check the settings (optionally sending a test message).
+
+Jobs run inside the app, so they only run while it's running. Commands run with the app user's permissions (sudo only with full access). Job changes and runs are recorded in the audit log.
+
 ### Console
 
 The **Console** tab (admins only) is a terminal on the server in the browser: a login shell as the `sysadmin-ia` user, with full colors, resizing and copy/paste. With full access it can use `sudo`, just like Claude's commands. Unlike Claude's actions, commands typed there run immediately, without an approval step. Opening and closing a console session is recorded in the audit log, but what is typed is not. The **Update progress** session follows the installer's output while an update runs. To turn the console off, set `SAI_ALLOW_CONSOLE=false` and restart.

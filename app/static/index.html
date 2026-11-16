@@ -55,6 +55,13 @@
       <span data-icon="monitor"></span><span>Monitor</span></button>
     <button data-view="drives" class="tab nav-item admin-only" id="tab-drives" title="Drives">
       <span data-icon="internal"></span><span>Drives</span></button>
+    <div class="nav-group admin-only">Automation</div>
+    <button data-view="jobs" class="tab nav-item admin-only" id="tab-jobs" title="Jobs">
+      <span data-icon="clock"></span><span>Jobs</span></button>
+    <button data-view="variables" class="tab nav-item admin-only" id="tab-variables" title="Variables">
+      <span data-icon="braces"></span><span>Variables</span></button>
+    <button data-view="mail" class="tab nav-item admin-only" id="tab-mail" title="Mail accounts">
+      <span data-icon="mail"></span><span>Mail accounts</span></button>
     <div class="nav-group admin-only">Settings</div>
     <button data-view="ai" class="tab nav-item admin-only" id="tab-ai" title="AI connections">
       <span data-icon="ai"></span><span>AI connections</span></button>
@@ -366,8 +373,149 @@
         under Anthropic's terms: to use Claude with your Google account, add Claude through <strong>Google Cloud (Vertex AI)</strong>.</p>
     </div>
   </section>
+  <!-- ================= JOBS ================= -->
+  <section id="view-jobs" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Jobs</h2>
+          <p class="muted small">Automations: <strong>when</strong> something happens (a schedule, a full disk, high temperature, new mail…),
+            <strong>then</strong> do something (send a warning email, run a command, ask the AI, check for updates…).</p>
+        </div>
+        <button type="button" class="primary" id="job-add"><span data-icon="plus"></span> New job</button>
+      </div>
+      <div id="job-list" class="job-list"></div>
+    </div>
+  </section>
+
+  <section id="view-job-edit" class="view">
+    <div class="page">
+      <button type="button" class="ghost back-btn" id="job-back"><span data-icon="arrow-left"></span> Jobs</button>
+      <h2 id="job-edit-title">New job</h2>
+      <div class="job-editor">
+        <form id="job-form" class="job-form" autocomplete="off">
+          <div class="card settings-form">
+            <label>Name <input name="name" maxlength="80" required placeholder="e.g. Warn me when a disk is almost full"></label>
+            <label>Description <span class="muted small">(optional)</span><input name="description" maxlength="500"></label>
+            <label class="check"><input type="checkbox" name="enabled" checked> Enabled</label>
+          </div>
+          <div class="job-section">
+            <h3><span class="step-badge">1</span> When <span class="muted small">— the job runs when any of these happens</span></h3>
+            <div id="job-triggers" class="item-list"></div>
+            <button type="button" class="ghost" id="job-add-trigger"><span data-icon="plus"></span> Add a trigger</button>
+          </div>
+          <div class="job-section">
+            <h3><span class="step-badge">2</span> Then <span class="muted small">— these actions run in order</span></h3>
+            <div id="job-actions" class="item-list"></div>
+            <button type="button" class="ghost" id="job-add-action"><span data-icon="plus"></span> Add an action</button>
+          </div>
+          <div class="card settings-form">
+            <label class="check"><input type="checkbox" name="stop_on_error" checked> If an action fails, skip the remaining actions</label>
+          </div>
+          <p class="small" id="job-msg" hidden></p>
+          <div class="row job-buttons">
+            <button class="primary" id="job-save">Save job</button>
+            <button type="button" class="ghost" id="job-cancel">Cancel</button>
+          </div>
+        </form>
+        <aside class="card placeholder-help" id="job-placeholders">
+          <h3>Placeholders</h3>
+          <p class="muted small">Click one to insert it in the text box you were editing. They're replaced with real values when the job runs.</p>
+          <div id="ph-groups"></div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= VARIABLES ================= -->
+  <section id="view-variables" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Variables</h2>
+          <p class="muted small">Values you define once and reuse anywhere, e.g. an alert address. In a job, type
+            <code>{{var.name}}</code> and it's replaced by the value. Secret variables are hidden after saving and masked in logs.</p>
+        </div>
+        <button type="button" class="primary" id="var-add"><span data-icon="plus"></span> New variable</button>
+      </div>
+      <div class="card"><div id="var-list" class="var-list"></div></div>
+      <div class="card">
+        <h3>Built-in values</h3>
+        <p class="muted small">Always available, no need to create them. Shown with their current value.</p>
+        <div id="var-builtins" class="var-list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= MAIL ACCOUNTS ================= -->
+  <section id="view-mail" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Mail accounts</h2>
+          <p class="muted small">Email accounts jobs can <strong>send</strong> warnings from, or <strong>read</strong> to react to incoming messages.</p>
+        </div>
+        <button type="button" class="primary" id="mail-add"><span data-icon="plus"></span> Add account</button>
+      </div>
+      <div id="mail-list" class="ai-list"></div>
+    </div>
+  </section>
   </main>
   </div>
+
+  <dialog id="var-dialog" class="dialog">
+    <form id="var-form" autocomplete="off">
+      <h3 id="var-title">New variable</h3>
+      <label>Name <input name="name" required maxlength="64" spellcheck="false" placeholder="alert_email">
+        <span class="muted small">Letters, digits and _. Use it as <code id="var-preview">{{var.name}}</code></span></label>
+      <label>Value <textarea name="value" rows="3" spellcheck="false"></textarea></label>
+      <label>Description <span class="muted small">(optional)</span><input name="description" maxlength="300" placeholder="Who gets the warnings"></label>
+      <label class="check"><input type="checkbox" name="secret"> Secret (password, token…): hide the value after saving</label>
+      <p class="small error" id="var-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="var-cancel">Cancel</button>
+        <button class="primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="mail-dialog" class="dialog wide">
+    <form id="mail-form" autocomplete="off">
+      <h3 id="mail-title">Add mail account</h3>
+      <label>Provider <select name="preset" id="mail-preset"></select><span class="muted small" id="mail-preset-help"></span></label>
+      <label>Name <input name="name" maxlength="60" placeholder="e.g. Office alerts"></label>
+      <div class="two-col">
+        <label>Email address <input name="from_address" type="email" placeholder="alerts@example.com"></label>
+        <label>Sender name <span class="muted small">(optional)</span><input name="from_name" placeholder="SysAdmin.IA"></label>
+      </div>
+      <div class="two-col">
+        <label>Username <input name="username" autocomplete="off" placeholder="usually the email address"></label>
+        <label>Password <input name="password" type="password" autocomplete="new-password"></label>
+      </div>
+      <details class="setup-steps" id="mail-advanced">
+        <summary>Server settings</summary>
+        <div class="srv-grid">
+          <strong class="srv-head">Sending (SMTP)</strong>
+          <label>Server <input name="smtp_host" placeholder="smtp.example.com — empty = can't send"></label>
+          <label>Port <input name="smtp_port" inputmode="numeric"></label>
+          <label>Security <select name="smtp_security"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></label>
+          <strong class="srv-head">Reading (IMAP)</strong>
+          <label>Server <input name="imap_host" placeholder="imap.example.com — empty = can't read"></label>
+          <label>Port <input name="imap_port" inputmode="numeric"></label>
+          <label>Security <select name="imap_security"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option><option value="none">None</option></select></label>
+          <label class="srv-wide">Folder to watch <input name="imap_folder" placeholder="INBOX"></label>
+        </div>
+      </details>
+      <label>Send a test message to <span class="muted small">(optional)</span><input name="test_to" type="email" placeholder="you@example.com"></label>
+      <p class="small" id="mail-msg" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="mail-test"><span data-icon="test"></span> Test</button>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" id="mail-cancel">Cancel</button>
+        <button class="primary" id="mail-save">Save</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="ai-dialog" class="dialog wide">
     <form id="ai-form" autocomplete="off">

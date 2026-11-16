@@ -7,6 +7,7 @@ import binascii
 import contextlib
 import os
 import signal
+import json
 import time
 from pathlib import Path
 
@@ -16,7 +17,8 @@ from pydantic import BaseModel
 
 
 from . import ai_connections as ai
-from . import agent, auth, console, db, drives, google_oauth, monitor, providers, server_name, updater
+from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
+from . import variables
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -418,6 +420,222 @@ async def chat_connections(user: User = Depends(admin_user)):
     """Enabled connections for the chat's picker."""
     return [{"id": c["id"], "name": c["name"], "short": ai.public(c)["short"], "model": ai.public(c)["model"],
              "is_default": c["is_default"]} for c in ai.list_all() if c["enabled"]]
+
+
+# ---------------------------------------------------------------- variables (admin)
+
+class VariableBody(BaseModel):
+    name: str
+    value: str | None = None      # for a secret: empty = keep the saved value
+    description: str = ""
+    secret: bool = False
+
+
+@app.get("/api/variables")
+async def variables_list(user: User = Depends(admin_user)):
+    return {"variables": variables.list_all(), "builtins": await asyncio.to_thread(variables.system_values)}
+
+
+@app.post("/api/variables")
+async def variables_create(body: VariableBody, request: Request, user: User = Depends(admin_user)):
+    if variables.get(body.name.strip()) is not None:
+        raise HTTPException(400, f"A variable called {body.name.strip()} already exists.")
+    try:
+        v = variables.save(body.name, body.value, body.description, body.secret)
+    except variables.VariableError as e:
+        raise HTTPException(400, str(e))
+    db.audit("variable_created", user.username, auth.client_ip(request), {"name": v["name"], "secret": v["secret"]})
+    return v
+
+
+@app.put("/api/variables/{name}")
+async def variables_update(name: str, body: VariableBody, request: Request, user: User = Depends(admin_user)):
+    if variables.get(name) is None:
+        raise HTTPException(404, "That variable no longer exists.")
+    try:
+        v = variables.save(body.name, body.value, body.description, body.secret, original_name=name)
+    except variables.VariableError as e:
+        raise HTTPException(400, str(e))
+    db.audit("variable_updated", user.username, auth.client_ip(request), {"name": v["name"], "was": name})
+    return v
+
+
+@app.delete("/api/variables/{name}")
+async def variables_delete(name: str, request: Request, user: User = Depends(admin_user)):
+    used = [j["name"] for j in jobs.list_all() if f"var.{name}" in json.dumps(j["actions"])
+            or any(a.get("type") == "set_variable" and a.get("name") == name for a in j["actions"])]
+    variables.delete(name)
+    db.audit("variable_deleted", user.username, auth.client_ip(request), {"name": name})
+    return {"ok": True, "used_by": used}
+
+
+# ---------------------------------------------------------------- mail accounts (admin)
+
+class MailBody(BaseModel):
+    name: str | None = None
+    config: dict = {}
+    password: str | None = None        # blank = keep the saved one
+    clear_password: bool = False
+
+
+class MailTestBody(BaseModel):
+    id: int | None = None
+    draft: MailBody | None = None
+    send_to: str = ""
+
+
+def _mail_dict(b: MailBody) -> dict:
+    return b.model_dump() if hasattr(b, "model_dump") else b.dict()
+
+
+def _jobs_using_mail(acc_id: int) -> list[str]:
+    return [j["name"] for j in jobs.list_all()
+            if any(str(x.get("account")) == str(acc_id) for x in j["triggers"] + j["actions"])]
+
+
+@app.get("/api/mail/accounts")
+async def mail_list(user: User = Depends(admin_user)):
+    return {"accounts": [dict(mail.public(a), used_by=_jobs_using_mail(a["id"])) for a in mail.list_all()],
+            "presets": mail.PRESETS}
+
+
+@app.post("/api/mail/accounts")
+async def mail_create(body: MailBody, request: Request, user: User = Depends(admin_user)):
+    try:
+        a = mail.create(_mail_dict(body))
+    except mail.MailError as e:
+        raise HTTPException(400, str(e))
+    db.audit("mail_account_created", user.username, auth.client_ip(request), {"id": a["id"], "name": a["name"]})
+    return mail.public(a)
+
+
+@app.put("/api/mail/accounts/{aid}")
+async def mail_update(aid: int, body: MailBody, request: Request, user: User = Depends(admin_user)):
+    try:
+        a = mail.update(aid, _mail_dict(body))
+    except mail.MailError as e:
+        raise HTTPException(400, str(e))
+    db.audit("mail_account_updated", user.username, auth.client_ip(request),
+             {"id": aid, "name": a["name"], "password_changed": bool(body.password or body.clear_password)})
+    return mail.public(a)
+
+
+@app.delete("/api/mail/accounts/{aid}")
+async def mail_delete(aid: int, request: Request, user: User = Depends(admin_user)):
+    used = _jobs_using_mail(aid)
+    if used:
+        raise HTTPException(400, f"This account is used by: {', '.join(used)}. Change those jobs first.")
+    mail.delete(aid)
+    db.audit("mail_account_deleted", user.username, auth.client_ip(request), {"id": aid})
+    return {"ok": True}
+
+
+@app.post("/api/mail/test")
+async def mail_test(body: MailTestBody, user: User = Depends(admin_user)):
+    try:
+        a = mail.draft(_mail_dict(body.draft), body.id) if body.draft else mail.get(body.id)
+        if not a:
+            return {"ok": False, "message": "That account no longer exists."}
+        msg = await asyncio.wait_for(asyncio.to_thread(mail.test, a, body.send_to.strip()), 60)
+        return {"ok": True, "message": msg}
+    except mail.MailError as e:
+        return {"ok": False, "message": str(e)}
+    except asyncio.TimeoutError:
+        return {"ok": False, "message": "The mail server didn't answer within 60 seconds."}
+    except Exception as e:
+        return {"ok": False, "message": f"{type(e).__name__}: {e}"}
+
+
+# ---------------------------------------------------------------- jobs (admin)
+
+class JobBody(BaseModel):
+    name: str = ""
+    description: str = ""
+    enabled: bool = True
+    triggers: list = []
+    actions: list = []
+    options: dict = {}
+
+
+class EnabledBody(BaseModel):
+    enabled: bool
+
+
+def _job_dict(b: JobBody) -> dict:
+    return b.model_dump() if hasattr(b, "model_dump") else b.dict()
+
+
+@app.get("/api/jobs/catalog")
+async def jobs_catalog(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(jobs.catalog)
+
+
+@app.get("/api/jobs")
+async def jobs_list(user: User = Depends(admin_user)):
+    return [jobs.public(j) | {"running": j["id"] in jobs.ENGINE.running} for j in jobs.list_all()]
+
+
+@app.post("/api/jobs")
+async def jobs_create(body: JobBody, request: Request, user: User = Depends(admin_user)):
+    try:
+        j = jobs.create(_job_dict(body))
+    except jobs.JobError as e:
+        raise HTTPException(400, str(e))
+    db.audit("job_created", user.username, auth.client_ip(request), {"id": j["id"], "name": j["name"]})
+    return jobs.public(j)
+
+
+@app.put("/api/jobs/{jid}")
+async def jobs_update(jid: int, body: JobBody, request: Request, user: User = Depends(admin_user)):
+    try:
+        j = jobs.update(jid, _job_dict(body))
+    except jobs.JobError as e:
+        raise HTTPException(400, str(e))
+    db.audit("job_updated", user.username, auth.client_ip(request), {"id": jid, "name": j["name"]})
+    return jobs.public(j)
+
+
+@app.post("/api/jobs/{jid}/enabled")
+async def jobs_enable(jid: int, body: EnabledBody, request: Request, user: User = Depends(admin_user)):
+    if not jobs.get(jid):
+        raise HTTPException(404)
+    jobs.set_enabled(jid, body.enabled)
+    db.audit("job_enabled" if body.enabled else "job_disabled", user.username, auth.client_ip(request), {"id": jid})
+    return {"ok": True}
+
+
+@app.delete("/api/jobs/{jid}")
+async def jobs_delete(jid: int, request: Request, user: User = Depends(admin_user)):
+    j = jobs.get(jid)
+    if not j:
+        raise HTTPException(404)
+    jobs.delete(jid)
+    db.audit("job_deleted", user.username, auth.client_ip(request), {"id": jid, "name": j["name"]})
+    return {"ok": True}
+
+
+@app.post("/api/jobs/{jid}/run")
+async def jobs_run_now(jid: int, user: User = Depends(admin_user)):
+    """Run the actions now (as a test). Trigger placeholders get example values."""
+    j = jobs.get(jid)
+    if not j:
+        raise HTTPException(404)
+    ctx = {"summary": f"Manual test run of “{j['name']}”", "state": "test", "value": "", "threshold": "",
+           "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+    try:
+        return await jobs.ENGINE.run(jid, ctx, f"Run now by {user.username}", user=user.username)
+    except jobs.JobError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/jobs/{jid}/runs")
+async def jobs_runs(jid: int, user: User = Depends(admin_user)):
+    return jobs.runs(jid)
+
+
+@app.on_event("startup")
+async def _start_jobs() -> None:
+    jobs.ENGINE.start()
 
 
 # ---------------------------------------------------------------- drives (admin)

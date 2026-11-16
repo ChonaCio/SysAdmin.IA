@@ -62,6 +62,45 @@ CREATE TABLE IF NOT EXISTS ai_usage (                -- tokens used per AI conne
     cache_write_tokens INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (connection_id, day)
 );
+CREATE TABLE IF NOT EXISTS variables (               -- global variables, used as {{var.NAME}}
+    name TEXT PRIMARY KEY,
+    value TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    secret INTEGER NOT NULL DEFAULT 0,            -- hidden in the UI and in job logs
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS mail_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    config TEXT NOT NULL DEFAULT '{}',            -- servers, ports, username, from address (JSON)
+    secrets TEXT NOT NULL DEFAULT '{}',           -- password (JSON); never sent to browsers
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS jobs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    enabled INTEGER NOT NULL DEFAULT 1,
+    triggers TEXT NOT NULL DEFAULT '[]',          -- JSON list of {type, ...settings}
+    actions TEXT NOT NULL DEFAULT '[]',           -- JSON list of {type, ...settings}
+    options TEXT NOT NULL DEFAULT '{}',           -- JSON: stop_on_error, ...
+    state TEXT NOT NULL DEFAULT '{}',             -- JSON: per-trigger engine state (next run, armed, ...)
+    last_run REAL,
+    last_status TEXT,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS job_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id INTEGER NOT NULL,
+    started_at REAL NOT NULL,
+    finished_at REAL,
+    status TEXT NOT NULL,                         -- running | ok | failed
+    trigger TEXT NOT NULL DEFAULT '',             -- what started it, in words
+    log TEXT NOT NULL DEFAULT '[]'                -- JSON list of {action, ok, message}
+);
+CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs (job_id, id);
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,

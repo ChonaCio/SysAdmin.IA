@@ -345,6 +345,21 @@ class AnthropicProvider:
             raise ProviderError(_credential_hint(self.conn, e))
         return f"Connected. Model {self.model} answered."
 
+    async def complete(self, prompt: str, system: str = "") -> tuple[str, dict | None]:
+        """A single question/answer without tools (used by the "Ask the AI" job action)."""
+        try:
+            r = await self.client().messages.create(model=self.model, max_tokens=2000, system=system or anthropic.NOT_GIVEN,
+                                                    messages=[{"role": "user", "content": prompt}])
+        except ProviderError:
+            raise
+        except Exception as e:
+            raise ProviderError(_credential_hint(self.conn, e) if not hasattr(e, "status_code") else f"AI service error: {e}")
+        text = "".join(getattr(b, "text", "") for b in r.content).strip()
+        u = r.usage
+        return text, {"input_tokens": u.input_tokens, "output_tokens": u.output_tokens,
+                      "cache_read_tokens": getattr(u, "cache_read_input_tokens", 0) or 0,
+                      "cache_write_tokens": getattr(u, "cache_creation_input_tokens", 0) or 0}
+
     async def models(self) -> list[str]:
         if self.method != "api_key":
             return ai.PROVIDERS["anthropic"]["models"]
@@ -568,6 +583,23 @@ class OpenAICompatProvider:
         except Exception as e:
             raise self._error(e)
         return f"Connected. {self.model} answered{': ' + reply[:40] if reply else ''}."
+
+    async def complete(self, prompt: str, system: str = "") -> tuple[str, dict | None]:
+        """A single question/answer without tools (used by the "Ask the AI" job action)."""
+        client = self.client()
+        msgs = ([{"role": "system", "content": system}] if system else []) + [{"role": "user", "content": prompt}]
+        try:
+            r = await client.chat.completions.create(model=self.model, messages=msgs)
+        except Exception as e:
+            raise self._error(e)
+        text = (r.choices[0].message.content or "").strip() if r.choices else ""
+        u = getattr(r, "usage", None)
+        usage = None
+        if u is not None:
+            cached = getattr(getattr(u, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+            usage = {"input_tokens": max(0, (u.prompt_tokens or 0) - cached), "cache_read_tokens": cached,
+                     "output_tokens": u.completion_tokens or 0, "cache_write_tokens": 0}
+        return text, usage
 
     async def models(self) -> list[str]:
         client = self.client()

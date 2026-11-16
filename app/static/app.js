@@ -48,6 +48,16 @@ const ICON = {
   check: '<path d="M5 12l5 5 9-10"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   test: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
+  braces: '<path d="M8 4H7a2 2 0 0 0-2 2v4l-2 2 2 2v4a2 2 0 0 0 2 2h1M16 4h1a2 2 0 0 1 2 2v4l2 2-2 2v4a2 2 0 0 1-2 2h-1"/>',
+  play: '<path d="M7 4l13 8-13 8z"/>',
+  pause: '<path d="M8 5v14M16 5v14"/>',
+  history: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5M12 7v5l3 2"/>',
+  "arrow-down": '<path d="M12 5v14M6 13l6 6 6-6"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
+  copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
 };
 function icon(name, cls = "") {
   return `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name] || ""}</svg>`;
@@ -135,12 +145,16 @@ function switchView(v) {
   if (!SUBPAGES.has(v) && v !== state.view) state.lastTab = v;
   if (SUBPAGES.has(v) && !SUBPAGES.has(state.view)) state.lastTab = state.view;
   state.view = v;
-  $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
+  const navView = v === "job-edit" ? "jobs" : v;   // sub-pages keep their module highlighted
+  $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === navView));
   $$(".view").forEach((s) => s.classList.toggle("active", s.id === `view-${v}`));
   closeProfileMenu();
   closeNav();
   clearInterval(state.drivesTimer);
   if (v === "ai") loadAi();
+  if (v === "jobs") loadJobs();
+  if (v === "variables") loadVariables();
+  if (v === "mail") loadMail();
   if (v === "admin") loadAdmin();
   if (v === "monitor") { drawCharts(); refreshProcs(); }
   if (v === "console") showConsoleSession(state.consoleSession || "shell");
@@ -1927,6 +1941,482 @@ $("#fb-sizes").addEventListener("click", async () => {
     renderBrowser();
   } catch (ex) { toast(ex.message); }
   finally { btn.disabled = false; btn.textContent = old; }
+});
+
+// ------------------------------------------------------------ variables module
+const ph = (name) => `{{${name}}}`;
+async function loadVariables() {
+  let r;
+  try { r = await api("/api/variables"); } catch (ex) { $("#var-list").textContent = ex.message; return; }
+  state.variables = r.variables;
+  const list = $("#var-list");
+  list.innerHTML = "";
+  if (!r.variables.length) list.append(el("p", { class: "muted small" }, "No variables yet. Create one, e.g. alert_email = you@example.com."));
+  for (const v of r.variables) {
+    list.append(el("div", { class: "var-row" },
+      el("div", { class: "var-name" }, el("code", { class: "copyable", title: "Click to copy", onclick: () => copyText(ph(`var.${v.name}`)) }, ph(`var.${v.name}`)),
+        v.secret ? el("span", { class: "tag" }, "Secret") : null),
+      el("div", { class: "var-value mono small" }, v.secret ? (v.value_set ? "••••••••" : el("span", { class: "muted" }, "(empty)")) : (v.value || el("span", { class: "muted" }, "(empty)"))),
+      el("div", { class: "muted small var-desc" }, v.description),
+      el("div", { class: "var-actions" },
+        el("button", { type: "button", class: "small", onclick: () => openVariable(v) }, withIcon("edit", "Edit")),
+        el("button", { type: "button", class: "small ghost danger", onclick: async () => {
+          if (!confirm(`Delete the variable ${v.name}? Jobs that use {{var.${v.name}}} will show it unreplaced.`)) return;
+          try {
+            const res = await api(`/api/variables/${encodeURIComponent(v.name)}`, { method: "DELETE" });
+            toast(res.used_by.length ? `Deleted. Check these jobs: ${res.used_by.join(", ")}` : "Variable deleted.");
+            loadVariables();
+          } catch (ex) { toast(ex.message); }
+        } }, withIcon("trash", "Delete")))));
+  }
+  const b = $("#var-builtins");
+  b.innerHTML = "";
+  const labels = { hostname: "Server name", ip: "Server IP address", os: "Operating system", date: "Today's date",
+                   time: "Current time", datetime: "Date and time", weekday: "Day of the week", version: "SysAdmin.IA version", url: "Address of this app" };
+  for (const [k, val] of Object.entries(r.builtins)) {
+    b.append(el("div", { class: "var-row" },
+      el("div", { class: "var-name" }, el("code", { class: "copyable", title: "Click to copy", onclick: () => copyText(ph(`sys.${k}`)) }, ph(`sys.${k}`))),
+      el("div", { class: "var-value mono small" }, String(val)),
+      el("div", { class: "muted small var-desc" }, labels[k] || ""), el("div")));
+  }
+}
+function copyText(t) {
+  navigator.clipboard?.writeText(t).then(() => toast(`Copied ${t}`), () => toast(t));
+}
+function openVariable(v = null) {
+  const f = $("#var-form");
+  state.varEditing = v;
+  $("#var-title").textContent = v ? `Edit ${v.name}` : "New variable";
+  f.name.value = v ? v.name : "";
+  f.value.value = v && !v.secret ? v.value : "";
+  f.value.placeholder = v && v.secret && v.value_set ? "saved — leave empty to keep it" : "";
+  f.description.value = v ? v.description : "";
+  f.secret.checked = !!(v && v.secret);
+  $("#var-preview").textContent = ph(`var.${f.name.value || "name"}`);
+  $("#var-error").hidden = true;
+  $("#var-dialog").showModal();
+  f.name.focus();
+}
+$("#var-add").addEventListener("click", () => openVariable());
+$("#var-cancel").addEventListener("click", () => $("#var-dialog").close());
+$("#var-form").name.addEventListener("input", (e) => { $("#var-preview").textContent = ph(`var.${e.target.value || "name"}`); });
+$("#var-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, v = state.varEditing;
+  const body = { name: f.name.value.trim(), value: f.value.value, description: f.description.value, secret: f.secret.checked };
+  try {
+    await api(v ? `/api/variables/${encodeURIComponent(v.name)}` : "/api/variables", { method: v ? "PUT" : "POST", body: JSON.stringify(body) });
+    $("#var-dialog").close();
+    loadVariables();
+  } catch (ex) { $("#var-error").textContent = ex.message; $("#var-error").hidden = false; }
+});
+
+// ------------------------------------------------------------ mail accounts module
+async function loadMail() {
+  let r;
+  try { r = await api("/api/mail/accounts"); } catch (ex) { $("#mail-list").textContent = ex.message; return; }
+  state.mailPresets = r.presets;
+  const list = $("#mail-list");
+  list.innerHTML = "";
+  if (!r.accounts.length) {
+    list.append(el("div", { class: "card empty-card" }, el("strong", {}, "No mail accounts yet"),
+      el("p", { class: "muted small" }, "Add one so jobs can email you warnings, or react to messages that arrive."),
+      el("button", { type: "button", class: "primary", onclick: () => openMail() }, withIcon("plus", "Add account"))));
+  }
+  for (const a of r.accounts) {
+    const result = el("p", { class: "small", hidden: true });
+    list.append(el("div", { class: "card ai-card" },
+      el("div", { class: "ai-card-head" },
+        el("span", { class: "icon-tile", html: icon("mail") }),
+        el("div", { class: "ai-card-title" },
+          el("div", {}, el("strong", {}, a.name), " ",
+             a.can_send ? el("span", { class: "tag" }, "Sends") : null, " ", a.can_read ? el("span", { class: "tag" }, "Reads") : null),
+          el("div", { class: "muted small" }, `${a.config.from_address || a.config.username} · ${a.preset_label}`),
+          el("div", { class: "muted small" }, a.used_by.length ? `Used by: ${a.used_by.join(", ")}` : "Not used by any job yet")),
+        el("div", { class: "ai-actions" },
+          el("button", { type: "button", class: "small", onclick: async (e) => {
+            const b = e.currentTarget; b.disabled = true;
+            result.hidden = false; result.className = "small muted"; result.textContent = "Testing…";
+            try { const t = await api("/api/mail/test", { method: "POST", body: JSON.stringify({ id: a.id }) });
+                  result.className = `small ${t.ok ? "ok-text" : "error"}`; result.textContent = t.message; }
+            catch (ex) { result.className = "small error"; result.textContent = ex.message; }
+            b.disabled = false;
+          } }, withIcon("test", "Test")),
+          el("button", { type: "button", class: "small", onclick: () => openMail(a) }, withIcon("edit", "Edit")),
+          el("button", { type: "button", class: "small ghost danger", onclick: async () => {
+            if (!confirm(`Delete the mail account “${a.name}”? Its saved password is deleted too.`)) return;
+            try { await api(`/api/mail/accounts/${a.id}`, { method: "DELETE" }); loadMail(); } catch (ex) { toast(ex.message); }
+          } }, withIcon("trash", "Delete")))),
+      result));
+  }
+}
+function fillMailPreset(key, keepServers = false) {
+  const p = state.mailPresets[key] || state.mailPresets.custom, f = $("#mail-form");
+  $("#mail-preset-help").textContent = p.help || "";
+  if (keepServers) return;
+  for (const k of ["smtp_host", "smtp_port", "smtp_security", "imap_host", "imap_port", "imap_security"]) f[k].value = p[k] ?? "";
+  $("#mail-advanced").open = key === "custom";
+}
+async function openMail(a = null) {
+  if (!state.mailPresets) await loadMail();
+  const f = $("#mail-form");
+  state.mailEditing = a;
+  $("#mail-title").textContent = a ? `Edit “${a.name}”` : "Add mail account";
+  const sel = $("#mail-preset");
+  sel.innerHTML = "";
+  for (const [k, p] of Object.entries(state.mailPresets)) sel.append(el("option", { value: k }, p.label));
+  const c = a ? a.config : {};
+  sel.value = c.preset || "gmail";
+  f.name.value = a ? a.name : "";
+  for (const k of ["from_address", "from_name", "username", "imap_folder"]) f[k].value = c[k] || "";
+  f.password.value = "";
+  f.password.placeholder = a && a.password_set ? "saved — leave empty to keep it" : "app password recommended";
+  f.test_to.value = "";
+  if (a) {
+    for (const k of ["smtp_host", "smtp_port", "smtp_security", "imap_host", "imap_port", "imap_security"]) f[k].value = c[k] ?? "";
+    fillMailPreset(sel.value, true);
+    $("#mail-advanced").open = false;
+  } else fillMailPreset(sel.value);
+  setFormMsg("#mail-msg", "");
+  $("#mail-dialog").showModal();
+}
+$("#mail-preset").addEventListener("change", (e) => fillMailPreset(e.target.value));
+$("#mail-add").addEventListener("click", () => openMail());
+$("#mail-cancel").addEventListener("click", () => $("#mail-dialog").close());
+function mailBody() {
+  const f = $("#mail-form");
+  const config = { preset: f.preset.value };
+  for (const k of ["from_address", "from_name", "username", "smtp_host", "smtp_port", "smtp_security", "imap_host", "imap_port", "imap_security", "imap_folder"])
+    config[k] = f[k].value.trim();
+  if (!config.username) config.username = config.from_address;
+  return { name: f.name.value.trim(), config, password: f.password.value || null };
+}
+$("#mail-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const a = state.mailEditing;
+  try {
+    await api(a ? `/api/mail/accounts/${a.id}` : "/api/mail/accounts", { method: a ? "PUT" : "POST", body: JSON.stringify(mailBody()) });
+    $("#mail-dialog").close();
+    loadMail();
+  } catch (ex) { setFormMsg("#mail-msg", ex.message, false); }
+});
+$("#mail-test").addEventListener("click", async () => {
+  const b = $("#mail-test");
+  b.disabled = true;
+  setFormMsg("#mail-msg", "Testing…");
+  try {
+    const r = await api("/api/mail/test", { method: "POST", body: JSON.stringify({
+      id: state.mailEditing?.id || null, draft: mailBody(), send_to: $("#mail-form").test_to.value.trim() }) });
+    setFormMsg("#mail-msg", r.message, r.ok);
+  } catch (ex) { setFormMsg("#mail-msg", ex.message, false); }
+  b.disabled = false;
+});
+
+// ------------------------------------------------------------ jobs module
+function fmtWhen(ts) {
+  if (!ts) return "";
+  const d = new Date(ts * 1000), now = new Date();
+  const sameDay = d.toDateString() === now.toDateString();
+  return sameDay ? `today ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+}
+
+async function loadJobs() {
+  const list = $("#job-list");
+  let jobsList;
+  try { jobsList = await api("/api/jobs"); } catch (ex) { list.textContent = ex.message; return; }
+  list.innerHTML = "";
+  if (!jobsList.length) {
+    list.append(el("div", { class: "card empty-card" }, el("strong", {}, "No jobs yet"),
+      el("p", { class: "muted small" }, "For example: email me when a disk is over 90% full, check for updates every Monday, or ask the AI to explain a failed service."),
+      el("button", { type: "button", class: "primary", onclick: () => openJobEditor() }, withIcon("plus", "New job"))));
+  }
+  for (const j of jobsList) list.append(jobCard(j));
+}
+
+function jobCard(j) {
+  const tags = [
+    j.enabled ? null : el("span", { class: "tag" }, "Paused"),
+    j.running ? el("span", { class: "tag tag-accent" }, "Running") : null,
+    j.alerting ? el("span", { class: "tag tag-warn" }, "Alert active") : null,
+  ];
+  const last = j.last_run
+    ? el("span", { class: j.last_status === "ok" ? "ok-text" : "error" }, `${j.last_status === "ok" ? "✓" : "✗"} Last run ${fmtWhen(j.last_run)}`)
+    : el("span", { class: "muted" }, "Never run yet");
+  const history = el("div", { class: "job-history", hidden: true });
+  const card = el("div", { class: `card job-card ${j.enabled ? "" : "disabled"}` },
+    el("div", { class: "ai-card-head" },
+      el("span", { class: `icon-tile ${j.alerting ? "accent" : ""}`, html: icon("clock") }),
+      el("div", { class: "ai-card-title" },
+        el("div", {}, el("strong", {}, j.name), " ", tags),
+        j.description ? el("div", { class: "muted small" }, j.description) : null),
+      el("div", { class: "ai-actions" },
+        el("button", { type: "button", class: "small", title: "Run the actions now, as a test", onclick: async (e) => {
+          const b = e.currentTarget; b.disabled = true;
+          try { const r = await api(`/api/jobs/${j.id}/run`, { method: "POST" });
+                toast(r.status === "ok" ? "Job ran successfully." : "The job ran with errors — see History.");
+                loadJobs(); }
+          catch (ex) { toast(ex.message); b.disabled = false; }
+        } }, withIcon("play", "Run now")),
+        el("button", { type: "button", class: "small", onclick: () => openJobEditor(j) }, withIcon("edit", "Edit")),
+        el("button", { type: "button", class: "small ghost", onclick: async () => {
+          history.hidden = !history.hidden;
+          if (!history.hidden) renderJobHistory(j.id, history);
+        } }, withIcon("history", "History")),
+        el("button", { type: "button", class: "small ghost", onclick: async () => {
+          try { await api(`/api/jobs/${j.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: !j.enabled }) }); loadJobs(); }
+          catch (ex) { toast(ex.message); }
+        } }, j.enabled ? withIcon("pause", "Pause") : withIcon("play", "Resume")),
+        el("button", { type: "button", class: "small ghost danger", onclick: async () => {
+          if (!confirm(`Delete the job “${j.name}” and its history?`)) return;
+          try { await api(`/api/jobs/${j.id}`, { method: "DELETE" }); loadJobs(); } catch (ex) { toast(ex.message); }
+        } }, withIcon("trash", "Delete")))),
+    el("div", { class: "job-flow" },
+      el("div", { class: "flow-col" }, el("div", { class: "flow-label" }, "When"),
+        el("ul", {}, j.trigger_summaries.map((s) => el("li", {}, s)))),
+      el("div", { class: "flow-col" }, el("div", { class: "flow-label" }, "Then"),
+        el("ol", {}, j.action_summaries.map((s) => el("li", {}, s))))),
+    el("div", { class: "job-foot small" }, last,
+      j.next_run ? el("span", { class: "muted" }, ` · Next: ${fmtWhen(j.next_run)}`) : null),
+    history);
+  return card;
+}
+
+async function renderJobHistory(id, box) {
+  box.innerHTML = "";
+  box.append(el("p", { class: "muted small" }, "Loading…"));
+  let runs;
+  try { runs = await api(`/api/jobs/${id}/runs`); } catch (ex) { box.textContent = ex.message; return; }
+  box.innerHTML = "";
+  if (!runs.length) { box.append(el("p", { class: "muted small" }, "No runs yet.")); return; }
+  for (const r of runs) {
+    box.append(el("details", { class: "run" },
+      el("summary", {}, el("span", { class: r.status === "ok" ? "ok-text" : r.status === "running" ? "muted" : "error" },
+        r.status === "ok" ? "✓ OK" : r.status === "running" ? "… Running" : "✗ Failed"),
+        ` · ${fmtWhen(r.started_at)} · `, el("span", { class: "muted" }, r.trigger)),
+      el("ol", { class: "run-log" }, r.log.map((x) => el("li", { class: x.ok ? "" : "error" },
+        x.action ? el("strong", {}, `${x.action}: `) : null, x.message)))));
+  }
+}
+
+// ---- job editor
+async function openJobEditor(job = null) {
+  state.jobCat = await api("/api/jobs/catalog");
+  state.jobEditing = job;
+  const f = $("#job-form");
+  $("#job-edit-title").textContent = job ? `Edit “${job.name}”` : "New job";
+  f.name.value = job ? job.name : "";
+  f.description.value = job ? job.description : "";
+  f.enabled.checked = job ? job.enabled : true;
+  f.stop_on_error.checked = job ? job.options.stop_on_error !== false : true;
+  $("#job-triggers").innerHTML = "";
+  $("#job-actions").innerHTML = "";
+  if (job) {
+    job.triggers.forEach((t) => addJobItem("trigger", t));
+    job.actions.forEach((a) => addJobItem("action", a));
+  } else {
+    addJobItem("trigger", { type: "disk_usage" });
+    addJobItem("action", { type: "send_mail" });
+  }
+  setFormMsg("#job-msg", "");
+  switchView("job-edit");
+  renderPlaceholders();
+  f.name.focus();
+}
+$("#job-add").addEventListener("click", () => openJobEditor());
+$("#job-back").addEventListener("click", () => switchView("jobs"));
+$("#job-cancel").addEventListener("click", () => switchView("jobs"));
+$("#job-add-trigger").addEventListener("click", () => { addJobItem("trigger", { type: "schedule" }); renderPlaceholders(); });
+$("#job-add-action").addEventListener("click", () => { addJobItem("action", { type: "send_mail" }); renderPlaceholders(); });
+
+function addJobItem(kind, item) {
+  const cat = kind === "trigger" ? state.jobCat.triggers : state.jobCat.actions;
+  const box = $(kind === "trigger" ? "#job-triggers" : "#job-actions");
+  const card = el("div", { class: "card job-item" });
+  card.dataset.kind = kind;
+  const typeSel = el("select", { class: "item-type", "aria-label": kind === "trigger" ? "Trigger type" : "Action type" });
+  if (kind === "trigger") {
+    const groups = {};
+    for (const [k, t] of Object.entries(cat)) (groups[t.group] ||= []).push([k, t]);
+    for (const [g, items] of Object.entries(groups)) {
+      const og = el("optgroup", { label: g });
+      for (const [k, t] of items) og.append(el("option", { value: k }, t.label));
+      typeSel.append(og);
+    }
+  } else for (const [k, a] of Object.entries(cat)) typeSel.append(el("option", { value: k }, a.label));
+  typeSel.value = item.type;
+  const head = el("div", { class: "item-head" },
+    el("span", { class: "icon-tile small-tile item-icon" }),
+    kind === "action" ? el("span", { class: "step-no" }) : null,
+    typeSel, el("span", { class: "spacer" }),
+    kind === "action" ? el("button", { type: "button", class: "small ghost", title: "Move up", "aria-label": "Move up", onclick: () => { card.previousElementSibling?.before(card); renumber(); } }, el("span", { html: icon("arrow-up") })) : null,
+    kind === "action" ? el("button", { type: "button", class: "small ghost", title: "Move down", "aria-label": "Move down", onclick: () => { card.nextElementSibling?.after(card); renumber(); } }, el("span", { html: icon("arrow-down") })) : null,
+    el("button", { type: "button", class: "small ghost danger", title: "Remove", "aria-label": "Remove", onclick: () => { card.remove(); renumber(); renderPlaceholders(); } }, el("span", { html: icon("x") })));
+  const desc = el("p", { class: "muted small item-desc" });
+  const fields = el("div", { class: "item-fields" });
+  card.append(head, desc, fields);
+  const render = (values) => {
+    const spec = cat[typeSel.value];
+    head.querySelector(".item-icon").innerHTML = icon(spec.icon || "bolt");
+    desc.textContent = spec.description;
+    fields.innerHTML = "";
+    for (const fd of spec.fields) fields.append(jobField(fd, values[fd.key] ?? fd.default));
+    applyShowIf(card, spec);
+  };
+  typeSel.addEventListener("change", () => { render({}); renderPlaceholders(); });
+  fields.addEventListener("change", () => applyShowIf(card, cat[typeSel.value]));
+  render(item);
+  box.append(card);
+  renumber();
+}
+
+function renumber() {
+  $$("#job-actions .job-item .step-no").forEach((s, i) => { s.textContent = String(i + 1); });
+}
+
+function jobField(fd, value) {
+  const cat = state.jobCat;
+  let input;
+  const opts = (list, extra = []) => [...extra, ...list].map(([v, l]) => el("option", { value: String(v) }, l));
+  switch (fd.type) {
+    case "textarea":
+      input = el("textarea", { rows: fd.key === "body" || fd.key === "prompt" ? "6" : "3", spellcheck: "false", class: fd.mono ? "mono" : "" });
+      input.value = value ?? "";
+      break;
+    case "number":
+      input = el("input", { type: "number", min: fd.min, max: fd.max, step: fd.step || 1 });
+      input.value = value ?? "";
+      break;
+    case "time":
+      input = el("input", { type: "time" });
+      input.value = value || "08:00";
+      break;
+    case "bool":
+      input = el("input", { type: "checkbox" });
+      input.checked = !!value;
+      break;
+    case "select":
+      input = el("select", {}, opts(fd.options));
+      input.value = value ?? fd.default;
+      break;
+    case "mount":
+      input = el("select", {}, opts(cat.mounts.map((m) => [m.value, m.label]), [["*", "Any drive"]]));
+      input.value = value || "*";
+      if (value && value !== "*" && input.value !== value) { input.append(el("option", { value }, value)); input.value = value; }
+      break;
+    case "sensor":
+      input = el("select", {}, opts(cat.sensors.map((m) => [m.value, m.label]), [["*", cat.sensors.length ? "Any sensor" : "Any sensor (none detected on this server)"]]));
+      input.value = value || "*";
+      break;
+    case "mail_account": {
+      const accs = cat.mail_accounts.filter((a) => !fd.need || a[fd.need]);
+      input = el("select", {}, opts(accs.map((a) => [a.value, a.label]), [["", accs.length ? "Choose…" : "No suitable mail account — add one in Mail accounts"]]));
+      input.value = value ? String(value) : (accs.length === 1 ? String(accs[0].value) : "");
+      break;
+    }
+    case "ai_connection":
+      input = el("select", {}, opts(cat.ai_connections.map((c) => [c.value, c.label]), [["", "Default connection"]]));
+      input.value = value ? String(value) : "";
+      break;
+    case "weekdays": {
+      input = el("div", { class: "weekdays" });
+      for (const d of cat.weekdays) {
+        const cb = el("input", { type: "checkbox", value: d });
+        cb.checked = (value || []).includes(d);
+        input.append(el("label", { class: "day-chip" }, cb, d.charAt(0).toUpperCase() + d.slice(1, 3)));
+      }
+      break;
+    }
+    case "variable":
+      input = el("input", { list: "var-names", spellcheck: "false", placeholder: "last_alert" });
+      input.value = value || "";
+      if (!$("#var-names")) document.body.append(el("datalist", { id: "var-names" }));
+      $("#var-names").innerHTML = cat.variables.map((v) => `<option value="${esc(v.name)}">`).join("");
+      break;
+    default:
+      input = el("input", { type: "text", spellcheck: "false", placeholder: fd.placeholder || "", class: fd.type === "cron" ? "mono" : "" });
+      input.value = value ?? "";
+  }
+  input.dataset.key = fd.key;
+  input.dataset.ftype = fd.type;
+  if (["text", "textarea"].includes(fd.type)) input.dataset.ph = "1";
+  const label = fd.type === "bool"
+    ? el("label", { class: "check field" }, input, fd.label)
+    : el("label", { class: "field" }, fd.label, fd.required ? null : (["bool", "select", "mount", "sensor", "ai_connection", "weekdays", "number", "time"].includes(fd.type) ? null : el("span", { class: "muted small" }, " (optional)")), input);
+  label.dataset.key = fd.key;
+  if (fd.help) label.append(el("span", { class: "muted small" }, fd.help));
+  return label;
+}
+
+function itemValues(card) {
+  const vals = { type: card.querySelector(".item-type").value };
+  card.querySelectorAll(".item-fields [data-key]").forEach((i) => {
+    if (i.tagName === "LABEL") return;
+    const ft = i.dataset.ftype;
+    if (ft === "bool") vals[i.dataset.key] = i.checked;
+    else if (ft === "number") vals[i.dataset.key] = i.value === "" ? null : Number(i.value);
+    else if (ft === "weekdays") vals[i.dataset.key] = [...i.querySelectorAll("input:checked")].map((c) => c.value);
+    else vals[i.dataset.key] = i.value;
+  });
+  return vals;
+}
+
+function applyShowIf(card, spec) {
+  const vals = itemValues(card);
+  for (const fd of spec.fields) {
+    if (!fd.show_if) continue;
+    const show = Object.entries(fd.show_if).every(([k, allowed]) => allowed.includes(vals[k]));
+    const lbl = card.querySelector(`.item-fields label[data-key="${fd.key}"]`);
+    if (lbl) lbl.hidden = !show;
+  }
+}
+
+// Placeholder helper: what can be used in the job's text fields right now.
+function renderPlaceholders() {
+  const cat = state.jobCat, box = $("#ph-groups");
+  if (!cat) return;
+  const groups = [];
+  const trig = new Set();
+  $$("#job-triggers .item-type").forEach((s) => (cat.triggers[s.value]?.placeholders || []).forEach((p) => trig.add(p)));
+  if (trig.size) groups.push(["From the trigger", [...trig]]);
+  const prov = new Set(["steps.1.output"]);
+  $$("#job-actions .item-type").forEach((s) => (cat.actions[s.value]?.provides || []).forEach((p) => prov.add(p)));
+  groups.push(["From earlier actions", [...prov]]);
+  if (cat.variables.length) groups.push(["Your variables", cat.variables.map((v) => `var.${v.name}`)]);
+  groups.push(["Built-in", cat.system_placeholders]);
+  box.innerHTML = "";
+  for (const [title, items] of groups) {
+    box.append(el("div", { class: "ph-group" }, el("div", { class: "flow-label" }, title),
+      el("div", { class: "ph-chips" }, items.map((p) => el("button", { type: "button", class: "ph-chip", onclick: () => insertPlaceholder(p) }, ph(p))))));
+  }
+}
+document.addEventListener("focusin", (e) => {
+  if (e.target.dataset && e.target.dataset.ph) state.phTarget = e.target;
+});
+function insertPlaceholder(p) {
+  const t = state.phTarget;
+  if (!t || !document.body.contains(t)) { copyText(ph(p)); return; }
+  const s = t.selectionStart ?? t.value.length, e2 = t.selectionEnd ?? t.value.length;
+  t.value = t.value.slice(0, s) + ph(p) + t.value.slice(e2);
+  t.focus();
+  t.selectionStart = t.selectionEnd = s + ph(p).length;
+}
+
+$("#job-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target, j = state.jobEditing;
+  const body = {
+    name: f.name.value.trim(), description: f.description.value.trim(), enabled: f.enabled.checked,
+    triggers: $$("#job-triggers .job-item").map(itemValues),
+    actions: $$("#job-actions .job-item").map(itemValues),
+    options: { stop_on_error: f.stop_on_error.checked },
+  };
+  $("#job-save").disabled = true;
+  try {
+    await api(j ? `/api/jobs/${j.id}` : "/api/jobs", { method: j ? "PUT" : "POST", body: JSON.stringify(body) });
+    toast(j ? "Job saved." : `Job “${body.name}” created.`);
+    switchView("jobs");
+  } catch (ex) { setFormMsg("#job-msg", ex.message, false); }
+  $("#job-save").disabled = false;
 });
 
 boot().catch((e) => console.error(e));
