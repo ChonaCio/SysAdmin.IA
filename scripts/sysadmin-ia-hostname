@@ -27,6 +27,11 @@
 #                        ollama-uninstall [--delete-models]
 #                                   install Ollama (local AI models) with its official installer
 #                                   from ollama.com, control its service and default context length
+#   sysadmin-ia-hostname docker-install | docker-access grant|revoke | docker-service start|stop|restart |
+#                        docker-uninstall [--delete-data]
+#                                   install Docker with its official script (get.docker.com), let the
+#                                   service user use it (docker group = root-equivalent access to
+#                                   Docker), control its service, or remove it
 #   sysadmin-ia-hostname unmount DIR [--forget]
 #                                   unmount DIR (only under /mnt, /media, /run/media);
 #                                   --forget also removes the fstab entry this helper added
@@ -542,7 +547,127 @@ do_ollama_uninstall() {  # ollama-uninstall [--delete-models]
   fi
 }
 
+# ---------------------------------------------------------------- Docker (containers module)
+DOCKER_LOG="${LOG_DIR}/docker.log"
+DOCKER_STATUS="${LOG_DIR}/docker.status"
+
+docker_status() {  # docker_status STATE MESSAGE
+  printf 'state=%s\nupdated=%s\nmessage=%s\n' "$1" "$(date +%s)" "$2" > "${DOCKER_STATUS}.tmp"
+  chown root:"$SVC_USER" "${DOCKER_STATUS}.tmp"; chmod 640 "${DOCKER_STATUS}.tmp"
+  mv "${DOCKER_STATUS}.tmp" "$DOCKER_STATUS"
+}
+
+do_docker_install() {  # docker-install   (runs Docker's official convenience script in the background)
+  prepare_log_dir
+  if [[ -f "$DOCKER_STATUS" ]] && grep -q '^state=running' "$DOCKER_STATUS" \
+     && (( $(date +%s) - $(sed -n 's/^updated=//p' "$DOCKER_STATUS") < 1800 )); then
+    die "a Docker installation is already running"
+  fi
+  : > "$DOCKER_LOG"; chown root:"$SVC_USER" "$DOCKER_LOG"; chmod 640 "$DOCKER_LOG"
+  docker_status running "Starting"
+  local self; self="$(readlink -f "${BASH_SOURCE[0]}")"
+  if command -v systemd-run >/dev/null && [[ -d /run/systemd/system ]]; then
+    systemd-run --quiet --collect --unit="${APP_NAME}-docker-install-$(date +%s)" /bin/bash "$self" _docker-install-run
+  else
+    nohup setsid /bin/bash "$self" _docker-install-run >/dev/null 2>&1 &
+  fi
+  echo "Docker installation started."
+}
+
+do_docker_install_run() {
+  prepare_log_dir
+  exec >>"$DOCKER_LOG" 2>&1
+  set -E
+  trap 'docker_status failed "Unexpected error; see the log"' ERR
+  local work; work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  if command -v docker >/dev/null && command -v dockerd >/dev/null; then
+    echo "==> $(date -Is) Docker is already installed: $(docker --version 2>/dev/null)"
+  else
+    echo "==> $(date -Is) Downloading the official install script from https://get.docker.com"
+    docker_status running "Downloading the installer"
+    if ! python3 -I -c '
+import sys, urllib.request
+req = urllib.request.Request("https://get.docker.com", headers={"User-Agent": "SysAdmin.IA"})
+with urllib.request.urlopen(req, timeout=60) as r, open(sys.argv[1], "wb") as f:
+    f.write(r.read())
+' "${work}/get-docker.sh"; then
+      docker_status failed "Could not download the installer from get.docker.com"; return 1
+    fi
+    echo "==> Installing Docker Engine, the docker command and Docker Compose (a few minutes)"
+    docker_status running "Installing Docker"
+    if ! sh "${work}/get-docker.sh"; then
+      docker_status failed "The Docker installer failed (is this Linux distribution supported?); see the log"; return 1
+    fi
+  fi
+  echo "==> Starting the Docker service"
+  docker_status running "Starting Docker"
+  systemctl enable --now docker.service 2>/dev/null || systemctl enable --now docker 2>/dev/null || true
+  echo "==> Giving SysAdmin.IA access to Docker (adds ${SVC_USER} to the docker group)"
+  getent group docker >/dev/null || groupadd --system docker
+  usermod -aG docker "$SVC_USER"
+  for i in $(seq 1 30); do
+    if docker info >/dev/null 2>&1; then
+      echo "==> $(date -Is) Docker is installed and running: $(docker --version)"
+      docker_status done "Docker is installed and running"
+      return 0
+    fi
+    sleep 2
+  done
+  docker_status failed "Docker was installed but didn't start; see the log"
+  return 1
+}
+
+do_docker_access() {  # docker-access grant|revoke   (the service user's membership of the docker group)
+  case "${1:-}" in
+    grant)  getent group docker >/dev/null || groupadd --system docker
+            usermod -aG docker "$SVC_USER"; echo "${SVC_USER} can now use Docker (after the app restarts)." ;;
+    revoke) gpasswd -d "$SVC_USER" docker >/dev/null 2>&1 || true; echo "${SVC_USER} can no longer use Docker (after the app restarts)." ;;
+    *) die "usage: docker-access grant|revoke" ;;
+  esac
+}
+
+do_docker_service() {  # docker-service start|stop|restart
+  case "${1:-}" in start|stop|restart) ;; *) die "usage: docker-service start|stop|restart" ;; esac
+  if [[ "$1" == stop ]]; then
+    systemctl stop docker.socket docker.service 2>/dev/null || systemctl stop docker
+  else
+    systemctl "$1" docker
+    systemctl enable docker >/dev/null 2>&1 || true
+  fi
+  echo "Docker: ${1} done."
+}
+
+do_docker_uninstall() {  # docker-uninstall [--delete-data]
+  local del=0
+  [[ "${1:-}" == "--delete-data" ]] && del=1
+  systemctl disable --now docker.socket docker.service containerd 2>/dev/null || true
+  local pkgs="docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin docker-ce-rootless-extras docker-model-plugin"
+  if command -v apt-get >/dev/null; then
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y $pkgs >/dev/null 2>&1 || true
+    DEBIAN_FRONTEND=noninteractive apt-get autoremove -y >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null; then
+    dnf remove -y $pkgs >/dev/null 2>&1 || true
+  elif command -v yum >/dev/null; then
+    yum remove -y $pkgs >/dev/null 2>&1 || true
+  elif command -v zypper >/dev/null; then
+    zypper --non-interactive remove $pkgs >/dev/null 2>&1 || true
+  fi
+  gpasswd -d "$SVC_USER" docker >/dev/null 2>&1 || true
+  if [[ $del -eq 1 ]]; then
+    rm -rf /var/lib/docker /var/lib/containerd
+    echo "Docker and all its containers, images and volumes were removed."
+  else
+    echo "Docker was removed. Containers, images and volumes were kept in /var/lib/docker."
+  fi
+}
+
 case "${1:-}" in
+  docker-install)   do_docker_install ;;
+  _docker-install-run) do_docker_install_run ;;
+  docker-access)    [[ $# -eq 2 ]] || die "usage: $0 docker-access grant|revoke"; do_docker_access "$2" ;;
+  docker-service)   [[ $# -eq 2 ]] || die "usage: $0 docker-service start|stop|restart"; do_docker_service "$2" ;;
+  docker-uninstall) shift; do_docker_uninstall "$@" ;;
   ollama-install)   do_ollama_install ;;
   _ollama-install-run) do_ollama_install_run ;;
   ollama-service)   [[ $# -eq 2 ]] || die "usage: $0 ollama-service start|stop|restart"; do_ollama_service "$2" ;;
@@ -558,5 +683,5 @@ case "${1:-}" in
   install) do_install ;;
   upgrade) [[ $# -eq 3 ]] || die "usage: $0 upgrade REF VERSION"; do_upgrade "$2" "$3" ;;
   _upgrade-run) [[ $# -eq 3 ]] || die "usage: $0 _upgrade-run REF VERSION"; do_upgrade_run "$2" "$3" ;;
-  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION|mount DEV NAME|unmount DIR|ollama-install|ollama-service ACTION|ollama-context N|ollama-uninstall}" ;;
+  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION|mount DEV NAME|unmount DIR|ollama-install|ollama-service ACTION|ollama-context N|ollama-uninstall|docker-install|docker-access ACTION|docker-service ACTION|docker-uninstall}" ;;
 esac

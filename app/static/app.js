@@ -60,6 +60,8 @@ const ICON = {
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   chip: '<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
+  box: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
+  link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
 };
 function icon(name, cls = "") {
   return `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name] || ""}</svg>`;
@@ -156,6 +158,7 @@ function switchView(v) {
   if (v === "ai") loadAi();
   if (v === "jobs") loadJobs();
   if (v === "localai") loadLocalAI();
+  if (v === "containers" && window.loadDocker) loadDocker();
   if (v === "variables") loadVariables();
   if (v === "mail") loadMail();
   if (v === "admin") loadAdmin();
@@ -1550,8 +1553,9 @@ const consoles = {};
 
 function makeConsole(name) {
   if (consoles[name]) return consoles[name];
+  const interactive = name === "shell" || name === "container";
   const term = new Terminal({
-    cursorBlink: name === "shell", disableStdin: name !== "shell", scrollback: 5000, fontSize: 13,
+    cursorBlink: interactive, disableStdin: !interactive, scrollback: 5000, fontSize: 13,
     fontFamily: getComputedStyle(document.documentElement).getPropertyValue("--mono").trim() || "monospace",
     theme: { background: "#111317", foreground: "#e6e8eb", cursor: "#e0793c", selectionBackground: "#3a4250" },
   });
@@ -1571,13 +1575,15 @@ function connectConsole(name) {
   const c = makeConsole(name);
   if (c.ws && c.ws.readyState <= 1) return;
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const ws = new WebSocket(`${proto}://${location.host}/ws/console?mode=${name}`);
+  const extra = name === "container" ? `&id=${encodeURIComponent(state.consoleContainer?.id || "")}` : "";
+  const ws = new WebSocket(`${proto}://${location.host}/ws/console?mode=${name}${extra}`);
   ws.binaryType = "arraybuffer";
   c.ws = ws;
   if (name === "update") c.term.reset();  // the log is replayed from the start
   setConsoleStatus(name, "connecting…");
   ws.onopen = () => {
-    setConsoleStatus(name, name === "shell" ? "connected" : "following the update log");
+    setConsoleStatus(name, name === "shell" ? "connected" : name === "container"
+      ? `connected to container “${state.consoleContainer?.name}”` : "following the update log");
     ws.send(JSON.stringify({ type: "resize", cols: c.term.cols, rows: c.term.rows }));
   };
   ws.onmessage = (e) => {
@@ -1598,25 +1604,40 @@ function setConsoleStatus(name, text) {
   consoles[name] && (consoles[name].status = text);
   if (state.consoleSession === name) {
     $("#console-status").textContent = text;
-    $("#console-reconnect").hidden = !(name === "shell" && text === "disconnected");
+    $("#console-reconnect").hidden = !((name === "shell" || name === "container") && text === "disconnected");
   }
 }
 
 function showConsoleSession(name) {
+  if (name === "container" && !state.consoleContainer) name = "shell";
   state.consoleSession = name;
   if (name === "update") $("#console-update-tab").hidden = false;
   $$("#console-sessions .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.session === name));
-  $("#console-term-shell").hidden = name !== "shell";
-  $("#console-term-update").hidden = name !== "update";
+  for (const n of ["shell", "update", "container"]) $(`#console-term-${n}`).hidden = name !== n;
   const c = makeConsole(name);
-  requestAnimationFrame(() => { c.fit.fit(); if (name === "shell") c.term.focus(); });
-  if (name === "shell" || state.updateConsole !== "local") connectConsole(name);
+  requestAnimationFrame(() => { c.fit.fit(); if (name !== "update") c.term.focus(); });
+  if (name !== "update" || state.updateConsole !== "local") connectConsole(name);
   setConsoleStatus(name, name === "update" && state.updateConsole === "local" ? "update output" : (c.status || ""));
 }
 
 function openConsole(name) {
   switchView("console");
   showConsoleSession(name);
+}
+
+// A shell inside a Docker container (opened from the Containers module).
+function openContainerConsole(id, name) {
+  const c = makeConsole("container");
+  if (state.consoleContainer?.id !== id) {
+    if (c.ws) { c.ws.onclose = null; c.ws.close(); c.ws = null; }
+    c.term.reset();
+    c.status = "";
+  }
+  state.consoleContainer = { id, name };
+  const tab = $("#console-container-tab");
+  tab.hidden = false;
+  tab.textContent = `Container: ${name}`;
+  openConsole("container");
 }
 
 function resetUpdateConsole() {
@@ -1629,9 +1650,10 @@ function updateConsoleWrite(text) { makeConsole("update").term.write(text); }
 
 $$("#console-sessions .seg-btn").forEach((b) => b.addEventListener("click", () => showConsoleSession(b.dataset.session)));
 $("#console-reconnect").addEventListener("click", () => {
-  const c = makeConsole("shell");
+  const name = state.consoleSession === "container" ? "container" : "shell";
+  const c = makeConsole(name);
   c.term.write("\r\n");
-  connectConsole("shell");
+  connectConsole(name);
 });
 window.addEventListener("resize", () => {
   if (state.view === "console" && consoles[state.consoleSession]) consoles[state.consoleSession].fit.fit();

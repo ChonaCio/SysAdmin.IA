@@ -55,6 +55,8 @@
       <span data-icon="monitor"></span><span>Monitor</span></button>
     <button data-view="drives" class="tab nav-item admin-only" id="tab-drives" title="Drives">
       <span data-icon="internal"></span><span>Drives</span></button>
+    <button data-view="containers" class="tab nav-item admin-only" id="tab-containers" title="Containers">
+      <span data-icon="box"></span><span>Containers</span></button>
     <div class="nav-group admin-only">Automation</div>
     <button data-view="jobs" class="tab nav-item admin-only" id="tab-jobs" title="Jobs">
       <span data-icon="clock"></span><span>Jobs</span></button>
@@ -173,6 +175,7 @@
         <span class="seg" id="console-sessions">
           <button data-session="shell" class="seg-btn active">Shell</button>
           <button data-session="update" class="seg-btn" id="console-update-tab" hidden>Update progress</button>
+          <button data-session="container" class="seg-btn" id="console-container-tab" hidden>Container</button>
         </span>
         <span class="muted small" id="console-status"></span>
         <span class="spacer"></span>
@@ -180,6 +183,7 @@
       </div>
       <div class="console-term" id="console-term-shell"></div>
       <div class="console-term" id="console-term-update" hidden></div>
+      <div class="console-term" id="console-term-container" hidden></div>
     </div>
   </section>
 
@@ -376,6 +380,63 @@
     </div>
   </section>
   <!-- ================= LOCAL AI (Ollama) ================= -->
+  <!-- ================= CONTAINERS (Docker) ================= -->
+  <section id="view-containers" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Containers</h2>
+          <p class="muted small">Run apps in <strong>Docker</strong> containers. Share ports and folders on your drives with them
+            in a few clicks.</p>
+        </div>
+      </div>
+      <p class="note warn" id="dk-setup" hidden></p>
+
+      <div class="card">
+        <div class="ai-card-head">
+          <span class="icon-tile" id="dk-tile"></span>
+          <div class="ai-card-title">
+            <div><strong>Docker</strong> <span class="status-pill" id="dk-pill"></span></div>
+            <div class="muted small" id="dk-version"></div>
+          </div>
+          <div class="ai-actions" id="dk-actions"></div>
+        </div>
+        <div class="lai-hw" id="dk-stats"></div>
+        <p class="note warn small" id="dk-access" hidden></p>
+        <div class="lai-install" id="dk-install" hidden>
+          <p class="small busy" id="dk-install-msg"></p>
+          <details id="dk-install-details">
+            <summary class="small">Show details</summary>
+            <pre class="update-notes mono small" id="dk-install-log"></pre>
+          </details>
+        </div>
+      </div>
+
+      <div id="dk-tasks" class="dk-tasks"></div>
+
+      <div class="card" id="dk-main" hidden>
+        <div class="dk-tabs-row">
+          <div class="seg dk-tabs" id="dk-tabs" role="tablist">
+            <button type="button" class="seg-btn active" data-tab="containers">Containers</button>
+            <button type="button" class="seg-btn" data-tab="images">Images</button>
+            <button type="button" class="seg-btn" data-tab="stacks">Stacks</button>
+            <button type="button" class="seg-btn" data-tab="volumes">Volumes</button>
+            <button type="button" class="seg-btn" data-tab="networks">Networks</button>
+            <button type="button" class="seg-btn" data-tab="cleanup">Clean up</button>
+          </div>
+        </div>
+        <div id="dk-pane"></div>
+      </div>
+
+      <details class="card lai-danger" id="dk-danger" hidden>
+        <summary>Remove Docker</summary>
+        <p class="small">Stops Docker and uninstalls it. Running containers stop.</p>
+        <label class="check small"><input type="checkbox" id="dk-delete-data"> Also delete all containers, images and volumes (in /var/lib/docker)</label>
+        <button type="button" class="danger small" id="dk-uninstall"><span data-icon="trash"></span> Remove Docker</button>
+      </details>
+    </div>
+  </section>
+
   <section id="view-localai" class="view">
     <div class="page">
       <div class="page-head">
@@ -553,6 +614,64 @@
   </main>
   </div>
 
+  <dialog id="dk-dialog" class="dialog wide">
+    <form id="dk-form" autocomplete="off">
+      <h3 id="dk-dialog-title">New container</h3>
+      <div id="dk-form-body"></div>
+      <p class="small error" id="dk-form-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="dk-cancel">Cancel</button>
+        <button class="primary" id="dk-save">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dk-stack-dialog" class="dialog wide">
+    <form id="dk-stack-form" autocomplete="off">
+      <h3 id="dk-stack-title">New stack</h3>
+      <label>Name <input name="name" required maxlength="63" spellcheck="false" placeholder="e.g. nextcloud">
+        <span class="muted small">Lowercase letters, digits, - and _.</span></label>
+      <label>Compose file (docker-compose.yml)
+        <textarea name="compose" rows="16" class="mono" spellcheck="false" placeholder="services:&#10;  web:&#10;    image: nginx&#10;    ports:&#10;      - &quot;8080:80&quot;&#10;    volumes:&#10;      - /mnt/data/web:/usr/share/nginx/html:ro&#10;    restart: unless-stopped"></textarea></label>
+      <div class="dk-insert small" id="dk-stack-insert"></div>
+      <label>Environment (.env) <span class="muted small">(optional: NAME=value per line, used as ${NAME} in the file)</span>
+        <textarea name="env" rows="4" class="mono" spellcheck="false"></textarea></label>
+      <p class="small error" id="dk-stack-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="dk-stack-cancel">Cancel</button>
+        <button type="button" id="dk-stack-save">Save</button>
+        <button class="primary" id="dk-stack-up">Save and start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="dk-folder-dialog" class="dialog">
+    <div class="dk-picker">
+      <h3>Choose a folder on the server</h3>
+      <div class="dk-picker-drives" id="dk-picker-drives"></div>
+      <div class="dk-picker-path mono small" id="dk-picker-path"></div>
+      <div class="dk-picker-list" id="dk-picker-list"></div>
+      <label class="small">Or type a path (it's created if it doesn't exist)
+        <input id="dk-picker-input" class="mono" spellcheck="false"></label>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="dk-picker-cancel">Cancel</button>
+        <button type="button" class="primary" id="dk-picker-ok">Use this folder</button>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="dk-logs-dialog" class="dialog wide">
+    <div class="dk-logs">
+      <div class="dk-logs-head">
+        <h3 id="dk-logs-title">Logs</h3>
+        <span class="spacer"></span>
+        <label class="check small"><input type="checkbox" id="dk-logs-follow" checked> Refresh every 3 s</label>
+        <button type="button" class="small ghost" id="dk-logs-close">Close</button>
+      </div>
+      <pre class="mono small dk-logs-pre" id="dk-logs-pre"></pre>
+    </div>
+  </dialog>
+
   <dialog id="var-dialog" class="dialog">
     <form id="var-form" autocomplete="off">
       <h3 id="var-title">New variable</h3>
@@ -691,5 +810,6 @@
   <script src="/static/vendor/addon-fit.js"></script>
   <script src="/static/markdown.js"></script>
   <script src="/static/app.js"></script>
+  <script src="/static/containers.js"></script>
 </body>
 </html>

@@ -5,6 +5,8 @@ Two kinds of session:
                access it can use sudo, like Claude's own commands.
   * "update" – a read-only view that follows the update log (tail -F), used by the
                "See details" button while an update runs.
+  * "container" – a shell inside a Docker container (docker exec -it ID bash|sh), opened
+               from the Containers module.
 
 Protocol: the server sends terminal output as binary frames and status as JSON text frames
 ({"type": "exit", "code": N} / {"type": "error", "message": ...}); the client sends JSON:
@@ -45,7 +47,12 @@ def _shell_argv() -> list[str]:
     return ["/bin/sh"]
 
 
-def _argv(mode: str) -> list[str]:
+def _argv(mode: str, container: str = "") -> list[str]:
+    if mode == "container":
+        docker = shutil.which("docker") or "/usr/bin/docker"
+        # A shell inside the container: bash if it has one, else sh.
+        return [docker, "exec", "-it", container, "/bin/sh", "-c",
+                "if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi"]
     if mode == "update":
         log = str(updater.UPGRADE_LOG)
         # Follow the update log; wait for it to appear if no update has run yet.
@@ -80,7 +87,7 @@ def _make_controlling_tty() -> None:  # runs in the child before exec
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
 
-async def run(ws: WebSocket, mode: str) -> int | None:
+async def run(ws: WebSocket, mode: str, container: str = "") -> int | None:
     """Serve one console session on an accepted WebSocket. Returns the exit code."""
     if not AVAILABLE:
         await ws.send_json({"type": "error", "message": "The console is only available when the app runs on Linux."})
@@ -91,7 +98,7 @@ async def run(ws: WebSocket, mode: str) -> int | None:
         _set_size(slave, 120, 32)
         env = _env()
         proc = await asyncio.create_subprocess_exec(
-            *_argv(mode), stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env["HOME"],
+            *_argv(mode, container), stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env["HOME"],
             start_new_session=True, preexec_fn=_make_controlling_tty,
         )
     except Exception as e:
@@ -131,7 +138,7 @@ async def run(ws: WebSocket, mode: str) -> int | None:
         while True:
             msg = await ws.receive_json()
             kind = msg.get("type")
-            if kind == "input" and mode == "shell":
+            if kind == "input" and mode in ("shell", "container"):
                 data = str(msg.get("data", "")).encode("utf-8", "replace")
                 while data:
                     try:

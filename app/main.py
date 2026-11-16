@@ -6,6 +6,7 @@ import base64
 import binascii
 import contextlib
 import os
+import re
 import signal
 import json
 import time
@@ -18,7 +19,7 @@ from pydantic import BaseModel
 
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
-from . import local_ai, model_search, variables
+from . import containers, local_ai, model_search, variables
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -556,6 +557,279 @@ async def localai_uninstall(body: OllamaUninstallBody, request: Request, user: U
     return {"ok": True, "message": out}
 
 
+# ---------------------------------------------------------------- containers (Docker, admin)
+
+def _dk(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except containers.DockerError as e:
+        raise HTTPException(400, str(e))
+
+
+class DockerActionBody(BaseModel):
+    action: str
+
+
+class DockerRemoveBody(BaseModel):
+    volumes: bool = False
+    force: bool = False
+
+
+class DockerSpecBody(BaseModel):
+    spec: dict
+
+
+class DockerNameBody(BaseModel):
+    name: str
+    internal: bool = False
+
+
+class DockerPruneBody(BaseModel):
+    what: list[str]
+
+
+class DockerUninstallBody(BaseModel):
+    delete_data: bool = False
+
+
+class StackBody(BaseModel):
+    compose: str
+    env: str = ""
+
+
+class NetConnectBody(BaseModel):
+    container: str
+    connect: bool = True
+
+
+@app.get("/api/docker/status")
+async def docker_status(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(containers.status)
+
+
+@app.post("/api/docker/install")
+async def docker_install(request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_dk, containers.helper, "docker-install")
+    db.audit("docker_install", user.username, auth.client_ip(request))
+    return {"ok": True, "message": out}
+
+
+@app.post("/api/docker/access")
+async def docker_access(body: DockerActionBody, request: Request, user: User = Depends(admin_user)):
+    if body.action not in ("grant", "revoke"):
+        raise HTTPException(400, "Unknown action.")
+    out = await asyncio.to_thread(_dk, containers.helper, "docker-access", body.action)
+    db.audit("docker_access", user.username, auth.client_ip(request), body.action)
+    return {"ok": True, "message": out}
+
+
+@app.post("/api/docker/restart-app")
+async def docker_restart_app(request: Request, user: User = Depends(admin_user)):
+    """Restart SysAdmin.IA so its new docker group membership applies."""
+    db.audit("docker_restart_app", user.username, auth.client_ip(request))
+    _schedule_restart()
+    return {"ok": True}
+
+
+@app.post("/api/docker/service")
+async def docker_service(body: DockerActionBody, request: Request, user: User = Depends(admin_user)):
+    if body.action not in ("start", "stop", "restart"):
+        raise HTTPException(400, "Unknown action.")
+    out = await asyncio.to_thread(_dk, containers.helper, "docker-service", body.action)
+    db.audit("docker_service", user.username, auth.client_ip(request), body.action)
+    return {"ok": True, "message": out}
+
+
+@app.post("/api/docker/uninstall")
+async def docker_uninstall(body: DockerUninstallBody, request: Request, user: User = Depends(admin_user)):
+    args = ["docker-uninstall"] + (["--delete-data"] if body.delete_data else [])
+    out = await asyncio.to_thread(_dk, containers.helper, *args, timeout=900)
+    db.audit("docker_uninstall", user.username, auth.client_ip(request), {"delete_data": body.delete_data})
+    return {"ok": True, "message": out}
+
+
+@app.get("/api/docker/containers")
+async def docker_containers(stats: bool = False, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.list_containers, stats)
+
+
+@app.get("/api/docker/containers/{cid}")
+async def docker_container(cid: str, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.inspect, cid)
+
+
+@app.get("/api/docker/containers/{cid}/logs")
+async def docker_container_logs(cid: str, tail: int = 300, timestamps: bool = False, user: User = Depends(admin_user)):
+    return {"logs": await asyncio.to_thread(_dk, containers.logs, cid, tail, timestamps)}
+
+
+@app.post("/api/docker/containers/{cid}/action")
+async def docker_container_action(cid: str, body: DockerActionBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_dk, containers.container_action, cid, body.action)
+    db.audit("docker_container_" + body.action, user.username, auth.client_ip(request), {"container": cid})
+    return {"ok": True}
+
+
+@app.post("/api/docker/containers/{cid}/remove")
+async def docker_container_remove(cid: str, body: DockerRemoveBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_dk, containers.remove_container, cid, body.volumes)
+    db.audit("docker_container_remove", user.username, auth.client_ip(request), {"container": cid, "volumes": body.volumes})
+    return {"ok": True}
+
+
+@app.post("/api/docker/containers")
+async def docker_container_create(body: DockerSpecBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_dk, containers.create_container, body.spec)
+    db.audit("docker_container_create", user.username, auth.client_ip(request),
+             {"name": body.spec.get("name"), "image": body.spec.get("image")})
+    return t
+
+
+@app.put("/api/docker/containers/{cid}")
+async def docker_container_recreate(cid: str, body: DockerSpecBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_dk, containers.recreate_container, cid, body.spec)
+    db.audit("docker_container_update", user.username, auth.client_ip(request),
+             {"container": cid, "name": body.spec.get("name"), "image": body.spec.get("image")})
+    return t
+
+
+@app.get("/api/docker/prepare")
+async def docker_prepare(image: str, name: str = "", user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.prepare, image, name)
+
+
+@app.get("/api/docker/host")
+async def docker_host(user: User = Depends(admin_user)):
+    """Drives (from the Drives module) and used ports, for sharing folders and ports with containers."""
+    def run():
+        used = containers.used_host_ports()
+        return {**containers.host_folders(), "used_ports": {str(k): v for k, v in sorted(used.items())}}
+    return await asyncio.to_thread(run)
+
+
+@app.get("/api/docker/tasks")
+async def docker_tasks(user: User = Depends(admin_user)):
+    return containers.tasks()
+
+
+@app.get("/api/docker/images")
+async def docker_images(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.list_images)
+
+
+@app.post("/api/docker/images/pull")
+async def docker_image_pull(body: ModelBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_dk, containers.pull_image, body.name)
+    db.audit("docker_image_pull", user.username, auth.client_ip(request), {"image": body.name})
+    return t
+
+
+@app.post("/api/docker/images/remove")
+async def docker_image_remove(body: ModelBody, request: Request, force: bool = False, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_dk, containers.remove_image, body.name, force)
+    db.audit("docker_image_remove", user.username, auth.client_ip(request), {"image": body.name})
+    return {"ok": True}
+
+
+@app.get("/api/docker/search")
+async def docker_search(q: str, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.search_hub, q)
+
+
+@app.get("/api/docker/volumes")
+async def docker_volumes(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.list_volumes)
+
+
+@app.post("/api/docker/volumes")
+async def docker_volume_create(body: DockerNameBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_dk, containers.create_volume, body.name)
+    db.audit("docker_volume_create", user.username, auth.client_ip(request), {"name": body.name})
+    return r
+
+
+@app.delete("/api/docker/volumes/{name}")
+async def docker_volume_remove(name: str, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_dk, containers.remove_volume, name)
+    db.audit("docker_volume_remove", user.username, auth.client_ip(request), {"name": name})
+    return {"ok": True}
+
+
+@app.get("/api/docker/networks")
+async def docker_networks(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.list_networks)
+
+
+@app.post("/api/docker/networks")
+async def docker_network_create(body: DockerNameBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_dk, containers.create_network, body.name, body.internal)
+    db.audit("docker_network_create", user.username, auth.client_ip(request), {"name": body.name})
+    return r
+
+
+@app.delete("/api/docker/networks/{name}")
+async def docker_network_remove(name: str, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_dk, containers.remove_network, name)
+    db.audit("docker_network_remove", user.username, auth.client_ip(request), {"name": name})
+    return {"ok": True}
+
+
+@app.post("/api/docker/networks/{name}/connect")
+async def docker_network_connect(name: str, body: NetConnectBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_dk, containers.connect_network, name, body.container, body.connect)
+    db.audit("docker_network_" + ("connect" if body.connect else "disconnect"), user.username, auth.client_ip(request),
+             {"network": name, "container": body.container})
+    return {"ok": True}
+
+
+@app.get("/api/docker/disk")
+async def docker_disk(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.disk_usage)
+
+
+@app.post("/api/docker/prune")
+async def docker_prune(body: DockerPruneBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_dk, containers.prune, body.what)
+    db.audit("docker_prune", user.username, auth.client_ip(request), {"what": body.what, **r})
+    return r
+
+
+@app.get("/api/docker/stacks")
+async def docker_stacks(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.list_stacks)
+
+
+@app.get("/api/docker/stacks/{name}")
+async def docker_stack(name: str, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.get_stack, name)
+
+
+@app.put("/api/docker/stacks/{name}")
+async def docker_stack_save(name: str, body: StackBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_dk, containers.save_stack, name, body.compose, body.env)
+    db.audit("docker_stack_save", user.username, auth.client_ip(request), {"name": name})
+    return r
+
+
+@app.post("/api/docker/stacks/{name}/action")
+async def docker_stack_action(name: str, body: DockerActionBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_dk, containers.stack_action, name, body.action)
+    db.audit("docker_stack_" + body.action, user.username, auth.client_ip(request), {"name": name})
+    return t
+
+
+@app.delete("/api/docker/stacks/{name}")
+async def docker_stack_delete(name: str, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_dk, containers.delete_stack, name)
+    db.audit("docker_stack_delete", user.username, auth.client_ip(request), {"name": name})
+    return {"ok": True}
+
+
+@app.get("/api/docker/stacks/{name}/logs")
+async def docker_stack_logs(name: str, tail: int = 200, user: User = Depends(admin_user)):
+    return {"logs": await asyncio.to_thread(_dk, containers.stack_logs, name, tail)}
+
+
 # ---------------------------------------------------------------- variables (admin)
 
 class VariableBody(BaseModel):
@@ -1024,20 +1298,24 @@ def _schedule_restart() -> None:
 
 
 @app.websocket("/ws/console")
-async def console_ws(ws: WebSocket, mode: str = "shell"):
+async def console_ws(ws: WebSocket, mode: str = "shell", id: str = ""):
     user = auth.websocket_user(ws)
     if not user or not user.is_admin or not settings.allow_console:
         await ws.close(code=4401 if not user else 4403)
         return
-    mode = "update" if mode == "update" else "shell"
+    mode = mode if mode in ("update", "container") else "shell"
+    if mode == "container" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", id):
+        await ws.close(code=4400)
+        return
     await ws.accept()
     ip = auth.client_ip(ws)
     started = time.time()
-    if mode == "shell":
-        db.audit("console_open", user.username, ip)
-    code = await console.run(ws, mode)
-    if mode == "shell":
-        db.audit("console_close", user.username, ip, {"exit_code": code, "seconds": round(time.time() - started)})
+    detail = {"container": id} if mode == "container" else None
+    if mode != "update":
+        db.audit("console_open", user.username, ip, detail)
+    code = await console.run(ws, mode, id)
+    if mode != "update":
+        db.audit("console_close", user.username, ip, {"exit_code": code, "seconds": round(time.time() - started), **(detail or {})})
     with contextlib.suppress(Exception):
         await ws.close()
 

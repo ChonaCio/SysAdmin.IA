@@ -157,6 +157,33 @@ Supported filesystems: ext2/3/4, XFS, Btrfs, FAT32, exFAT, NTFS, F2FS, ISO 9660/
 - **Users** tab (admins only): everyone who can sign in, with their picture. Change roles (admin or viewer), set a new password for someone, delete users, and add new ones. There's always at least one admin.
 - **Your profile card** (top right) shows your picture and username. Click it for **Edit profile** (picture, username, display name, email), **Change password**, and **Sign out**. Pictures are cropped to a square in the browser and stored in the app database.
 
+### Containers (Docker)
+
+The **Containers** module (Server) runs apps in [Docker](https://www.docker.com) containers.
+
+- **Install Docker** runs Docker's official install script (`https://get.docker.com`) as root through the app's helper, in the background with a live log. It installs Docker Engine and Docker Compose, then adds the app's user to the `docker` group. The app restarts once to pick that up (**Restart the app to finish**). If Docker was already installed, **Give access** does the same. **Start / Stop / Restart** control the Docker service, and **Remove Docker** uninstalls it, optionally deleting all containers, images and volumes.
+  > Being able to use Docker is equivalent to root access on the server (a container can mount any folder). The app asks before granting it. The chat assistant can also use the `docker` command once access is granted, with your approval as usual.
+- **Containers:** a list with state, CPU and memory. Each container shows its ports as links that open `http://this-server:PORT`, and its shared folders. Buttons:
+  - **Start / Stop / Restart**.
+  - **Logs** (refreshes live).
+  - **Terminal** opens a shell inside the container in the Console module.
+  - **Edit** and **Remove**.
+- **New container:**
+  1. Type an image (or **Search Docker Hub**) and click **Get image**. It downloads with progress.
+  2. The form fills itself in from the image:
+     - **Ports:** the image's ports, each mapped to the same port on the server, or the next free one if that's taken. Conflicts with other containers or programs on the server are shown before you create anything. Each port can be reachable from the whole network or from this server only. You can also use the server's network directly (host mode).
+     - **Folders:** the image's data folders become folders on your biggest internal data drive from the Drives module, e.g. `/mnt/media/appdata/jellyfin/config`. Click a drive under **Store on** to move them, or **Browse** to pick any folder. Missing folders are created, and each can be read-only. Docker volumes work too.
+     - **Settings:** environment variables (e.g. `TZ`, passwords).
+     - **When it stops:** the restart policy.
+     - **Advanced:** command, privileged mode, and sharing system folders. System folders such as `/etc` or the Docker socket are refused unless you tick the box.
+- **Edit** changes ports, folders, settings or the image version (**Download the newest version** updates the app). Docker can't change a container's ports or folders in place, so the container is recreated. The old one is kept until the new one starts, and put back if the new one fails. Data in shared folders and volumes is kept.
+- **Images:** download, update or delete images, search Docker Hub, and create a container from an image.
+- **Stacks:** several containers in one Docker Compose file (e.g. an app and its database). Paste the `docker-compose.yml` from an app's documentation, with optional `.env` values. It's checked before saving. A button inserts a folder path from your drives. You can **Start**, **Update** (pull newer images and recreate), **Stop**, view **Logs**, **Edit** or **Delete** a stack. Stacks are stored in `/var/lib/sysadmin-ia/stacks/NAME/`. Stacks started outside the app are listed but read-only.
+- **Volumes** and **Networks:** create and delete them. You can connect a container to a network, and containers on the same network reach each other by name. A network can be internal (no internet access).
+- **Clean up:** shows how much space images, containers, volumes and the build cache use. It can delete stopped containers, unused images, networks and build cache, and optionally unused volumes.
+
+Downloads and container changes run in the background with progress shown at the top of the page. Existing installations need the updated root helper for install and service control (refreshed automatically with full access; otherwise the page shows the one-time command).
+
 ### Local AI (Ollama on this server)
 
 The **Local AI** module (Settings) runs open AI models on the server itself with [Ollama](https://ollama.com). Prompts never leave the server, and there's no per-use cost.

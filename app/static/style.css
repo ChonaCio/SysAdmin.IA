@@ -468,6 +468,92 @@ canvas { width: 100%; height: 160px; display: block; }
 .lai-pick { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .lai-pick p { margin: 0; }
 .lai-pick.installed { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+/* ---------- containers (Docker) ---------- */
+.dk-tasks { display: flex; flex-direction: column; gap: 8px; }
+.dk-tasks:empty { display: none; }
+.dk-task { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+.dk-task > .small { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+.dk-task .bar { margin: 0; max-width: 560px; }
+.dk-tabs-row { margin-bottom: 12px; }
+.dk-tabs { flex-wrap: wrap; margin-left: 0; }
+.dk-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 12px; }
+.dk-toolbar input:not([type="checkbox"]) { flex: 1 1 220px; min-width: 0; }
+.dk-rows { display: flex; flex-direction: column; gap: 8px; }
+.dk-row { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.dk-row.running { border-color: color-mix(in srgb, var(--ok) 35%, var(--border)); }
+.dk-row-main { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.dk-row-title { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.dk-row-title > div { flex-basis: 100%; }
+.dk-row-status { text-align: right; flex-shrink: 0; max-width: 45%; }
+.dk-ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dk-row-links { display: flex; flex-wrap: wrap; gap: 6px; }
+.dk-row-links .tag { display: inline-flex; align-items: center; gap: 4px; }
+.dk-row-links .i { width: 13px; height: 13px; }
+a.dk-port { text-decoration: none; }
+a.dk-port:hover { text-decoration: underline; }
+.dk-row-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.dk-row-actions select { max-width: 220px; }
+.dk-empty { padding: 20px 0; text-align: center; }
+.icon-tile.small-tile { width: 30px; height: 30px; flex-shrink: 0; }
+.icon-tile.small-tile .i { width: 16px; height: 16px; }
+.dk-image-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.dk-image-row input { flex: 1 1 240px; min-width: 0; }
+.dk-hub { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; }
+.dk-hub:empty { display: none; }
+.dk-hub-item { text-align: left; border: 1px solid var(--border); border-radius: var(--radius); padding: 8px 10px; background: none; color: inherit;
+  display: flex; flex-direction: column; gap: 4px; cursor: pointer; font: inherit; }
+div.dk-hub-item { cursor: default; }
+.dk-hub-item:hover { border-color: var(--accent); }
+.dk-section { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px 12px; margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.dk-section legend { font-weight: 600; padding: 0 4px; }
+.dk-list { display: flex; flex-direction: column; gap: 8px; }
+.dk-list > p { margin: 0; }
+.dk-map { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-end; padding-bottom: 8px; border-bottom: 1px dashed var(--grid); }
+.dk-map:last-child { border-bottom: 0; }
+.dk-map label { display: flex; flex-direction: column; gap: 3px; }
+.dk-map input[type="number"] { width: 110px; }
+.dk-map .dk-grow { flex: 1 1 260px; min-width: 0; }
+.dk-map .dk-grow .row { display: flex; gap: 6px; }
+.dk-map .dk-grow input { flex: 1; min-width: 0; }
+.dk-map .check { flex-direction: row; align-items: center; padding-bottom: 8px; }
+.dk-map > button { margin-bottom: 2px; }
+.dk-arrow { padding-bottom: 8px; color: var(--muted); }
+.dk-map-hint { flex-basis: 100%; }
+.dk-map-hint:empty { display: none; }
+input.invalid { border-color: var(--crit); }
+.dk-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.dk-drives { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.dk-drive .i { width: 14px; height: 14px; vertical-align: -2px; }
+.dk-env { display: flex; gap: 6px; align-items: center; }
+.dk-env input:first-child { flex: 0 1 220px; min-width: 0; }
+.dk-env input:nth-child(3) { flex: 1; min-width: 0; }
+.dk-insert { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: -4px; }
+.dk-insert:empty { display: none; }
+.dk-picker { display: flex; flex-direction: column; gap: 8px; }
+.dk-picker h3 { margin: 0; }
+.dk-picker-drives { display: flex; flex-wrap: wrap; gap: 6px; }
+.dk-picker-drives .i, .dk-pick-row .i { width: 15px; height: 15px; vertical-align: -3px; }
+.dk-picker-path { color: var(--muted); overflow-wrap: anywhere; }
+.dk-picker-list { border: 1px solid var(--border); border-radius: var(--radius); max-height: 280px; min-height: 120px; overflow: auto; display: flex; flex-direction: column; }
+.dk-picker-list p { margin: 8px 10px; }
+.dk-pick-row { text-align: left; background: none; border: 0; border-bottom: 1px solid var(--grid); border-radius: 0; padding: 7px 10px; color: inherit; font: inherit; cursor: pointer; }
+.dk-pick-row:hover { background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.dk-logs { display: flex; flex-direction: column; gap: 8px; }
+.dk-logs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.dk-logs-head h3 { margin: 0; }
+.dk-logs-head .spacer { flex: 1; }
+.dk-logs-pre { height: min(60vh, 560px); overflow: auto; margin: 0; white-space: pre-wrap; word-break: break-all; background: #111317; color: #e6e8eb; padding: 10px; border-radius: var(--radius); }
+#dk-stack-form textarea { font-size: 13px; }
+#dk-form-body .two-col > label, .dk-section > label { min-width: 0; }
+#dk-form-body select, #dk-form-body input:not([type="checkbox"]) { max-width: 100%; min-width: 0; }
+#dk-form-body .two-col select { width: 100%; }
+.dk-inline select { flex: 1 1 200px; }
+@media (max-width: 760px) {
+  .dk-row-main { flex-wrap: wrap; }
+  .dk-row-status { text-align: left; max-width: none; flex-basis: 100%; }
+  .dk-arrow { display: none; }
+}
+
 .lai-danger summary { cursor: pointer; font-weight: 600; color: var(--crit); }
 .lai-danger { display: flex; flex-direction: column; gap: 8px; }
 .lai-danger[open] > *:not(summary) { margin-top: 8px; }
