@@ -7,6 +7,8 @@ Two kinds of session:
                "See details" button while an update runs.
   * "container" – a shell inside a Docker container (docker exec -it ID bash|sh), opened
                from the Containers module.
+  * "ssh"    – an SSH session to a device (ssh -p PORT -l USER HOST), opened from Network →
+               Devices; the password or key passphrase is typed into the terminal as usual.
 
 Protocol: the server sends terminal output as binary frames and status as JSON text frames
 ({"type": "exit", "code": N} / {"type": "error", "message": ...}); the client sends JSON:
@@ -20,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import shutil
 import signal
 import struct
@@ -47,7 +50,33 @@ def _shell_argv() -> list[str]:
     return ["/bin/sh"]
 
 
-def _argv(mode: str, container: str = "") -> list[str]:
+SSH_HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$|^[0-9a-fA-F:]{2,39}$")
+SSH_USER_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$")
+
+
+def ssh_target(host: str, port, user: str) -> tuple[str, int, str]:
+    """Validated (host, port, user) for an SSH session; raises ValueError."""
+    host, user = (host or "").strip(), (user or "").strip()
+    try:
+        port = int(port or 22)
+    except (TypeError, ValueError):
+        raise ValueError("Invalid port.")
+    if not SSH_HOST_RE.fullmatch(host) or host.startswith("-") or len(host) > 253:
+        raise ValueError("Invalid host.")
+    if not SSH_USER_RE.fullmatch(user):
+        raise ValueError("Invalid user name.")
+    if not 1 <= port <= 65535:
+        raise ValueError("Invalid port.")
+    return host, port, user
+
+
+def _argv(mode: str, container: str = "", ssh: tuple[str, int, str] | None = None) -> list[str]:
+    if mode == "ssh" and ssh:
+        host, port, user = ssh
+        # First connection to a device: its key is accepted and remembered (~/.ssh/known_hosts of the
+        # app's user); if it changes later, ssh refuses and says so. "--" ends the options.
+        return [shutil.which("ssh") or "/usr/bin/ssh", "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ServerAliveInterval=30", "-p", str(port), "-l", user, "--", host]
     if mode == "container":
         docker = shutil.which("docker") or "/usr/bin/docker"
         # A shell inside the container: bash if it has one, else sh.
@@ -87,10 +116,13 @@ def _make_controlling_tty() -> None:  # runs in the child before exec
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
 
-async def run(ws: WebSocket, mode: str, container: str = "") -> int | None:
+async def run(ws: WebSocket, mode: str, container: str = "", ssh: tuple[str, int, str] | None = None) -> int | None:
     """Serve one console session on an accepted WebSocket. Returns the exit code."""
     if not AVAILABLE:
         await ws.send_json({"type": "error", "message": "The console is only available when the app runs on Linux."})
+        return None
+    if mode == "ssh" and not shutil.which("ssh"):
+        await ws.send_json({"type": "error", "message": "The ssh command isn't installed on this server (package openssh-client)."})
         return None
 
     master, slave = os.openpty()
@@ -98,7 +130,7 @@ async def run(ws: WebSocket, mode: str, container: str = "") -> int | None:
         _set_size(slave, 120, 32)
         env = _env()
         proc = await asyncio.create_subprocess_exec(
-            *_argv(mode, container), stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env["HOME"],
+            *_argv(mode, container, ssh), stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env["HOME"],
             start_new_session=True, preexec_fn=_make_controlling_tty,
         )
     except Exception as e:
@@ -138,7 +170,7 @@ async def run(ws: WebSocket, mode: str, container: str = "") -> int | None:
         while True:
             msg = await ws.receive_json()
             kind = msg.get("type")
-            if kind == "input" and mode in ("shell", "container"):
+            if kind == "input" and mode in ("shell", "container", "ssh"):
                 data = str(msg.get("data", "")).encode("utf-8", "replace")
                 while data:
                     try:

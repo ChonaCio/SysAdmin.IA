@@ -185,9 +185,12 @@ def _check_name(name: str) -> str:
     return name
 
 
+BLOCK_TAG = "SysAdmin.IA block"   # name/comment prefix of the router rules this app adds to block a device
+
+
 class Router:
     type = ""
-    caps: set[str] = set()   # leases, static, dhcp_settings, forwards, external_ip
+    caps: set[str] = set()   # leases, static, dhcp_settings, forwards, external_ip, block, kick
 
     def info(self) -> dict:
         raise NotImplementedError
@@ -323,7 +326,7 @@ def _lease_seconds(v: str) -> int | None:
 
 class OpenWrtRouter(Router):
     type = "openwrt"
-    caps = {"leases", "static", "dhcp_settings", "forwards", "external_ip"}
+    caps = {"leases", "static", "dhcp_settings", "forwards", "external_ip", "block", "kick"}
     NULL = "0" * 32
 
     def __init__(self, address: str, username: str, password: str, verify: bool = False) -> None:
@@ -466,12 +469,64 @@ class OpenWrtRouter(Router):
         self.call("uci", "delete", {"config": "firewall", "section": fid})
         self._commit("firewall", "firewall")
 
+    # -- blocking: two firewall rules per device (through the router, and to the router itself: no
+    #    internet, no DNS, no DHCP), named "SysAdmin.IA block <mac>"
+    def blocked(self) -> list[dict]:
+        out: dict[str, dict] = {}
+        for k, v in self._uci("firewall").items():
+            if v.get(".type") == "rule" and str(v.get("name", "")).startswith(BLOCK_TAG) and v.get("src_mac"):
+                mac = str(v["src_mac"]).lower()
+                d = out.setdefault(mac, {"mac": mac, "name": v["name"][len(BLOCK_TAG):].strip(" -").removeprefix(mac).strip(" ()"), "ids": []})
+                d["ids"].append(k)
+        return list(out.values())
+
+    def block(self, mac: str, name: str) -> None:
+        if any(b["mac"] == mac for b in self.blocked()):
+            return
+        label = f"{BLOCK_TAG} {mac}" + (f" ({name})" if name else "")
+        base = {"name": label, "src": "lan", "src_mac": mac, "target": "REJECT", "proto": "all"}
+        self.call("uci", "add", {"config": "firewall", "type": "rule", "values": {**base, "dest": "*"}})
+        self.call("uci", "add", {"config": "firewall", "type": "rule", "values": base})
+        self._commit("firewall", "firewall")
+        try:   # also drop its Wi-Fi association so open connections end now
+            self.kick(mac, ban_ms=0)
+        except RouterError:
+            pass
+
+    def unblock(self, mac: str) -> None:
+        b = next((x for x in self.blocked() if x["mac"] == mac), None)
+        if not b:
+            raise RouterError("That device isn't blocked.")
+        for sid in b["ids"]:
+            self.call("uci", "delete", {"config": "firewall", "section": sid})
+        self._commit("firewall", "firewall")
+
+    def _wifi_ifaces(self) -> list[str]:
+        try:
+            return (self.call("iwinfo", "devices") or {}).get("devices") or []
+        except RouterError:
+            return []
+
+    def kick(self, mac: str, ban_ms: int = 60000) -> None:
+        found = False
+        for dev in self._wifi_ifaces():
+            try:
+                clients = (self.call(f"hostapd.{dev}", "get_clients") or {}).get("clients") or {}
+            except RouterError:
+                continue
+            if mac in {c.lower() for c in clients}:
+                self.call(f"hostapd.{dev}", "del_client", {"addr": mac, "reason": 5, "deauth": True, "ban_time": ban_ms})
+                found = True
+        if not found:
+            raise RouterError("That device isn't connected to the router's Wi-Fi. Wired devices can't be kicked; block them instead.")
+
 
 # ---------------------------------------------------------------- MikroTik RouterOS 7 (REST)
 
 class MikroTikRouter(Router):
     type = "mikrotik"
-    caps = {"leases", "static", "dhcp_settings", "forwards"}
+    caps = {"leases", "static", "dhcp_settings", "forwards", "block", "kick"}
+    WIFI_PATHS = ("/interface/wifi", "/interface/wireless")   # RouterOS 7 "wifi" package / legacy "wireless"
 
     def __init__(self, address: str, username: str, password: str, verify: bool = False) -> None:
         self.base, self.verify = address.rstrip("/") + "/rest", verify
@@ -556,6 +611,67 @@ class MikroTikRouter(Router):
     def remove_forward(self, fid: str) -> None:
         self._req("DELETE", f"/ip/firewall/nat/{urllib.parse.quote(fid, safe='*')}")
 
+    # -- blocking: firewall drop rules (forward + input, placed first) and a Wi-Fi access-list reject
+    def blocked(self) -> list[dict]:
+        out: dict[str, dict] = {}
+        for r in self.get("/ip/firewall/filter"):
+            if str(r.get("comment", "")).startswith(BLOCK_TAG) and r.get("src-mac-address"):
+                mac = str(r["src-mac-address"]).lower()
+                d = out.setdefault(mac, {"mac": mac, "name": str(r["comment"])[len(BLOCK_TAG):].strip().removeprefix(mac).strip(" ()"), "ids": []})
+                d["ids"].append(r[".id"])
+        return list(out.values())
+
+    def block(self, mac: str, name: str) -> None:
+        if any(b["mac"] == mac for b in self.blocked()):
+            return
+        comment = f"{BLOCK_TAG} {mac}" + (f" ({name})" if name else "")
+        rules = self.get("/ip/firewall/filter")
+        for chain in ("forward", "input"):
+            first = next((r[".id"] for r in rules if r.get("chain") == chain), None)
+            body = {"chain": chain, "src-mac-address": mac.upper(), "action": "drop", "comment": comment}
+            if first:
+                body["place-before"] = first
+            self._req("PUT", "/ip/firewall/filter", body)
+        for base in self.WIFI_PATHS:   # keep it off the Wi-Fi too (whichever wireless package is installed)
+            try:
+                body = {"mac-address": mac.upper(), "comment": comment}
+                body.update({"action": "reject"} if base.endswith("wifi") else {"authentication": "no", "forwarding": "no"})
+                self._req("PUT", f"{base}/access-list", body)
+            except RouterError:
+                continue
+        try:
+            self.kick(mac)
+        except RouterError:
+            pass
+
+    def unblock(self, mac: str) -> None:
+        b = next((x for x in self.blocked() if x["mac"] == mac), None)
+        if not b:
+            raise RouterError("That device isn't blocked.")
+        for rid in b["ids"]:
+            self._req("DELETE", f"/ip/firewall/filter/{urllib.parse.quote(rid, safe='*')}")
+        for base in self.WIFI_PATHS:
+            try:
+                for a in self.get(f"{base}/access-list"):
+                    if str(a.get("comment", "")).startswith(BLOCK_TAG) and str(a.get("mac-address", "")).lower() == mac:
+                        self._req("DELETE", f"{base}/access-list/{urllib.parse.quote(a['.id'], safe='*')}")
+            except RouterError:
+                continue
+
+    def kick(self, mac: str, ban_ms: int = 60000) -> None:
+        found = False
+        for base in self.WIFI_PATHS:
+            try:
+                table = self.get(f"{base}/registration-table")
+            except RouterError:
+                continue
+            for r in table:
+                if str(r.get("mac-address", "")).lower() == mac:
+                    self._req("DELETE", f"{base}/registration-table/{urllib.parse.quote(r['.id'], safe='*')}")
+                    found = True
+        if not found:
+            raise RouterError("That device isn't connected to the router's Wi-Fi. Wired devices can't be kicked; block them instead.")
+
 
 # ---------------------------------------------------------------- validated operations (used by the API)
 
@@ -636,6 +752,48 @@ def remove_forward(fid: str) -> None:
     if "forwards" not in r.caps:
         raise RouterError("This router type can't forward ports.")
     r.remove_forward(str(fid))
+
+
+def blocked() -> list[dict]:
+    r = adapter()
+    if "block" not in r.caps:
+        raise RouterError("This router type can't block devices.")
+    return [{"mac": b["mac"], "name": b["name"]} for b in r.blocked()]
+
+
+def _protect(mac: str, protected: dict[str, str]) -> None:
+    if mac in protected:
+        raise RouterError(protected[mac])
+
+
+def block(mac: str, name: str = "", protected: dict[str, str] | None = None) -> None:
+    """Keep a device off the network (no internet, no router, no Wi-Fi where supported).
+    protected: mac → reason it must not be blocked (this server, the router, the admin's own device)."""
+    r = adapter()
+    if "block" not in r.caps:
+        raise RouterError("This router type can't block devices. OpenWrt and MikroTik can.")
+    mac = _check_mac(mac)
+    _protect(mac, protected or {})
+    # the name is only a label on the router rule: keep the safe characters instead of refusing
+    label = re.sub(r"\s+", " ", re.sub(r"[^\w .()-]", "", name or "", flags=re.ASCII)).strip()[:60]
+    r.block(mac, _check_name(label))
+
+
+def unblock(mac: str) -> None:
+    r = adapter()
+    if "block" not in r.caps:
+        raise RouterError("This router type can't block devices.")
+    r.unblock(_check_mac(mac))
+
+
+def kick(mac: str, protected: dict[str, str] | None = None) -> None:
+    """Disconnect a Wi-Fi device now (it may reconnect after about a minute)."""
+    r = adapter()
+    if "kick" not in r.caps:
+        raise RouterError("This router type can't disconnect devices. OpenWrt and MikroTik can.")
+    mac = _check_mac(mac)
+    _protect(mac, protected or {})
+    r.kick(mac)
 
 
 def external_ip() -> str:

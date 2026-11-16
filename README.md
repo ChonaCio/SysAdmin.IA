@@ -234,7 +234,13 @@ The **Network** module (Server group) shows what's on your LAN, talks to your ro
 - **What's identified:**
   - the maker, from the network card's address (the IEEE list is downloaded once);
   - names devices announce on the LAN (mDNS, UPnP, Windows names), and the router's DNS;
-  - about 30 common ports (web, SSH, file sharing, printers, cameras, Plex…), with links to web pages found.
+  - about 100 common ports (web pages on any port, SSH, mail, databases, file sharing, printers, cameras, media servers…).
+- **Services:** whatever answers on an open port is identified by its reply (web pages and their titles, SSH, MySQL/MariaDB, PostgreSQL, Redis, MongoDB, FTP, mail, VNC…) and shown as a tag on the device:
+  - **web pages** open in a new browser tab;
+  - **SSH** opens a new tab in the **Console** with an SSH session to the device (you choose the user name; the password or key passphrase is typed in the Console). The device's key is remembered the first time; if it changes later, ssh refuses to connect;
+  - **other services** (databases…) copy their address when clicked.
+- **Scan all ports** checks all 65,535 ports of one device (about a minute) to find services on unusual ports.
+- **Kick and block** (OpenWrt and MikroTik routers): **Kick** disconnects a Wi-Fi device now (it can reconnect after about a minute). **Block** cuts its internet and router access (no address, no DNS) and keeps it off the router's Wi-Fi; **Unblock** lets it back. Blocked devices are listed in **Router & DHCP**. This server, the router and the device you're using can't be blocked. Devices on the same switch or Wi-Fi can still talk to a blocked device directly.
 - **Kind guessed:** router, computer, phone, TV, media player, speaker, printer, NAS, camera, smart device, home-automation hub, console, server…
 - **Your changes:** rename a device, change its kind, add notes, or mark it as known. New devices are flagged until you do.
 - **Private addresses:** phones and laptops often use a private (randomized) Wi-Fi address, so they show without a maker.
@@ -245,7 +251,7 @@ The **Network** module (Server group) shows what's on your LAN, talks to your ro
 | Router type | What SysAdmin.IA can do |
 |---|---|
 | Automatic (UPnP) — most home routers | Port forwarding and reading the public address. It can't change DHCP. UPnP must be on in the router. |
-| OpenWrt (LuCI) | Everything: DHCP leases, reserved addresses, address range, lease time, DNS servers handed out, port forwarding |
+| OpenWrt (LuCI) | Everything: DHCP leases, reserved addresses, address range, lease time, DNS servers handed out, port forwarding, kicking and blocking devices |
 | MikroTik RouterOS 7 (REST API: IP → Services → www/www-ssl) | Everything, as for OpenWrt |
 | Other | A link to the router's admin page |
 

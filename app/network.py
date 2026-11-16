@@ -66,8 +66,37 @@ PORTS = {
     8008: ("Chromecast", "media"), 8009: ("Chromecast", "media"), 8080: ("Web (8080)", None),
     8123: ("Home Assistant", "home"), 8443: ("Web (8443)", None), 9100: ("Printer (raw)", "printer"),
     32400: ("Plex", "media"), 62078: ("iPhone/iPad sync", "phone"),
+    # mail, files, remote access
+    25: ("Mail (SMTP)", None), 110: ("Mail (POP3)", None), 143: ("Mail (IMAP)", None), 465: ("Mail (SMTPS)", None),
+    587: ("Mail (submission)", None), 993: ("Mail (IMAPS)", None), 995: ("Mail (POP3S)", None), 873: ("rsync", "nas"),
+    5901: ("VNC", None), 8291: ("MikroTik Winbox", "network"),
+    # databases & message brokers
+    1433: ("SQL Server", None), 1521: ("Oracle database", None), 5672: ("RabbitMQ (AMQP)", None), 5984: ("CouchDB", None),
+    6379: ("Redis", None), 8086: ("InfluxDB", None), 9200: ("Elasticsearch", None), 11211: ("Memcached", None),
+    27017: ("MongoDB", None), 15672: ("RabbitMQ web", None),
+    # containers & infrastructure
+    2375: ("Docker API (unencrypted!)", "server"), 2376: ("Docker API (TLS)", "server"), 6443: ("Kubernetes API", "server"),
+    10000: ("Webmin", "server"), 9090: ("Web (9090)", None), 9443: ("Web (9443)", None), 9000: ("Web (9000)", None),
+    # web apps on common non-standard ports
+    81: ("Web (81)", None), 591: ("Web (591)", None), 2283: ("Immich", None), 3000: ("Web (3000)", None), 3001: ("Web (3001)", None),
+    4000: ("Web (4000)", None), 4443: ("Web (4443)", None), 5050: ("Web (5050)", None), 5055: ("Overseerr", None),
+    5601: ("Kibana", None), 6767: ("Bazarr", None), 7080: ("Web (7080)", None), 7443: ("Web (7443)", None), 7878: ("Radarr", None),
+    8000: ("Web (8000)", None), 8001: ("Web (8001)", None), 8081: ("Web (8081)", None), 8082: ("Web (8082)", None),
+    8088: ("Web (8088)", None), 8090: ("Web (8090)", None), 8096: ("Jellyfin", "media"), 8112: ("Deluge", None),
+    8181: ("Web (8181)", None), 8200: ("Web (8200)", None), 8384: ("Syncthing", None), 8444: ("Web (8444)", None),
+    8686: ("Lidarr", None), 8800: ("Web (8800)", None), 8880: ("Web (8880)", None), 8888: ("Web (8888)", None),
+    8920: ("Jellyfin (HTTPS)", "media"), 8989: ("Sonarr", None), 9001: ("Web (9001)", None), 9091: ("Transmission", None),
+    9696: ("Prowlarr", None), 3030: ("Web (3030)", None), 4040: ("Web (4040)", None), 1880: ("Node-RED", "home"),
+    51413: ("BitTorrent", None), 25565: ("Minecraft", None),
 }
 WEB_PORTS = {80: False, 8080: False, 5000: False, 8123: False, 443: True, 8443: True, 5001: True, 8006: True}
+TLS_FIRST = {443, 465, 993, 995, 2376, 4443, 5001, 6443, 7443, 8006, 8443, 8920, 9443, 10000}   # usually TLS from the first byte
+
+# what a service is, by what it answers: key → (label, kind of button in the UI)
+SERVICES = {"http": ("Web", "web"), "https": ("Web (HTTPS)", "web"), "ssh": ("SSH", "ssh"), "ftp": ("FTP", None),
+            "smtp": ("Mail (SMTP)", None), "pop3": ("Mail (POP3)", None), "imap": ("Mail (IMAP)", None),
+            "telnet": ("Telnet", None), "vnc": ("VNC", None), "mysql": ("MySQL", None), "mariadb": ("MariaDB", None),
+            "postgresql": ("PostgreSQL", None), "redis": ("Redis", None), "mongodb": ("MongoDB", None), "tls": ("TLS service", None)}
 
 KINDS = {   # kind → label (the UI has an icon for each)
     "router": "Router", "this_server": "This server", "computer": "Computer", "phone": "Phone or tablet",
@@ -223,11 +252,139 @@ def sweep(network: str, workers: int = 128) -> None:
         list(ex.map(lambda h: _knock(h, 80, 0.4), hosts))
 
 
-def open_ports(ip: str, ports=None, timeout: float = 0.6) -> list[int]:
+def open_ports(ip: str, ports=None, timeout: float = 0.6, workers: int = 32) -> list[int]:
     ports = list(ports or PORTS)
-    with cf.ThreadPoolExecutor(min(32, len(ports))) as ex:
+    with cf.ThreadPoolExecutor(min(workers, len(ports))) as ex:
         res = ex.map(lambda p: (p, _knock(ip, p, timeout)), ports)
         return sorted(p for p, ok in res if ok)
+
+
+# ---------------------------------------------------------------- what runs on an open port
+
+def _recv(s: socket.socket, timeout: float, limit: int = 8192) -> bytes:
+    s.settimeout(timeout)
+    data = b""
+    try:
+        while len(data) < limit:
+            chunk = s.recv(limit - len(data))
+            if not chunk:
+                break
+            data += chunk
+            if data.startswith(b"HTTP/") and b"\r\n\r\n" in data and len(data) > 512:
+                break
+    except (socket.timeout, OSError):
+        pass
+    return data
+
+
+def _printable(b: bytes, n: int = 80) -> str:
+    return re.sub(r"[^\x20-\x7e]+", " ", b.decode("latin-1"))[:n].strip()
+
+
+def classify_banner(b: bytes, port: int) -> tuple[str, str] | None:
+    """(service, detail) from what a server sends first (SSH, FTP, mail, VNC, MySQL, Telnet)."""
+    if b.startswith(b"SSH-"):
+        soft = b.split(b"\r\n")[0].split(b"\n")[0].decode("latin-1")[4:]
+        soft = soft.split("-", 1)[1] if "-" in soft else soft          # "2.0-OpenSSH_9.2p1 Debian" → "OpenSSH_9.2p1 Debian"
+        return "ssh", soft.replace("_", " ", 1)[:60]
+    if b.startswith(b"220"):
+        text = _printable(b[3:])
+        return ("ftp" if "ftp" in text.lower() or port == 21 else "smtp"), text[:60]
+    if b.startswith(b"+OK"):
+        return "pop3", _printable(b[3:], 60)
+    if b.startswith(b"* OK"):
+        return "imap", _printable(b[4:], 60)
+    if b.startswith(b"RFB "):
+        return "vnc", b[4:11].decode("latin-1")
+    if len(b) > 6 and b[4] == 10 and b"\x00" in b[5:60]:        # MySQL/MariaDB greeting: header, protocol 10, version
+        ver = b[5:b.index(b"\x00", 5)].decode("latin-1")
+        return ("mariadb" if "mariadb" in ver.lower() else "mysql"), ver.replace("-MariaDB", "")[:40]
+    if b[:1] == b"\xff" and len(b) > 2 and b[1] in (0xfb, 0xfc, 0xfd, 0xfe):
+        return "telnet", ""
+    return None
+
+
+def classify_reply(r: bytes) -> tuple[str, str] | None:
+    """(service, detail) from the answer to an HTTP request sent to an unknown port."""
+    if r.startswith(b"HTTP/"):
+        low = r[:4096].lower()
+        if b"mongodb" in low and b"native driver port" in low:
+            return "mongodb", ""
+        if b"sent to https port" in low or b"plain http request" in low:
+            return "https", ""
+        return "http", ""
+    if r.startswith((b"-ERR", b"-NOAUTH", b"-DENIED")):
+        return "redis", ""
+    if r[:1] == b"E" and (b"SFATAL" in r or b"startup packet" in r or b"protocol" in r.lower()):
+        return "postgresql", ""
+    if r[:1] in (b"\x15", b"\x16") and r[1:2] == b"\x03":       # TLS alert/handshake: it speaks TLS
+        return "tls", ""
+    return None
+
+
+def _http_request(ip: str, port: int) -> bytes:
+    return (f"GET / HTTP/1.1\r\nHost: {ip}:{port}\r\nUser-Agent: Mozilla/5.0 (SysAdmin.IA network scan)\r\n"
+            "Accept: */*\r\nConnection: close\r\n\r\n").encode()
+
+
+def _tls_probe(ip: str, port: int, timeout: float = 3.0) -> bytes | None:
+    """HTTP response over TLS (b"" if TLS works but the service doesn't speak HTTP); None if no TLS."""
+    ctx = ssl.create_default_context()
+    ctx.check_hostname, ctx.verify_mode = False, ssl.CERT_NONE
+    try:
+        with socket.create_connection((ip, port), timeout=timeout) as raw, ctx.wrap_socket(raw, server_hostname=None) as s:
+            s.sendall(_http_request(ip, port))
+            return _recv(s, timeout, 4096)
+    except (ssl.SSLError, OSError):
+        return None
+
+
+def probe_service(ip: str, port: int, timeout: float = 2.0) -> dict:
+    """What answers on an open port: {port, service, label, detail, url?, ssh?}."""
+    known = PORTS.get(port, (f"Port {port}", None))[0]
+    service, detail = None, ""
+    if port not in TLS_FIRST:
+        try:
+            with socket.create_connection((ip, port), timeout=timeout) as s:
+                hit = classify_banner(_recv(s, 1.2, 1024), port)       # servers that talk first
+                if hit:
+                    service, detail = hit
+                else:
+                    s.sendall(_http_request(ip, port))
+                    hit = classify_reply(_recv(s, timeout))
+                    if hit:
+                        service, detail = hit
+        except OSError:
+            pass
+    if service in (None, "tls", "https"):
+        r = _tls_probe(ip, port, timeout + 1)
+        if r is not None:
+            service = "https" if r.startswith(b"HTTP/") else "tls"
+    out = {"port": port, "service": service or "", "label": known, "detail": detail}
+    if service in ("http", "https"):
+        page = http_info(ip, port, service == "https")
+        out["url"] = f"{service}://{ip}:{port}/"
+        out["title"] = page.get("title", "")
+        out["server"] = page.get("server", "")
+        generic = known.startswith(("Web", "Port ")) or port in (80, 443)
+        out["label"] = (page.get("title") or known) if generic else known
+        if out["label"].startswith("Port "):
+            out["label"] = "Web"
+    elif service:
+        label = SERVICES[service][0]
+        out["label"] = known if service == "tls" and not known.startswith("Port ") else label
+        if service == "ssh":
+            out["ssh"] = True
+    return out
+
+
+def identify_services(ip: str, ports: list[int], workers: int = 16) -> list[dict]:
+    if not ports:
+        return []
+    with cf.ThreadPoolExecutor(min(workers, len(ports))) as ex:
+        found = list(ex.map(lambda p: probe_service(ip, p), ports))
+    order = {"http": 0, "https": 0, "ssh": 1}
+    return sorted(found, key=lambda s: (order.get(s["service"], 2), s["port"]))
 
 
 def http_info(ip: str, port: int, tls: bool, timeout: float = 2.5) -> dict:
@@ -471,7 +628,8 @@ def devices() -> list[dict]:
     for r in db.query("SELECT * FROM net_devices"):
         d = _row_to_dict(r)
         info = d.pop("info")
-        d.update({"ports": info.get("ports", []), "services": (info.get("mdns") or {}).get("services", []),
+        d.update({"ports": info.get("ports", []), "services": info.get("services") or [],
+                  "mdns_services": (info.get("mdns") or {}).get("services", []), "full_port_scan": info.get("full_port_scan"),
                   "upnp": info.get("upnp") or {}, "http": info.get("http") or {}, "netbios": info.get("netbios") or "",
                   "why": info.get("why") or "", "auto_name": info.get("name") or "",
                   "online": now - (d["last_seen"] or 0) < online_window,
@@ -564,7 +722,7 @@ def _scan(deep: bool) -> None:
         if old and ip not in todo:   # quick check: only presence and address
             db.execute("UPDATE net_devices SET ip=?, last_seen=? WHERE mac=?", (ip, now, d["mac"]))
             continue
-        info = {"ports": d.get("ports", []), "http": d.get("http", {}), "upnp": d.get("upnp", {}),
+        info = {"ports": d.get("ports", []), "services": d.get("services", []), "http": d.get("http", {}), "upnp": d.get("upnp", {}),
                 "mdns": d.get("mdns", {}), "netbios": d.get("netbios", ""), "why": d.get("why", ""), "name": d.get("name", "")}
         if old:
             kind = old["kind"] if old.get("kind_set") else d["kind"]
@@ -590,9 +748,9 @@ def _identify(found: dict[str, dict], own: dict[str, dict], gw: str | None) -> N
             nb = dict(zip(ips, pool.map(netbios_name, ips)))
             _set(stage="Checking open ports", pct=50)
             ports = dict(zip(ips, pool.map(open_ports, ips)))
-            jobs = [(ip, p) for ip in ips for p in ports[ip] if p in WEB_PORTS]
-            _set(stage="Reading web pages", pct=70)
-            pages = dict(zip(jobs, pool.map(lambda j: http_info(j[0], j[1], WEB_PORTS[j[1]]), jobs)))
+        _set(stage="Identifying services", pct=70)
+        with cf.ThreadPoolExecutor(16) as pool:
+            svcs = dict(zip(ips, pool.map(lambda ip: identify_services(ip, ports[ip]), ips)))
         ssdp, mdns = f_ssdp.result(), f_mdns.result()
         f_oui.result()
     _set(stage="Reading device descriptions", pct=85)
@@ -610,13 +768,54 @@ def _identify(found: dict[str, dict], own: dict[str, dict], gw: str | None) -> N
         d["hostname"] = names.get(ip, "") or (mdns.get(ip) or {}).get("hostname", "")
         d["netbios"] = nb.get(ip, "")
         d["ports"] = ports.get(ip, [])
-        d["http"] = {str(p): pages[(ip, p)] for p in d["ports"] if (ip, p) in pages and pages[(ip, p)]}
+        d["services"] = svcs.get(ip, [])
+        d["http"] = {str(s["port"]): {k: s[k] for k in ("title", "server") if s.get(k)} for s in d["services"] if s.get("url")}
         d["upnp"] = desc.get(ip, {})
         if ip in gw_types:
             d["upnp"]["deviceType"] = d["upnp"].get("deviceType") or "urn:schemas-upnp-org:device:InternetGatewayDevice:1"
         d["mdns"] = mdns.get(ip, {})
         d["kind"], d["why"] = guess_kind(d, gw, set(own))
         d["name"] = best_name(d) or (socket.gethostname() if ip in own else "")
+
+
+_port_scans: dict[str, dict] = {}
+
+
+def port_scan_status(mac: str) -> dict:
+    return dict(_port_scans.get(mac) or {"state": "idle"})
+
+
+def scan_all_ports(mac: str, wait: bool = False) -> dict:
+    """Check all 65535 TCP ports of one device (about a minute), then identify what answers."""
+    row = db.query_one("SELECT * FROM net_devices WHERE mac=?", (mac,))
+    if not row or not row["ip"]:
+        raise NetworkError("That device isn't in the list any more.")
+    if (_port_scans.get(mac) or {}).get("state") == "running":
+        return port_scan_status(mac)
+    ip = row["ip"]
+    st = _port_scans[mac] = {"state": "running", "pct": 0, "found": 0, "ip": ip, "error": None}
+
+    def run():
+        try:
+            found: list[int] = []
+            step = 4096
+            for start in range(1, 65536, step):
+                found += open_ports(ip, range(start, min(start + step, 65536)), timeout=0.4, workers=512)
+                st.update(pct=round(100 * min(start + step, 65536) / 65536 * 0.85), found=len(found))
+            services = identify_services(ip, found)
+            r = db.query_one("SELECT info FROM net_devices WHERE mac=?", (mac,))
+            info = json.loads(r["info"] or "{}") if r else {}
+            info.update(ports=found, services=services, full_port_scan=time.time(),
+                        http={str(s["port"]): {k: s[k] for k in ("title", "server") if s.get(k)} for s in services if s.get("url")})
+            db.execute("UPDATE net_devices SET info=?, last_seen=? WHERE mac=?", (json.dumps(info), time.time(), mac))
+            st.update(state="done", pct=100, found=len(found))
+        except Exception as e:  # noqa: BLE001 - shown to the user
+            st.update(state="failed", error=str(e))
+    if wait:
+        run()
+    else:
+        threading.Thread(target=run, daemon=True, name=f"portscan-{ip}").start()
+    return port_scan_status(mac)
 
 
 def update_device(mac: str, label: str | None = None, kind: str | None = None, notes: str | None = None,

@@ -1190,6 +1190,64 @@ async def net_device_forget(mac: str, request: Request, user: User = Depends(adm
     return {"ok": True}
 
 
+@app.post("/api/network/devices/{mac}/ports")
+async def net_device_port_scan(mac: str, request: Request, user: User = Depends(admin_user)):
+    db.audit("network_port_scan", user.username, auth.client_ip(request), {"mac": mac})
+    return await asyncio.to_thread(_net, network.scan_all_ports, mac)
+
+
+@app.get("/api/network/devices/{mac}/ports")
+async def net_device_port_scan_status(mac: str, user: User = Depends(admin_user)):
+    return network.port_scan_status(mac)
+
+
+def _protected_macs(request: Request) -> dict[str, str]:
+    """Devices that must not be kicked or blocked: this server, the router, and the admin's own device."""
+    me = auth.client_ip(request)
+    out = {}
+    for d in network.devices():
+        if d["kind"] == "this_server":
+            out[d["mac"]] = "That's this server: blocking it would cut SysAdmin.IA off the network."
+        elif d["kind"] == "router":
+            out[d["mac"]] = "That's the router itself."
+        elif d["ip"] and d["ip"] == me:
+            out[d["mac"]] = "That's the device you're using right now: you would lock yourself out."
+    return out
+
+
+class MacBody(BaseModel):
+    mac: str
+    name: str = ""
+
+
+@app.get("/api/network/router/blocked")
+async def net_blocked(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_net, routers.blocked)
+
+
+@app.post("/api/network/router/block")
+async def net_block(body: MacBody, request: Request, user: User = Depends(admin_user)):
+    prot = await asyncio.to_thread(_protected_macs, request)
+    await asyncio.to_thread(_net, routers.block, body.mac, body.name, prot)
+    db.audit("device_blocked", user.username, auth.client_ip(request), _dump(body))
+    return {"ok": True}
+
+
+@app.post("/api/network/router/unblock")
+async def net_unblock(body: MacBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, routers.unblock, body.mac)
+    db.audit("device_unblocked", user.username, auth.client_ip(request), _dump(body))
+    return {"ok": True}
+
+
+@app.post("/api/network/router/kick")
+async def net_kick(body: MacBody, request: Request, user: User = Depends(admin_user)):
+    prot = await asyncio.to_thread(_protected_macs, request)
+    await asyncio.to_thread(_net, routers.kick, body.mac, prot)
+    db.audit("device_kicked", user.username, auth.client_ip(request), _dump(body))
+    return {"ok": True}
+
+
 @app.post("/api/network/devices/known-all")
 async def net_devices_known(request: Request, user: User = Depends(admin_user)):
     n = await asyncio.to_thread(network.mark_all_known)
@@ -1615,22 +1673,29 @@ def _schedule_restart() -> None:
 
 
 @app.websocket("/ws/console")
-async def console_ws(ws: WebSocket, mode: str = "shell", id: str = ""):
+async def console_ws(ws: WebSocket, mode: str = "shell", id: str = "", host: str = "", port: int = 22, user_name: str = ""):
     user = auth.websocket_user(ws)
     if not user or not user.is_admin or not settings.allow_console:
         await ws.close(code=4401 if not user else 4403)
         return
-    mode = mode if mode in ("update", "container") else "shell"
+    mode = mode if mode in ("update", "container", "ssh") else "shell"
     if mode == "container" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", id):
         await ws.close(code=4400)
         return
+    ssh = None
+    if mode == "ssh":
+        try:
+            ssh = console.ssh_target(host, port, user_name)
+        except ValueError:
+            await ws.close(code=4400)
+            return
     await ws.accept()
     ip = auth.client_ip(ws)
     started = time.time()
-    detail = {"container": id} if mode == "container" else None
+    detail = {"container": id} if mode == "container" else {"ssh": f"{ssh[2]}@{ssh[0]}:{ssh[1]}"} if ssh else None
     if mode != "update":
         db.audit("console_open", user.username, ip, detail)
-    code = await console.run(ws, mode, id)
+    code = await console.run(ws, mode, id, ssh)
     if mode != "update":
         db.audit("console_close", user.username, ip, {"exit_code": code, "seconds": round(time.time() - started), **(detail or {})})
     with contextlib.suppress(Exception):

@@ -804,6 +804,14 @@ button.big { padding: 8px 18px; font-size: 14px; }
 a.tag-link { color: var(--accent); text-decoration: none; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); }
 a.tag-link:hover { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .net-notes { white-space: pre-wrap; }
+button.tag-btn { font: inherit; font-size: 11.5px; cursor: pointer; border: 1px solid var(--border); padding: 1px 7px; border-radius: 999px;
+  display: inline-flex; align-items: center; gap: 3px; background: var(--surface-2); color: var(--text); }
+button.tag-btn.tag-link { color: var(--accent); background: transparent; border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+button.tag-btn .i { width: 12px; height: 12px; }
+button.tag-btn:disabled { opacity: .5; cursor: not-allowed; }
+.net-row.blocked .net-main > div:first-child strong { text-decoration: line-through; }
+.console-tab-close { margin-left: 6px; padding: 0 4px; border-radius: 4px; opacity: .65; }
+.console-tab-close:hover { opacity: 1; background: color-mix(in srgb, var(--crit) 20%, transparent); }
 .net-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
 .net-card { border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
 .net-card:first-child { border-top: none; padding-top: 0; }

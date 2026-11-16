@@ -118,6 +118,10 @@ async function loadNetDevices() {
 async function netDevicesTab(pane) {
   const [devs, router] = await Promise.all([loadNetDevices(), api("/api/network/router").catch(() => ({}))]);
   state.net.router = router;
+  state.net.blocked = new Set();
+  if ((router.caps || []).includes("block")) {
+    try { (await api("/api/network/router/blocked")).forEach((b) => state.net.blocked.add(b.mac)); } catch { /* router unreachable */ }
+  }
   if (state.net.tab !== "devices") return;
   pane.innerHTML = "";
   if (state.net.overview) renderNetHead(state.net.overview);
@@ -153,34 +157,114 @@ async function netDevicesTab(pane) {
   draw();
 }
 
+// One button/tag per service found on the device: web pages open in a new tab, SSH opens a Console
+// tab, anything else copies "address:port" (for database clients, file managers…).
+function netServiceTags(d) {
+  const svcs = d.services && d.services.length ? d.services
+    : (d.port_labels || []).map(([p, label]) => ({ port: p, label, service: (d.http || {})[String(p)] ? "http" : "",
+        url: (d.http || {})[String(p)] ? `http://${d.ip}:${p}/` : null, title: (d.http || {})[String(p)]?.title }));
+  return svcs.map((s) => {
+    const dflt = (s.service === "http" && s.port === 80) || (s.service === "https" && s.port === 443) || (s.service === "ssh" && s.port === 22);
+    const portTxt = dflt || String(s.label || "").includes(`(${s.port})`) ? "" : ` :${s.port}`;
+    if (s.url) {
+      return el("a", { class: "tag tag-link", href: s.url, target: "_blank", rel: "noopener noreferrer",
+        title: [s.title, s.server, s.url].filter(Boolean).join(" · ") },
+      el("span", { "data-no-i18n": s.title && s.label === s.title ? "" : null }, s.label), portTxt);
+    }
+    if (s.service === "ssh" || s.ssh) {
+      const ok = !!state.me?.console;
+      return el("button", { type: "button", class: "tag tag-link tag-btn", disabled: !ok,
+        title: ok ? `Open an SSH session in the Console${s.detail ? ` (${s.detail})` : ""}` : "The Console is turned off on this server",
+        onclick: () => netSsh(d, s.port) }, iconEl("console"), " SSH", portTxt);
+    }
+    const addr = `${d.ip}:${s.port}`;
+    return el("button", { type: "button", class: "tag tag-btn", title: `Click to copy ${addr}${s.detail ? ` · ${s.detail}` : ""}`,
+      onclick: () => copyText(addr) }, s.label, portTxt);
+  });
+}
+
+function netSsh(d, port) {
+  const key = `sai.ssh.${d.mac}`;
+  let saved = "";
+  try { saved = localStorage.getItem(key) || localStorage.getItem("sai.ssh.last") || ""; } catch { /* private mode */ }
+  const user = el("input", { required: true, value: saved || "root", spellcheck: "false", autocomplete: "off", class: "mono" });
+  netDialog(`SSH to ${d.name || d.ip}`, [
+    field("User name on the device", user, "You type the password (or key passphrase) in the Console."),
+    el("p", { class: "muted small mono" }, `${d.ip}:${port}`),
+  ], async () => {
+    if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(user.value.trim())) throw new Error("Invalid user name.");
+    try { localStorage.setItem(key, user.value.trim()); localStorage.setItem("sai.ssh.last", user.value.trim()); } catch { /* private mode */ }
+    openSshConsole(d.ip, port, user.value.trim(), d.name || d.ip);
+  }, "Connect");
+}
+
+async function netDeviceAction(d, action) {
+  const who = d.name || d.ip || d.mac;
+  const msg = {
+    kick: `Disconnect ${who} from the Wi-Fi now? It can reconnect after about a minute. Block it to keep it out.`,
+    block: `Block ${who}? It loses internet access and can't use the router (no address, no DNS), and is kept off the Wi-Fi where the router supports it. Devices on the same switch or Wi-Fi can still reach it directly.`,
+    unblock: `Unblock ${who}? It can use the network again.`,
+  }[action];
+  if (!confirm(msg)) return;
+  try {
+    await api(`/api/network/router/${action}`, { method: "POST", body: JSON.stringify({ mac: d.mac, name: d.name || "" }) });
+    toast({ kick: `${who} was disconnected.`, block: `${who} is blocked.`, unblock: `${who} is unblocked.` }[action]);
+  } catch (ex) { toast(ex.message); return; }
+  if (state.net.tab === "devices") showNetTab("devices"); else showNetTab(state.net.tab);
+}
+
+async function netPortScan(d, btn) {
+  btn.disabled = true;
+  const label = btn.querySelector(".btn-in") || btn;
+  try { await api(`/api/network/devices/${encodeURIComponent(d.mac)}/ports`, { method: "POST" }); }
+  catch (ex) { toast(ex.message); btn.disabled = false; return; }
+  const poll = async () => {
+    let p;
+    try { p = await api(`/api/network/devices/${encodeURIComponent(d.mac)}/ports`); } catch { p = { state: "failed" }; }
+    if (p.state === "running") {
+      label.textContent = `Scanning ports… ${p.pct}%`;
+      setTimeout(poll, 1500);
+      return;
+    }
+    if (p.state === "failed") toast(p.error || "The port scan failed.");
+    else toast(`${p.found} open ports found on ${d.name || d.ip}.`);
+    if (state.net.tab === "devices") showNetTab("devices");
+  };
+  poll();
+}
+
 function netDeviceRow(d, kinds) {
   const caps = state.net.router?.caps || [];
-  const web = Object.entries(d.http || {});
-  const ports = (d.port_labels || []).map(([p, label]) => {
-    const page = (d.http || {})[String(p)];
-    const tls = [443, 8443, 5001, 8006].includes(p);
-    return page || [80, 8080, 443, 8443, 5000, 5001, 8123, 8006, 32400].includes(p)
-      ? el("a", { class: "tag tag-link", href: `${tls ? "https" : "http"}://${d.ip}:${p}/`, target: "_blank", rel: "noopener noreferrer",
-          title: page?.title || "" }, label)
-      : el("span", { class: "tag" }, label);
-  });
+  const blocked = state.net.blocked?.has(d.mac);
+  const own = ["this_server", "router"].includes(d.kind);
+  const tags = netServiceTags(d);
   const title = d.name || (d.vendor && !d.vendor.startsWith("Private") ? `${d.vendor} device` : "Unknown device");
-  return el("div", { class: `net-row ${d.online ? "" : "offline"}` },
-    el("span", { class: `icon-tile small-tile ${d.online ? "accent" : ""}`, title: d.kind_label, html: icon(NET_ICON[d.kind] || "question") }),
+  const scanBtn = el("button", { type: "button", class: "small ghost", title: "Check all 65535 ports of this device (about a minute)",
+    disabled: !d.ip, onclick: (e) => netPortScan(d, e.currentTarget) }, withIcon("refresh", "Scan all ports"));
+  return el("div", { class: `net-row ${d.online ? "" : "offline"} ${blocked ? "blocked" : ""}` },
+    el("span", { class: `icon-tile small-tile ${d.online && !blocked ? "accent" : ""}`, title: d.kind_label, html: icon(NET_ICON[d.kind] || "question") }),
     el("div", { class: "net-main" },
       el("div", {}, el("strong", { "data-no-i18n": "" }, title), " ",
         !d.known ? el("span", { class: "tag tag-accent" }, "New") : null, " ",
+        blocked ? el("span", { class: "tag tag-warn" }, "Blocked") : null, " ",
         !d.online ? el("span", { class: "tag" }, "offline") : null),
       el("div", { class: "muted small mono" }, [d.ip, d.mac].filter(Boolean).join(" · ")),
       el("div", { class: "muted small" }, [d.kind_label, d.vendor, d.hostname && d.hostname !== d.name ? d.hostname : ""].filter(Boolean).join(" · "),
         d.why ? el("span", { title: d.why }, " ⓘ") : null),
-      ports.length ? el("div", { class: "net-ports" }, ...ports) : null,
-      web.length ? el("div", { class: "muted small net-web", "data-no-i18n": "" }, web.map(([, w]) => w.title).filter(Boolean).slice(0, 2).join(" · ")) : null,
+      tags.length ? el("div", { class: "net-ports" }, ...tags) : null,
+      d.full_port_scan ? el("div", { class: "muted small" }, `All ports checked ${netAgo(d.full_port_scan)}`) : null,
       d.notes ? el("div", { class: "small net-notes" }, d.notes) : null),
     el("div", { class: "net-actions" },
       el("button", { type: "button", class: "small ghost", title: "Rename, change the kind, add notes", onclick: () => netEditDevice(d, kinds) }, withIcon("edit", "Edit")),
-      caps.includes("static") && !["this_server", "router"].includes(d.kind) ? el("button", { type: "button", class: "small ghost", title: "Always give this device the same address (DHCP reservation)",
+      scanBtn,
+      caps.includes("static") && !own ? el("button", { type: "button", class: "small ghost", title: "Always give this device the same address (DHCP reservation)",
         onclick: () => netReserve(d.mac, d.ip, d.name) }, withIcon("key", "Reserve address")) : null,
+      caps.includes("kick") && !own && !blocked && d.online ? el("button", { type: "button", class: "small ghost", title: "Disconnect it from the Wi-Fi now (it can reconnect)",
+        onclick: () => netDeviceAction(d, "kick") }, withIcon("logout", "Kick")) : null,
+      caps.includes("block") && !own ? (blocked
+        ? el("button", { type: "button", class: "small", onclick: () => netDeviceAction(d, "unblock") }, withIcon("check", "Unblock"))
+        : el("button", { type: "button", class: "small ghost danger", title: "Keep it off the network until you unblock it",
+            onclick: () => netDeviceAction(d, "block") }, withIcon("stop", "Block"))) : null,
       el("span", { class: "muted small" }, d.online ? "" : `last seen ${netAgo(d.last_seen)}`)));
 }
 
@@ -259,6 +343,26 @@ async function netRouterTab(pane) {
   if (r.caps.includes("dhcp_settings")) pane.append(await netDhcpSettings());
   if (r.caps.includes("leases")) pane.append(await netLeases(r));
   if (r.caps.includes("forwards")) pane.append(await netForwards());
+  if (r.caps.includes("block")) pane.append(await netBlockedList());
+}
+
+async function netBlockedList() {
+  const box = el("div", { class: "net-card" }, el("h3", {}, "Blocked devices"),
+    el("p", { class: "muted small" }, "Blocked devices get no internet and can't use the router (no address, no DNS); where the router manages the Wi-Fi they're also kept off it. Block a device from its row in Devices."));
+  let list;
+  try { list = await api("/api/network/router/blocked"); } catch (ex) { box.append(el("p", { class: "small error" }, ex.message)); return box; }
+  if (!list.length) box.append(el("p", { class: "muted small" }, "No devices are blocked."));
+  const byMac = Object.fromEntries((state.net.devices || []).map((d) => [d.mac, d]));
+  for (const b of list) {
+    const d = byMac[b.mac] || { mac: b.mac, name: b.name, ip: "" };
+    box.append(el("div", { class: "net-lease" },
+      el("span", { class: "mono" }, b.mac),
+      el("span", { "data-no-i18n": "" }, d.name || b.name || "–"),
+      el("span", { class: "mono muted small" }, d.ip || ""),
+      el("span", {}),
+      el("button", { type: "button", class: "small", onclick: () => netDeviceAction(d, "unblock") }, "Unblock")));
+  }
+  return box;
 }
 
 async function netRouterSetup(pane, r, editing = false) {
