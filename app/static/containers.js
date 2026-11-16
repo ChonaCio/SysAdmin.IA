@@ -147,7 +147,7 @@ $$("#dk-tabs .seg-btn").forEach((b) => b.addEventListener("click", () => showDoc
 
 async function refreshDockerTab(quiet = false) {
   const tab = state.dk.tab;
-  const fn = { containers: dkContainers, images: dkImages, stacks: dkStacks, volumes: dkVolumes, networks: dkNetworks, cleanup: dkCleanup }[tab];
+  const fn = { containers: dkContainers, apps: dkApps, images: dkImages, stacks: dkStacks, volumes: dkVolumes, networks: dkNetworks, cleanup: dkCleanup }[tab];
   try { await fn(quiet); }
   catch (ex) { if (!quiet) { $("#dk-pane").innerHTML = ""; $("#dk-pane").append(el("p", { class: "error small" }, ex.message)); } }
 }
@@ -233,6 +233,74 @@ function dkContainerRow(c) {
       } }, withIcon("trash", "Remove"))));
 }
 
+// ---- app catalog: common images with ready-made settings
+async function dkApps() {
+  const [cat, list] = await Promise.all([api("/api/docker/apps"), api("/api/docker/containers").catch(() => [])]);
+  if (state.dk.tab !== "apps") return;
+  state.dk.apps = cat;
+  state.dk.containers = list;
+  const pane = $("#dk-pane");
+  pane.innerHTML = "";
+  const q = el("input", { type: "search", placeholder: "Search apps (e.g. database, photos, vpn)…", value: state.dk.appQ || "",
+    oninput: (e) => { state.dk.appQ = e.target.value; draw(); } });
+  const seg = el("div", { class: "seg lai-filter", role: "tablist" });
+  const grid = el("div", { class: "lai-grid dk-apps" });
+  pane.append(el("p", { class: "small muted" }, "Popular apps with recommended settings. Click Install: the image is downloaded and the form is filled in "
+    + "(ports, folders on your drives, passwords). Check it and click Create."), dkToolbar(q), seg, grid);
+  const draw = () => {
+    const c = state.dk.appCat || "all";
+    seg.innerHTML = "";
+    for (const x of [{ id: "all", title: "All" }, ...cat.categories]) {
+      const n = x.id === "all" ? cat.apps.length : cat.apps.filter((a) => a.cat === x.id).length;
+      if (n) seg.append(el("button", { type: "button", class: `seg-btn ${c === x.id ? "active" : ""}`,
+        onclick: () => { state.dk.appCat = x.id; draw(); } }, `${x.title} (${n})`));
+    }
+    const words = (state.dk.appQ || "").toLowerCase().split(/\s+/).filter(Boolean);
+    const catTitle = Object.fromEntries(cat.categories.map((x) => [x.id, x.title]));
+    const apps = cat.apps.filter((a) => (c === "all" || a.cat === c) &&
+      words.every((w) => `${a.title} ${a.image} ${a.about} ${catTitle[a.cat]}`.toLowerCase().includes(w)));
+    grid.innerHTML = "";
+    if (!apps.length) grid.append(el("p", { class: "muted small" }, "No apps match. You can still install any image with New container."));
+    for (const a of apps) grid.append(dkAppCard(a, catTitle[a.cat]));
+  };
+  draw();
+}
+
+// URL to open an installed app: "/path" on its first port, ":PORT/path" on that container port, "https://:PORT/path".
+function appUrl(a, c) {
+  if (!a.open || !c) return null;
+  let proto = "http", spec = a.open;
+  if (spec.startsWith("https://")) { proto = "https"; spec = spec.slice(8); }
+  let cport = a.ports.find((p) => p.proto === "tcp")?.container, path = spec;
+  const m = spec.match(/^:(\d+)(\/.*)?$/);
+  if (m) { cport = Number(m[1]); path = m[2] || "/"; }
+  if (!cport) return null;
+  const mapped = c.ports.find((p) => p.container === cport && p.host);
+  const hostPort = mapped ? mapped.host : a.network === "host" ? cport : null;
+  return hostPort ? `${proto}://${location.hostname}:${hostPort}${path}` : null;
+}
+
+function dkAppCard(a, catTitle) {
+  const mine = (state.dk.containers || []).filter((c) => a.containers.includes(c.name));
+  const running = mine.find((c) => c.state === "running");
+  const url = running ? appUrl(a, running) : null;
+  return el("div", { class: `lai-pick dk-app ${mine.length ? "installed" : ""}` },
+    el("div", { class: "dk-app-head" }, el("span", { class: "dk-app-logo", "aria-hidden": "true" }, a.logo || "📦"),
+      el("div", {}, el("strong", {}, a.title), el("div", { class: "muted small mono lai-name" }, a.image))),
+    el("div", { class: "small lai-badges" }, el("span", { class: "tag" }, catTitle),
+      a.network === "host" ? el("span", { class: "tag", title: "Uses the server's network directly" }, "host network") : null,
+      a.ports.slice(0, 4).map((p) => el("span", { class: "tag", title: p.label || "" }, `${p.container}${p.proto === "udp" ? "/udp" : ""}`))),
+    el("p", { class: "small" }, a.about),
+    a.needs.length ? el("p", { class: "small muted" }, `You'll need: ${a.needs.join("; ")}.`) : null,
+    el("div", { class: "lai-pick-foot small" },
+      mine.length ? el("span", { class: "ok-text" }, `✓ ${running ? "Running" : "Installed"} as ${mine.map((c) => c.name).join(", ")}`) : el("span"),
+      el("span", { class: "row" },
+        url ? el("a", { class: "small button-link", href: url, target: "_blank", rel: "noopener noreferrer" }, withIcon("link", "Open")) : null,
+        el("button", { type: "button", class: `small ${mine.length ? "ghost" : "primary"}`,
+          title: mine.length ? "Install another copy (with another name and ports)" : "",
+          onclick: () => openDockerDialog(null, a.image, a.id, a.title) }, withIcon("download", mine.length ? "Install again" : "Install")))));
+}
+
 // ---- logs
 function openDockerLogs(c, stack = null) {
   const d = $("#dk-logs-dialog");
@@ -256,12 +324,13 @@ $("#dk-logs-close").addEventListener("click", () => { clearInterval(state.dk.log
 $("#dk-logs-dialog").addEventListener("close", () => clearInterval(state.dk.logTimer));
 
 // ---- create / edit container
-async function openDockerDialog(editId = null, image = "") {
+async function openDockerDialog(editId = null, image = "", appId = "", appTitle = "") {
   const d = $("#dk-dialog");
   state.dk.edit = editId;
   state.dk.form = { image, name: "", restart: "unless-stopped", network: "bridge", ports: [], mounts: [], env: [], command: "",
-                    privileged: false, allow_system_paths: false, start: true, pull: false, prepared: false };
-  $("#dk-dialog-title").textContent = editId ? "Edit container" : "New container";
+                    privileged: false, allow_system_paths: false, start: true, pull: false, prepared: false, sysctls: {},
+                    app_id: appId, app_image: image, app: null };
+  $("#dk-dialog-title").textContent = editId ? "Edit container" : appTitle ? `Install ${appTitle}` : "New container";
   $("#dk-save").textContent = editId ? "Save and recreate" : "Create and start";
   $("#dk-form-error").hidden = true;
   $("#dk-form-body").innerHTML = "";
@@ -273,7 +342,7 @@ async function openDockerDialog(editId = null, image = "") {
     if (editId) {
       const c = await api(`/api/docker/containers/${editId}`);
       Object.assign(state.dk.form, { image: c.image, name: c.name, restart: c.restart, network: c.network || "bridge",
-        ports: c.ports, mounts: c.mounts, env: c.env, command: c.command, privileged: c.privileged, prepared: true,
+        ports: c.ports, mounts: c.mounts, env: c.env, command: c.command, privileged: c.privileged, prepared: true, sysctls: c.sysctls || {},
         allow_system_paths: c.mounts.some((m) => m.type === "bind" && isSystemPath(m.source)) });
     }
   } catch (ex) { $("#dk-form-body").innerHTML = ""; $("#dk-form-body").append(el("p", { class: "error small" }, ex.message)); return; }
@@ -290,10 +359,11 @@ async function dkPrepare() {
   f.image = ($("#dk-image")?.value || f.image).trim();
   f.name = ($("#dk-name")?.value || f.name).trim();
   if (!f.image) return;
+  if (f.app_id && f.image !== f.app_image) f.app_id = "";   // another image was typed: no preset
   const msg = $("#dk-image-msg");
   msg.className = "small busy"; msg.innerHTML = '<span class="spinner" aria-hidden="true"></span> Checking the image…';
   try {
-    const r = await api(`/api/docker/prepare?image=${encodeURIComponent(f.image)}&name=${encodeURIComponent(f.name)}`);
+    const r = await api(`/api/docker/prepare?image=${encodeURIComponent(f.image)}&name=${encodeURIComponent(f.name)}&app_id=${encodeURIComponent(f.app_id || "")}`);
     if (!r.present) {
       const t = await dkPost("/api/docker/images/pull", { name: f.image }).catch((ex) => { throw ex; });
       state.dk.pendingPrepare = t.id;
@@ -304,12 +374,15 @@ async function dkPrepare() {
     }
     state.dk.pendingPrepare = null;
     Object.assign(f, { image: r.image, name: f.name || r.name, ports: r.ports, mounts: r.mounts, env: r.env, prepared: true });
+    if (r.app) Object.assign(f, { app: r.app, network: r.network, command: r.command, privileged: r.privileged,
+                                  sysctls: r.sysctls, allow_system_paths: r.allow_system_paths });
     f.details = r.details;
     renderDockerForm();
     const m2 = $("#dk-image-msg");
     m2.className = "small ok-text";
     m2.textContent = `✓ ${r.image} is on the server (${fmtBytes(r.details.size)}).` +
-      (r.ports.length || r.mounts.length ? " Suggested ports and folders are filled in below: check them." : " It doesn't declare ports or data folders: add them below if the app needs them.");
+      (r.app ? ` Recommended settings for ${r.app.title} are filled in below: check them, especially the folders.`
+        : r.ports.length || r.mounts.length ? " Suggested ports and folders are filled in below: check them." : " It doesn't declare ports or data folders: add them below if the app needs them.");
   } catch (ex) { msg.className = "small error"; msg.textContent = ex.message; }
 }
 
@@ -330,6 +403,7 @@ function renderDockerForm() {
   if (state.dk.edit) body.append(el("label", { class: "check small" },
     el("input", { type: "checkbox", checked: f.pull, onchange: (e) => (f.pull = e.target.checked) }), " Download the newest version of the image (update the app)"));
   if (!f.prepared) return;
+  if (f.app?.notes) body.append(el("p", { class: "note small dk-app-note" }, el("strong", {}, `${f.app.title}: `), f.app.notes));
 
   // name, restart, network
   body.append(el("div", { class: "two-col" },
@@ -365,7 +439,10 @@ function renderDockerForm() {
     if (!h) return;
     const used = host.used_ports[String(p.host)];
     h.className = `small dk-map-hint ${used ? "error" : "muted"}`;
-    h.textContent = used ? `Port ${p.host} is already used by ${used}.` : p.note || (p.host ? `Open as ${hostUrl(p.host)}` : "");
+    const open = p.host && p.proto === "tcp" ? `Open as ${hostUrl(p.host)}` : "";
+    h.textContent = used ? `Port ${p.host} is already used by ${used}.`
+      : p.label ? [p.note && p.note !== p.label && p.host !== p.container ? p.note : p.label, open].filter(Boolean).join(" · ")
+      : p.note || open;
   });
   const freePort = (from) => { let x = Math.max(1024, from || 8080); const taken = new Set(f.ports.map((p) => p.host)); while (host.used_ports[String(x)] || taken.has(x)) x++; return x; };
   body.append(el("fieldset", { class: "dk-section" },
@@ -394,7 +471,10 @@ function renderDockerForm() {
               el("input", { value: m.source, class: `mono ${isSystemPath(m.source) && !f.allow_system_paths ? "invalid" : ""}`, spellcheck: "false",
                 oninput: (e) => (m.source = e.target.value.trim()) }),
               el("button", { type: "button", class: "small ghost", onclick: () => pickHostFolder(m.source, (p) => { m.source = p; drawMounts(); }) }, withIcon("folder", "Browse"))));
-      mountsBox.append(el("div", { class: "dk-map" }, src,
+      mountsBox.append(el("div", { class: "dk-map" },
+        m.label ? el("div", { class: "small dk-map-title" }, el("strong", {}, m.label),
+          m.media ? el("span", { class: "muted" }, " — pick the folder that holds your files (Browse)") : null) : null,
+        src,
         el("span", { class: "dk-arrow", "aria-hidden": "true" }, "→"),
         el("label", { class: "small" }, "Folder in the container", el("input", { value: m.target, class: "mono", spellcheck: "false", placeholder: "/data", oninput: (e) => (m.target = e.target.value.trim()) })),
         el("label", { class: "check small" }, el("input", { type: "checkbox", checked: m.readonly, onchange: (e) => (m.readonly = e.target.checked) }), " Read-only"),
@@ -434,11 +514,16 @@ function renderDockerForm() {
   const envBox = el("div", { class: "dk-list" });
   const drawEnv = () => {
     envBox.innerHTML = "";
-    f.env.forEach((e, i) => envBox.append(el("div", { class: "dk-env" },
-      el("input", { value: e.key, class: "mono", placeholder: "NAME", spellcheck: "false", "aria-label": "Variable name", oninput: (ev) => (e.key = ev.target.value) }),
-      el("span", { "aria-hidden": "true" }, "="),
-      el("input", { value: e.value, class: "mono", placeholder: "value", spellcheck: "false", "aria-label": "Value", oninput: (ev) => (e.value = ev.target.value) }),
-      el("button", { type: "button", class: "small ghost", title: "Remove", onclick: () => { f.env.splice(i, 1); drawEnv(); } }, iconEl("x")))));
+    f.env.forEach((e, i) => {
+      if (e.label) envBox.append(el("div", { class: "small dk-env-label" }, e.label, e.required ? el("span", { class: "error" }, " *") : null,
+        e.generated ? el("span", { class: "muted" }, " — a random one was generated: copy it somewhere safe") : null));
+      envBox.append(el("div", { class: "dk-env" },
+        el("input", { value: e.key, class: "mono", placeholder: "NAME", spellcheck: "false", "aria-label": "Variable name", oninput: (ev) => (e.key = ev.target.value) }),
+        el("span", { "aria-hidden": "true" }, "="),
+        el("input", { value: e.value, class: "mono", placeholder: e.required ? "required" : "value", required: !!e.required, spellcheck: "false",
+          "aria-label": e.label || "Value", oninput: (ev) => (e.value = ev.target.value) }),
+        el("button", { type: "button", class: "small ghost", title: "Remove", onclick: () => { f.env.splice(i, 1); drawEnv(); } }, iconEl("x"))));
+    });
   };
   body.append(el("fieldset", { class: "dk-section" },
     el("legend", {}, "Settings ", el("span", { class: "muted small" }, "(environment variables from the app's documentation, e.g. TZ=Europe/Madrid)")),
@@ -483,8 +568,9 @@ $("#dk-form").addEventListener("submit", async (e) => {
   if (!f.prepared) { dkPrepare(); return; }
   f.image = $("#dk-image").value.trim();
   const spec = { ...f, ports: f.network === "host" ? [] : f.ports, mounts: f.mounts.filter((m) => m.source && m.target),
-                 env: f.env.filter((x) => x.key) };
+                 env: f.env.filter((x) => x.key && (x.value !== "" || x.required)) };   // empty optional settings are left out
   delete spec.details;
+  delete spec.app;
   try {
     if (state.dk.edit) {
       if (!confirm("Save and recreate the container?\n\nIt is stopped and replaced by a new one with these settings (a few seconds of downtime). "

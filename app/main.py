@@ -694,8 +694,14 @@ async def docker_container_recreate(cid: str, body: DockerSpecBody, request: Req
 
 
 @app.get("/api/docker/prepare")
-async def docker_prepare(image: str, name: str = "", user: User = Depends(admin_user)):
-    return await asyncio.to_thread(_dk, containers.prepare, image, name)
+async def docker_prepare(image: str = "", name: str = "", app_id: str = "", user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.prepare, image, name, app_id)
+
+
+@app.get("/api/docker/apps")
+async def docker_apps(user: User = Depends(admin_user)):
+    """Common apps (PostgreSQL, Jellyfin, Nextcloud…) with ready-made settings."""
+    return await asyncio.to_thread(containers.apps_catalog)
 
 
 @app.get("/api/docker/host")

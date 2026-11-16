@@ -395,7 +395,7 @@ def inspect(cid: str) -> dict:
         "restart": rp.get("Name") or "no", "command": " ".join(shlex.quote(a) for a in (cfg.get("Cmd") or []))
         if d.get("Args") is not None and cfg.get("Cmd") and cfg.get("Cmd") != _image_cmd(cfg.get("Image")) else "",
         "network": hc.get("NetworkMode") if hc.get("NetworkMode") not in (None, "default") else (nets[0] if nets else "bridge"),
-        "privileged": bool(hc.get("Privileged")), "state": (d.get("State") or {}).get("Status"),
+        "privileged": bool(hc.get("Privileged")), "sysctls": hc.get("Sysctls") or {}, "state": (d.get("State") or {}).get("Status"),
         "labels": cfg.get("Labels") or {}, "created": d.get("Created"),
         "ip": next((n.get("IPAddress") for n in ((d.get("NetworkSettings") or {}).get("Networks") or {}).values() if n.get("IPAddress")), None),
     }
@@ -505,13 +505,89 @@ def image_details(image: str) -> dict | None:
             "labels": cfg.get("Labels") or {}, "workdir": cfg.get("WorkingDir")}
 
 
-def prepare(image: str, name: str = "") -> dict:
-    """Pre-fill the create form for an image: free host ports, shared folders on a drive."""
-    image = _check_image(image)
+def apps_catalog() -> dict:
+    """Common apps (docker_apps.APPS) with whether each is already running here."""
+    from . import docker_apps
+    have: dict[str, list[str]] = {}
+    try:
+        for c in list_containers():
+            have.setdefault(docker_apps.repo(c["image"] or ""), []).append(c["name"])
+    except DockerError:
+        pass
+    apps = []
+    for a in docker_apps.APPS:
+        apps.append({k: a.get(k) for k in ("id", "cat", "title", "image", "logo", "about", "notes", "open", "network")} |
+                    {"ports": [{"container": p["container"], "proto": p.get("proto", "tcp"), "label": p.get("label")} for p in a["ports"]],
+                     "containers": have.get(docker_apps.repo(a["image"]), []),
+                     "needs": [e["label"] for e in a["env"] if e.get("required") and not e.get("generate")]})
+    return {"categories": [{"id": i, "title": t} for i, t in docker_apps.CATEGORIES], "apps": apps}
+
+
+def _prepare_app(app: dict, det: dict, name: str, used: dict[int, str]) -> dict:
+    """Form values from a catalog app's preset."""
+    import secrets
+    base = re.sub(r"[^a-z0-9_.-]", "-", (name or app["id"]).lower()).strip("-.") or app["id"]
+    if not name:   # a second copy of the same app gets postgres-2, postgres-3…
+        try:
+            names = {c["name"] for c in list_containers()}
+        except DockerError:
+            names = set()
+        n, first = 2, base
+        while base in names:
+            base, n = f"{first}-{n}", n + 1
+    taken: set[int] = set()
+    ports = []
+    host_net = app.get("network") == "host"
+    for p in app["ports"]:
+        want = p.get("host", p["container"])
+        host = want if host_net else suggest_port(want, used, taken)
+        taken.add(host)
+        note = p.get("label")
+        if host != want:
+            note = f"{note}. {want} is used by {used.get(want, 'something else')}, so {host} was picked"
+        ports.append({"host": host, "container": p["container"], "proto": p.get("proto", "tcp"),
+                      "ip": "127.0.0.1" if p.get("local") else "", "note": note, "label": p.get("label")})
+    hf = host_folders()
+    root = hf["suggested_root"]
+    media_root = root.rsplit("/appdata", 1)[0] if root.endswith("/appdata") else "/srv"
+    mounts = []
+    for f in app["folders"]:
+        kind = f.get("kind")
+        if kind == "host":
+            src = f["source"]
+        elif kind == "media":
+            src = media_root
+        else:
+            src = f"{root}/{base}/{f.get('sub', 'data')}"
+        mounts.append({"type": "bind", "source": src, "target": f["target"], "readonly": bool(f.get("readonly")),
+                       "label": f.get("label"), "media": kind == "media"})
+    env = []
+    for e in app["env"]:
+        v = e.get("value", "")
+        if e.get("generate") and not v:
+            v = secrets.token_urlsafe(15)
+        env.append({"key": e["key"], "value": v, "label": e.get("label"), "required": bool(e.get("required")),
+                    "secret": bool(e.get("secret")), "generated": bool(e.get("generate"))})
+    return {"present": True, "image": app["image"], "details": det, "name": base, "ports": ports, "mounts": mounts, "env": env,
+            "network": app.get("network") or "bridge", "command": app.get("command", ""), "privileged": bool(app.get("privileged")),
+            "sysctls": app.get("sysctls") or {}, "allow_system_paths": any(f.get("kind") == "host" for f in app["folders"]),
+            "app": {"id": app["id"], "title": app["title"], "notes": app.get("notes"), "open": app.get("open"), "logo": app.get("logo")},
+            "used_ports": {str(k): v for k, v in sorted(used.items())}}
+
+
+def prepare(image: str, name: str = "", app_id: str = "") -> dict:
+    """Pre-fill the create form for an image (or a catalog app): free host ports, shared folders on a drive."""
+    from . import docker_apps
+    app = docker_apps.get(app_id) if app_id else None
+    if app_id and not app:
+        raise DockerError("Unknown app.")
+    image = _check_image(app["image"] if app else image)
     det = image_details(image)
     if det is None:
         return {"present": False, "image": image}
     used = used_host_ports()
+    if app:
+        return _prepare_app(app, det, name, used)
     taken: set[int] = set()
     ports = []
     for p in det["ports"]:
@@ -607,6 +683,16 @@ def validate_spec(spec: dict, exclude_container: str | None = None) -> dict:
             shlex.split(s["command"])
         except ValueError as e:
             raise DockerError(f"Command: {e}")
+    # kernel settings for the container's own network namespace (e.g. a VPN needs ip_forward)
+    s["sysctls"] = {}
+    for k, v in (spec.get("sysctls") or {}).items():
+        if not re.fullmatch(r"net\.[a-z0-9_.]{1,100}", str(k)) or not re.fullmatch(r"[A-Za-z0-9 ._-]{1,50}", str(v)):
+            raise DockerError(f"Unsupported kernel setting: {k}")
+        s["sysctls"][str(k)] = str(v)
+    for e in s["env"]:
+        req = next((x for x in spec.get("env") or [] if (x.get("key") or "").strip() == e["key"]), {})
+        if req.get("required") and not e["value"].strip():
+            raise DockerError(f"Fill in {req.get('label') or e['key']}.")
     return s
 
 
@@ -624,6 +710,8 @@ def _create_body(s: dict) -> dict:
                        "RestartPolicy": {"Name": s["restart"]} if s["restart"] != "on-failure" else {"Name": "on-failure", "MaximumRetryCount": 5},
                        "NetworkMode": s["network"], "Privileged": s["privileged"]},
     }
+    if s["sysctls"]:
+        body["HostConfig"]["Sysctls"] = s["sysctls"]
     if s["command"]:
         body["Cmd"] = shlex.split(s["command"])
     return body

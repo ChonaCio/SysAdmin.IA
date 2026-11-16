@@ -176,6 +176,24 @@ The **Containers** module (Server) runs apps in [Docker](https://www.docker.com)
      - **Settings:** environment variables (e.g. `TZ`, passwords).
      - **When it stops:** the restart policy.
      - **Advanced:** command, privileged mode, and sharing system folders. System folders such as `/etc` or the Docker socket are refused unless you tick the box.
+- **App catalog:** about 35 popular apps, searchable and grouped by category, ready to install with recommended settings:
+  - **Databases:** PostgreSQL, MariaDB, MySQL, MongoDB, Redis, Valkey, InfluxDB.
+  - **Database tools:** Adminer, pgAdmin.
+  - **Web servers & proxies:** nginx, Apache, Caddy, Nginx Proxy Manager.
+  - **Media:** Jellyfin, Plex, Navidrome, Audiobookshelf.
+  - **Files & sync:** Nextcloud, File Browser, Syncthing.
+  - **Home & network:** Home Assistant, Pi-hole, AdGuard Home, Mosquitto.
+  - **Monitoring & management:** Uptime Kuma, Grafana, Prometheus, Portainer, Dozzle, Watchtower.
+  - **Development & automation:** Gitea, n8n, code-server, RabbitMQ, Docker Registry.
+  - **Security:** Vaultwarden, WireGuard (wg-easy).
+
+  **Install** downloads the image and fills in the form:
+  - the app's ports, with free server ports picked if they're taken;
+  - its data folders on your data drive (e.g. `/mnt/media/appdata/postgres/data`);
+  - its settings, with descriptions, required ones marked, and passwords generated for you (copy them somewhere safe);
+  - anything special it needs: the server's network for Home Assistant and Plex, kernel network settings for WireGuard, the Docker socket for Portainer.
+
+  Notes from each app's documentation are shown at the top of the form. Apps you already run show **Running as …** and an **Open** button. **Install again** adds another copy with its own name and ports (e.g. `postgres-2` on port 5433).
 - **Edit** changes ports, folders, settings or the image version (**Download the newest version** updates the app). Docker can't change a container's ports or folders in place, so the container is recreated. The old one is kept until the new one starts, and put back if the new one fails. Data in shared folders and volumes is kept.
 - **Images:** download, update or delete images, search Docker Hub, and create a container from an image.
 - **Stacks:** several containers in one Docker Compose file (e.g. an app and its database). Paste the `docker-compose.yml` from an app's documentation, with optional `.env` values. It's checked before saving. A button inserts a folder path from your drives. You can **Start**, **Update** (pull newer images and recreate), **Stop**, view **Logs**, **Edit** or **Delete** a stack. Stacks are stored in `/var/lib/sysadmin-ia/stacks/NAME/`. Stacks started outside the app are listed but read-only.
