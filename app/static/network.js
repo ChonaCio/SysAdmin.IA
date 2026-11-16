@@ -119,12 +119,14 @@ function netNamesCard(n) {
     rows.push(el("tr", {},
       el("td", {}, el("span", { class: "mono", "data-no-i18n": "" }, x.name),
         x.auto ? el("div", { class: "muted small" }, "added with a website") : null),
-      el("td", { class: "small" }, el("span", { class: "mono" }, x.ip), x.device ? el("div", { class: "muted small", "data-no-i18n": x.device === "This server" ? null : "" }, x.device) : null),
+      el("td", { class: "small" }, el("span", { class: "mono" }, x.ip), x.device ? el("div", { class: "muted small", "data-no-i18n": x.device === "This server" ? null : "" }, x.device) : null,
+        ...(x.ports || []).map((p) => el("div", { class: "lan-port mono small", title: "Passed on by this server's proxy" },
+          `:${p.port} → ${p.target.replace(/^https?:\/\//, "").replace(/^127\.0\.0\.1(?=:)/, "this server")}`, p.https ? " (HTTPS)" : ""))),
       el("td", {}, x.where === "router" ? "Router DNS" : ".local"),
       el("td", {}, el("span", { class: `tag ${cls}`, title: x.error || "" }, label), x.error ? el("div", { class: "small error" }, x.error) : null),
       el("td", { class: "right" }, el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Remove this name", title: "Remove this name",
         onclick: async () => {
-          if (!confirm(`Remove the name ${x.name}?`)) return;
+          if (!confirm(x.ports?.length ? `Remove the name ${x.name} and its port mappings?` : `Remove the name ${x.name}?`)) return;
           try { await api("/api/network/names/remove", { method: "POST", body: JSON.stringify({ id: x.id }) }); toast("Name removed."); }
           catch (ex) { toast(ex.message, 6000); }
           showNetTab("names");
@@ -141,15 +143,30 @@ function netNameDialog() {
   const devs = (state.net.devices || []).filter((d) => d.ip);
   const list = el("datalist", { id: "lan-name-ips" }, n.server_ip ? el("option", { value: n.server_ip }, "This server") : null,
     ...devs.filter((d) => d.ip !== n.server_ip).map((d) => el("option", { value: d.ip }, d.name || d.vendor || d.mac)));
+  const docker = !!state.net.sites?.docker;
   const f = {
     name: el("input", { required: true, class: "mono", placeholder: n.router_dns ? "e.g. nas.local or nas.home.lan" : "e.g. nas.local", spellcheck: "false", autocomplete: "off" }),
     ip: el("input", { required: true, class: "mono", list: "lan-name-ips", placeholder: "192.168.1.20", spellcheck: "false", autocomplete: "off" }),
+    port: el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: "80", disabled: !docker }),
+    target: el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: "8080", disabled: !docker }),
+    https: el("input", { type: "checkbox", disabled: !docker }),
   };
+  f.https.addEventListener("change", () => { f.port.placeholder = f.https.checked ? "443" : "80"; });
+  const portsBox = el("fieldset", { class: "lan-ports" },
+    el("legend", {}, "Ports (optional)"),
+    el("p", { class: "muted small" }, docker
+      ? "Leave empty for a plain name: every port goes straight to the device. With ports, visits to name:port are passed by this server's proxy to the device's port, e.g. website1.local:80 → 192.168.1.10:8080. Websites (HTTP) only; the name then points to this server."
+      : "Port mappings go through this server's proxy, which needs Docker (install it in the Containers module)."),
+    el("div", { class: "two-col" }, field("Port on the name", f.port, "Default 80 (443 with HTTPS)."), field("Port on the device", f.target)),
+    el("label", { class: "check" }, f.https, " HTTPS (with this server's own certificate; browsers warn until it's trusted)"));
   netDialog("Add a name", [list, field("Name", f.name, n.router_dns ? "Ends in .local (announced by this server) or any other domain (kept in the router)." : "One word plus .local."),
-    field("Device (address)", f.ip, "Pick a device or this server. Give the device a reserved address (Router & DHCP) so the name keeps working.")],
+    field("Device (address)", f.ip, "Pick a device or this server. Give the device a reserved address (Router & DHCP) so the name keeps working."),
+    portsBox],
   async () => {
-    await api("/api/network/names", { method: "POST", body: JSON.stringify({ name: f.name.value, ip: f.ip.value }) });
-    toast("Name added.");
+    const body = { name: f.name.value, ip: f.ip.value, https: f.https.checked,
+      port: f.port.value ? Number(f.port.value) : null, target_port: f.target.value ? Number(f.target.value) : null };
+    const r = await api("/api/network/names", { method: "POST", body: JSON.stringify(body) });
+    toast(r.note || "Name added.", r.note ? 8000 : 3500);
     showNetTab("names");
   }, "Add");
 }
@@ -166,9 +183,10 @@ function netSitesCard(s, n) {
   } else box.append(el("p", { class: "muted small" }, "No websites yet."));
   const tgtLabel = (t) => (t === s.app_target ? "SysAdmin.IA (this app)" : t);
   const rows = s.sites.map((x) => {
-    const url = `${x.https ? "https" : "http"}://${x.hostname}/`;
+    const dflt = x.port === (x.https ? 443 : 80);
+    const url = `${x.https ? "https" : "http"}://${x.hostname}${dflt ? "" : `:${x.port}`}/`;
     return el("tr", {},
-      el("td", {}, el("a", { href: url, target: "_blank", rel: "noopener noreferrer", class: "mono", "data-no-i18n": "" }, x.hostname)),
+      el("td", {}, el("a", { href: url, target: "_blank", rel: "noopener noreferrer", class: "mono", "data-no-i18n": "" }, x.hostname + (dflt ? "" : `:${x.port}`))),
       el("td", { class: "mono small" }, tgtLabel(x.target)),
       el("td", {}, x.https ? el("span", { class: "tag tag-ok" }, "HTTPS") : el("span", { class: "tag" }, "HTTP")),
       el("td", { class: "right" }, el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Remove this website", title: "Remove this website",
@@ -202,7 +220,9 @@ function netSiteDialog() {
     target: el("input", { required: true, class: "mono", list: "lan-site-targets", placeholder: "127.0.0.1:2283", spellcheck: "false", autocomplete: "off" }),
     https: el("input", { type: "checkbox" }),
     name: el("input", { type: "checkbox", checked: true }),
+    port: el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: "80" }),
   };
+  f.https.addEventListener("change", () => { f.port.placeholder = f.https.checked ? "443" : "80"; });
   const appNote = el("p", { class: "muted small", hidden: true }, "SysAdmin.IA itself: it's served over HTTPS when the app uses HTTPS, so signing in keeps working.");
   f.target.addEventListener("input", () => {
     appNote.hidden = f.target.value.trim() !== "app";
@@ -212,11 +232,12 @@ function netSiteDialog() {
     field("Name", f.host, "The address people type, e.g. photos.local."),
     field("Goes to", f.target, "Pick an app (a container, a device's web page, or “app” for SysAdmin.IA itself) or type an address and port."),
     appNote,
+    field("Port", f.port, "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it."),
     el("label", { class: "check" }, f.https, " HTTPS (with this server's own certificate; browsers warn until it's trusted)"),
     el("label", { class: "check" }, f.name, ` Also create the name, pointing to this server (${n.server_ip || "?"})`)],
   async () => {
     const r = await api("/api/network/sites", { method: "POST", body: JSON.stringify({ hostname: f.host.value, target: f.target.value,
-      https: f.https.checked, make_name: f.name.checked }) });
+      https: f.https.checked, make_name: f.name.checked, port: f.port.value ? Number(f.port.value) : null }) });
     toast(r.note || "Website added.", r.note ? 8000 : 3500);
     showNetTab("names");
   }, "Add");

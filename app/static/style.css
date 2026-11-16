@@ -813,6 +813,9 @@ button.tag-btn:disabled { opacity: .5; cursor: not-allowed; }
 .tag-ok { background: color-mix(in srgb, var(--ok) 18%, var(--surface)); color: var(--ok); font-weight: 600; }
 .fw-table td.right { text-align: right; white-space: nowrap; }
 .fw-table .fw-note { white-space: normal; max-width: 220px; }
+.lan-port { color: var(--accent); white-space: nowrap; }
+fieldset.lan-ports { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+fieldset.lan-ports legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
 .fw-table button.icon-only { padding: 3px 6px; }
 .fw-table button.icon-only .i { width: 15px; height: 15px; }
 .console-tab-close { margin-left: 6px; padding: 0 4px; border-radius: 4px; opacity: .65; }

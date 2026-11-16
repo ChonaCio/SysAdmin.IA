@@ -9,6 +9,7 @@ import os
 import re
 import signal
 import json
+import logging
 import time
 from pathlib import Path
 
@@ -29,6 +30,15 @@ app = FastAPI(title="SysAdmin.IA", docs_url=None, redoc_url=None, openapi_url=No
 
 # Turn the old single Claude key (Admin → Claude API) into an AI connection, once.
 ai.migrate_legacy()
+log = logging.getLogger("sysadmin_ia")
+
+
+@app.exception_handler(Exception)
+async def unexpected_error(request: Request, exc: Exception):
+    """A bug or an unexpected answer from another system: log it (journalctl -u sysadmin-ia) and show what
+    happened instead of a bare "HTTP 500"."""
+    log.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
+    return JSONResponse({"detail": f"Unexpected error ({type(exc).__name__}): {exc}"[:500]}, status_code=500)
 
 
 @app.middleware("http")
@@ -1253,6 +1263,9 @@ async def net_kick(body: MacBody, request: Request, user: User = Depends(admin_u
 class LanNameBody(BaseModel):
     name: str
     ip: str
+    port: int | None = None          # with target_port: name:port → ip:target_port through the proxy
+    target_port: int | None = None
+    https: bool = False
 
 
 class LanNameRemoveBody(BaseModel):
@@ -1264,6 +1277,7 @@ class LanSiteBody(BaseModel):
     target: str
     https: bool = False
     make_name: bool = True
+    port: int | None = None          # where the proxy listens (default 80, or 443 for HTTPS)
 
 
 @app.get("/api/network/names")
@@ -1273,7 +1287,7 @@ async def net_names(user: User = Depends(admin_user)):
 
 @app.post("/api/network/names")
 async def net_names_add(body: LanNameBody, request: Request, user: User = Depends(admin_user)):
-    out = await asyncio.to_thread(_net, lan_names.add_name, body.name, body.ip)
+    out = await asyncio.to_thread(_net, lan_names.add_name_with_ports, body.name, body.ip, body.port, body.target_port, body.https)
     db.audit("lan_name_added", user.username, auth.client_ip(request), _dump(body))
     return out
 
@@ -1292,7 +1306,7 @@ async def net_sites(user: User = Depends(admin_user)):
 
 @app.post("/api/network/sites")
 async def net_sites_add(body: LanSiteBody, request: Request, user: User = Depends(admin_user)):
-    out = await asyncio.to_thread(_net, lan_names.add_site, body.hostname, body.target, body.https, body.make_name)
+    out = await asyncio.to_thread(_net, lan_names.add_site, body.hostname, body.target, body.https, body.make_name, body.port)
     db.audit("lan_site_added", user.username, auth.client_ip(request), _dump(body))
     return out
 

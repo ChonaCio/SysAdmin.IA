@@ -15,7 +15,9 @@ app_settings["router_secret"]; the password is never sent back to browsers.
 from __future__ import annotations
 
 import base64
+import http.client
 import ipaddress
+import logging
 import json
 import re
 import ssl
@@ -87,7 +89,9 @@ def adapter(cfg: dict | None = None):
     pw = db.get_setting("router_secret") or ""
     t = cfg.get("type")
     if t == "upnp":
-        return UpnpRouter(cfg.get("address") or "")
+        # the address is an optional UPnP description URL; a bare "192.168.1.1" means "find it on the network"
+        loc = (cfg.get("address") or "").strip()
+        return UpnpRouter(loc if re.match(r"^https?://[^/]+/.", loc) else "")
     if t == "openwrt":
         return OpenWrtRouter(cfg["address"], cfg.get("username") or "root", pw, cfg.get("verify_tls"))
     if t == "mikrotik":
@@ -142,6 +146,10 @@ def _http(method: str, url: str, body=None, headers: dict | None = None, verify:
         return e.code, e.read(65536)
     except (urllib.error.URLError, OSError) as e:
         raise RouterError(f"Can't reach the router at {urllib.parse.urlsplit(url).netloc}: {getattr(e, 'reason', e)}")
+    except (http.client.HTTPException, ValueError) as e:
+        # e.g. HTTP spoken to an HTTPS port (or the other way round), a garbled answer, an invalid address
+        raise RouterError(f"The router at {urllib.parse.urlsplit(url).netloc} gave an answer that isn't valid HTTP "
+                          f"({type(e).__name__}). Check the address and whether it needs http:// or https://.")
 
 
 def _check_ip(ip: str) -> str:
@@ -185,6 +193,7 @@ def _check_name(name: str) -> str:
     return name
 
 
+log = logging.getLogger(__name__)
 BLOCK_TAG = "SysAdmin.IA block"   # name/comment prefix of the router rules this app adds to block a device
 
 
@@ -251,8 +260,10 @@ def discover_igd(timeout: float = 3.0, location: str = "") -> dict:
         try:
             with urllib.request.urlopen(loc, timeout=5) as r:
                 return parse_igd(r.read(262144), loc)
-        except (OSError, ET.ParseError, urllib.error.URLError):
-            continue
+        except (OSError, ET.ParseError, urllib.error.URLError, http.client.HTTPException, ValueError):
+            continue          # unreachable, not XML, or an address urllib can't use (e.g. IPv6 link-local)
+        except RouterError:
+            continue          # answers UPnP but has no port-forwarding service: try the next one
     raise RouterError("No UPnP router found. Enable UPnP (sometimes called “UPnP IGD” or “NAT-PMP/UPnP”) in the router, "
                       "or choose its type if it has an API.")
 
@@ -345,9 +356,13 @@ class OpenWrtRouter(Router):
             r = json.loads(data)
         except ValueError:
             raise RouterError(f"Unexpected answer from the router (HTTP {st}).")
+        if not isinstance(r, dict):
+            raise RouterError(f"Unexpected answer from the router (HTTP {st}). Is this an OpenWrt router?")
         if "error" in r:
-            raise RouterError(f"OpenWrt: {r['error'].get('message', 'error')}")
-        code, *rest = r.get("result") or [None]
+            err = r["error"]
+            raise RouterError(f"OpenWrt: {err.get('message', 'error') if isinstance(err, dict) else err}")
+        res = r.get("result")
+        code, *rest = res if isinstance(res, list) and res else [None]
         if code == 6:
             raise RouterError("OpenWrt refused the user name or password." if login else "OpenWrt: permission denied.")
         if code not in (0, None):
@@ -560,7 +575,8 @@ class MikroTikRouter(Router):
         except ValueError:
             raise RouterError(f"Unexpected answer from the router (HTTP {st}).")
         if st >= 400:
-            raise RouterError(f"RouterOS: {r.get('detail') or r.get('message') or st}")
+            msg = (r.get("detail") or r.get("message")) if isinstance(r, dict) else None
+            raise RouterError(f"RouterOS: {msg or f'HTTP {st}'}")
         return r
 
     def get(self, path):
@@ -715,6 +731,9 @@ def status() -> dict:
         out.update(adapter(cfg).status(), connected=True)
     except RouterError as e:
         out["error"] = str(e)
+    except Exception as e:  # noqa: BLE001 - an unexpected answer must not break the Router and Publish tabs
+        log.exception("router status failed")
+        out["error"] = f"Unexpected answer from the router ({type(e).__name__}: {e})."
     return out
 
 
@@ -859,4 +878,7 @@ def external_ip() -> str:
         r = adapter()
         return r.external_ip() if "external_ip" in r.caps else ""
     except RouterError:
+        return ""
+    except Exception:  # noqa: BLE001 - only used for information (Publish tab)
+        log.exception("reading the router's external address failed")
         return ""

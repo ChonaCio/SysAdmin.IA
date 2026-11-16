@@ -800,4 +800,16 @@ SAI_I18N.register("zh", {
   "This router type can't hold local DNS names. OpenWrt and MikroTik can.": "此类路由器无法保存本地 DNS 名称。OpenWrt 和 MikroTik 可以。",
   "Port {0} on this server is already used by {1}. The proxy needs it.": "本服务器的端口 {0} 已被 {1} 使用。代理需要该端口。",
   "Port {0} on this server is already used by another program. The proxy needs it (see Network → Ports for what's using it).": "本服务器的端口 {0} 已被另一个程序使用。代理需要该端口（可在“网络 → 端口”中查看占用者）。",
+  // ---- Network: name ports, router errors
+  "The router at {0} gave an answer that isn't valid HTTP ({1}). Check the address and whether it needs http:// or https://.": "位于 {0} 的路由器返回的不是有效的 HTTP（{1}）。请检查地址以及是否需要 http:// 或 https://。",
+  "Unexpected answer from the router ({0}: {1}).": "路由器返回了意外的应答（{0}: {1}）。",
+  "Unexpected answer from the router (HTTP {0}). Is this an OpenWrt router?": "路由器返回了意外的应答（HTTP {0}）。这是 OpenWrt 路由器吗？",
+  "Unexpected error ({0}): {1}": "意外错误（{0}）：{1}",
+  "Ports are numbers between 1 and 65535.": "端口是 1 到 65535 之间的数字。",
+  "Port {0} is SysAdmin.IA's own port. Pick another one, e.g. 80.": "端口 {0} 是 SysAdmin.IA 自己的端口。请另选一个，例如 80。",
+  "The firewall keeps port {0} closed: open it in Network → Ports.": "防火墙关闭了端口 {0}：请在“网络 → 端口”中开放它。",
+  "{0}:{1} is already a website here.": "{0}:{1} 已经是这里的网站。",
+  "{0} still points to {1}: {2}": "{0} 仍指向 {1}：{2}",
+  "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} 指向 {1}，而不是本服务器（{2}）：通过该名称的访问将无法到达网站。",
+  "Enter the port on the device too (or leave both ports empty for a plain name).": "请同时填写设备端口（或将两个端口都留空以使用普通名称）。",
 });

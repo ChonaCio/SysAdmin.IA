@@ -824,4 +824,16 @@ SAI_I18N.register("es", {
   "This router type can't hold local DNS names. OpenWrt and MikroTik can.": "Este tipo de router no puede guardar nombres DNS locales. OpenWrt y MikroTik sí.",
   "Port {0} on this server is already used by {1}. The proxy needs it.": "El puerto {0} de este servidor ya lo usa {1}. El proxy lo necesita.",
   "Port {0} on this server is already used by another program. The proxy needs it (see Network → Ports for what's using it).": "El puerto {0} de este servidor ya lo usa otro programa. El proxy lo necesita (mira en Red → Puertos qué lo usa).",
+  // ---- Network: name ports, router errors
+  "The router at {0} gave an answer that isn't valid HTTP ({1}). Check the address and whether it needs http:// or https://.": "El router en {0} dio una respuesta que no es HTTP válido ({1}). Revisa la dirección y si necesita http:// o https://.",
+  "Unexpected answer from the router ({0}: {1}).": "Respuesta inesperada del router ({0}: {1}).",
+  "Unexpected answer from the router (HTTP {0}). Is this an OpenWrt router?": "Respuesta inesperada del router (HTTP {0}). ¿Es un router OpenWrt?",
+  "Unexpected error ({0}): {1}": "Error inesperado ({0}): {1}",
+  "Ports are numbers between 1 and 65535.": "Los puertos son números entre 1 y 65535.",
+  "Port {0} is SysAdmin.IA's own port. Pick another one, e.g. 80.": "El puerto {0} es el propio puerto de SysAdmin.IA. Elige otro, p. ej. 80.",
+  "The firewall keeps port {0} closed: open it in Network → Ports.": "El firewall mantiene cerrado el puerto {0}: ábrelo en Red → Puertos.",
+  "{0}:{1} is already a website here.": "{0}:{1} ya es una web aquí.",
+  "{0} still points to {1}: {2}": "{0} sigue apuntando a {1}: {2}",
+  "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} apunta a {1}, no a este servidor ({2}): las visitas con ese nombre no llegarán a la web.",
+  "Enter the port on the device too (or leave both ports empty for a plain name).": "Escribe también el puerto del dispositivo (o deja ambos puertos vacíos para un nombre simple).",
 });

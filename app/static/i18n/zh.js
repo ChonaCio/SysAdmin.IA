@@ -1275,4 +1275,13 @@ SAI_I18N.register("zh", {
   "HTTPS (with this server's own certificate; browsers warn until it's trusted)": "HTTPS（使用本服务器自有证书；在受信任之前浏览器会警告）",
   "Also create the name, pointing to this server ({0})": "同时创建指向本服务器的名称（{0}）",
   "Website added.": "网站已添加。",
+  // ---- Network: name ports, router errors
+  "Ports (optional)": "端口（可选）",
+  "Leave empty for a plain name: every port goes straight to the device. With ports, visits to name:port are passed by this server's proxy to the device's port, e.g. website1.local:80 → 192.168.1.10:8080. Websites (HTTP) only; the name then points to this server.": "留空则为普通名称：所有端口直接到达设备。填写端口后，对“名称:端口”的访问会由本服务器的代理转发到设备的端口，例如 website1.local:80 → 192.168.1.10:8080。仅限网站（HTTP）；名称随后会指向本服务器。",
+  "Port mappings go through this server's proxy, which needs Docker (install it in the Containers module).": "端口映射经由本服务器的代理，需要 Docker（请在“容器”模块中安装）。",
+  "Port on the name": "名称端口",
+  "Default 80 (443 with HTTPS).": "默认 80（HTTPS 为 443）。",
+  "Passed on by this server's proxy": "由本服务器的代理转发",
+  "Remove the name {0} and its port mappings?": "删除名称 {0} 及其端口映射？",
+  "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it.": "网站在本服务器上响应的端口。默认 80（HTTPS 为 443）；多个网站可以共用。",
 });

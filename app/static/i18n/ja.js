@@ -1275,4 +1275,13 @@ SAI_I18N.register("ja", {
   "HTTPS (with this server's own certificate; browsers warn until it's trusted)": "HTTPS（このサーバー独自の証明書。信頼されるまでブラウザーは警告します）",
   "Also create the name, pointing to this server ({0})": "このサーバーを指す名前も作成する（{0}）",
   "Website added.": "Webサイトを追加しました。",
+  // ---- Network: name ports, router errors
+  "Ports (optional)": "ポート（任意）",
+  "Leave empty for a plain name: every port goes straight to the device. With ports, visits to name:port are passed by this server's proxy to the device's port, e.g. website1.local:80 → 192.168.1.10:8080. Websites (HTTP) only; the name then points to this server.": "単純な名前にするなら空欄のままにします。すべてのポートがそのままデバイスに届きます。ポートを指定すると、名前:ポートへのアクセスをこのサーバーのプロキシがデバイスのポートに転送します（例: website1.local:80 → 192.168.1.10:8080）。Webサイト（HTTP）のみ。名前はこのサーバーを指すようになります。",
+  "Port mappings go through this server's proxy, which needs Docker (install it in the Containers module).": "ポートの対応付けはこのサーバーのプロキシを経由し、Docker が必要です（「コンテナー」モジュールでインストールしてください）。",
+  "Port on the name": "名前側のポート",
+  "Default 80 (443 with HTTPS).": "既定は 80（HTTPS なら 443）。",
+  "Passed on by this server's proxy": "このサーバーのプロキシが転送",
+  "Remove the name {0} and its port mappings?": "名前 {0} とそのポートの対応付けを削除しますか？",
+  "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it.": "このサーバーで Webサイトが応答するポート。既定は 80（HTTPS なら 443）。複数の Webサイトで共有できます。",
 });

@@ -799,4 +799,16 @@ SAI_I18N.register("de", {
   "This router type can't hold local DNS names. OpenWrt and MikroTik can.": "Dieser Routertyp kann keine lokalen DNS-Namen speichern. OpenWrt und MikroTik können das.",
   "Port {0} on this server is already used by {1}. The proxy needs it.": "Port {0} auf diesem Server wird bereits von {1} genutzt. Der Proxy braucht ihn.",
   "Port {0} on this server is already used by another program. The proxy needs it (see Network → Ports for what's using it).": "Port {0} auf diesem Server wird bereits von einem anderen Programm genutzt. Der Proxy braucht ihn (unter Netzwerk → Ports siehst du, was ihn nutzt).",
+  // ---- Network: name ports, router errors
+  "The router at {0} gave an answer that isn't valid HTTP ({1}). Check the address and whether it needs http:// or https://.": "Der Router unter {0} hat eine Antwort gegeben, die kein gültiges HTTP ist ({1}). Prüfe die Adresse und ob http:// oder https:// nötig ist.",
+  "Unexpected answer from the router ({0}: {1}).": "Unerwartete Antwort vom Router ({0}: {1}).",
+  "Unexpected answer from the router (HTTP {0}). Is this an OpenWrt router?": "Unerwartete Antwort vom Router (HTTP {0}). Ist das ein OpenWrt-Router?",
+  "Unexpected error ({0}): {1}": "Unerwarteter Fehler ({0}): {1}",
+  "Ports are numbers between 1 and 65535.": "Ports sind Zahlen zwischen 1 und 65535.",
+  "Port {0} is SysAdmin.IA's own port. Pick another one, e.g. 80.": "Port {0} ist der eigene Port von SysAdmin.IA. Wähle einen anderen, z. B. 80.",
+  "The firewall keeps port {0} closed: open it in Network → Ports.": "Die Firewall hält Port {0} geschlossen: Öffne ihn unter Netzwerk → Ports.",
+  "{0}:{1} is already a website here.": "{0}:{1} ist hier bereits eine Website.",
+  "{0} still points to {1}: {2}": "{0} zeigt weiterhin auf {1}: {2}",
+  "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} zeigt auf {1}, nicht auf diesen Server ({2}): Aufrufe über diesen Namen erreichen die Website nicht.",
+  "Enter the port on the device too (or leave both ports empty for a plain name).": "Gib auch den Port am Gerät ein (oder lass beide Ports leer für einen einfachen Namen).",
 });

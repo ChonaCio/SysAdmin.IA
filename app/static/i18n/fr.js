@@ -1277,4 +1277,13 @@ SAI_I18N.register("fr", {
   "HTTPS (with this server's own certificate; browsers warn until it's trusted)": "HTTPS (avec le certificat propre à ce serveur ; les navigateurs avertissent tant qu’il n’est pas approuvé)",
   "Also create the name, pointing to this server ({0})": "Créer aussi le nom, pointant vers ce serveur ({0})",
   "Website added.": "Site ajouté.",
+  // ---- Network: name ports, router errors
+  "Ports (optional)": "Ports (facultatif)",
+  "Leave empty for a plain name: every port goes straight to the device. With ports, visits to name:port are passed by this server's proxy to the device's port, e.g. website1.local:80 → 192.168.1.10:8080. Websites (HTTP) only; the name then points to this server.": "Laissez vide pour un nom simple : tous les ports vont directement à l’appareil. Avec des ports, les visites vers nom:port sont transmises par le proxy de ce serveur au port de l’appareil, p. ex. website1.local:80 → 192.168.1.10:8080. Sites (HTTP) uniquement ; le nom pointe alors vers ce serveur.",
+  "Port mappings go through this server's proxy, which needs Docker (install it in the Containers module).": "Les correspondances de ports passent par le proxy de ce serveur, qui nécessite Docker (installez-le dans le module Conteneurs).",
+  "Port on the name": "Port du nom",
+  "Default 80 (443 with HTTPS).": "Par défaut 80 (443 avec HTTPS).",
+  "Passed on by this server's proxy": "Transmis par le proxy de ce serveur",
+  "Remove the name {0} and its port mappings?": "Supprimer le nom {0} et ses correspondances de ports ?",
+  "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it.": "Où le site répond sur ce serveur. Par défaut 80 (443 avec HTTPS) ; plusieurs sites peuvent le partager.",
 });

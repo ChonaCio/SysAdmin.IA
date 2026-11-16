@@ -799,4 +799,16 @@ SAI_I18N.register("pt", {
   "This router type can't hold local DNS names. OpenWrt and MikroTik can.": "Este tipo de roteador não consegue guardar nomes DNS locais. OpenWrt e MikroTik conseguem.",
   "Port {0} on this server is already used by {1}. The proxy needs it.": "A porta {0} deste servidor já é usada por {1}. O proxy precisa dela.",
   "Port {0} on this server is already used by another program. The proxy needs it (see Network → Ports for what's using it).": "A porta {0} deste servidor já é usada por outro programa. O proxy precisa dela (veja em Rede → Portas o que a usa).",
+  // ---- Network: name ports, router errors
+  "The router at {0} gave an answer that isn't valid HTTP ({1}). Check the address and whether it needs http:// or https://.": "O roteador em {0} deu uma resposta que não é HTTP válido ({1}). Verifique o endereço e se ele precisa de http:// ou https://.",
+  "Unexpected answer from the router ({0}: {1}).": "Resposta inesperada do roteador ({0}: {1}).",
+  "Unexpected answer from the router (HTTP {0}). Is this an OpenWrt router?": "Resposta inesperada do roteador (HTTP {0}). Este é um roteador OpenWrt?",
+  "Unexpected error ({0}): {1}": "Erro inesperado ({0}): {1}",
+  "Ports are numbers between 1 and 65535.": "As portas são números entre 1 e 65535.",
+  "Port {0} is SysAdmin.IA's own port. Pick another one, e.g. 80.": "A porta {0} é a própria porta do SysAdmin.IA. Escolha outra, ex.: 80.",
+  "The firewall keeps port {0} closed: open it in Network → Ports.": "O firewall mantém a porta {0} fechada: abra-a em Rede → Portas.",
+  "{0}:{1} is already a website here.": "{0}:{1} já é um site aqui.",
+  "{0} still points to {1}: {2}": "{0} ainda aponta para {1}: {2}",
+  "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} aponta para {1}, não para este servidor ({2}): visitas por esse nome não chegarão ao site.",
+  "Enter the port on the device too (or leave both ports empty for a plain name).": "Digite também a porta do dispositivo (ou deixe as duas portas vazias para um nome simples).",
 });

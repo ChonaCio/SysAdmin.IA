@@ -800,4 +800,16 @@ SAI_I18N.register("ja", {
   "This router type can't hold local DNS names. OpenWrt and MikroTik can.": "この種類のルーターはローカル DNS 名を保存できません。OpenWrt と MikroTik は可能です。",
   "Port {0} on this server is already used by {1}. The proxy needs it.": "このサーバーのポート {0} はすでに {1} が使用しています。プロキシにはこのポートが必要です。",
   "Port {0} on this server is already used by another program. The proxy needs it (see Network → Ports for what's using it).": "このサーバーのポート {0} はすでに別のプログラムが使用しています。プロキシにはこのポートが必要です（何が使っているかはネットワーク → ポートで確認できます）。",
+  // ---- Network: name ports, router errors
+  "The router at {0} gave an answer that isn't valid HTTP ({1}). Check the address and whether it needs http:// or https://.": "{0} のルーターの応答が正しい HTTP ではありません（{1}）。アドレスと、http:// と https:// のどちらが必要かを確認してください。",
+  "Unexpected answer from the router ({0}: {1}).": "ルーターから予期しない応答がありました（{0}: {1}）。",
+  "Unexpected answer from the router (HTTP {0}). Is this an OpenWrt router?": "ルーターから予期しない応答がありました（HTTP {0}）。OpenWrt ルーターですか？",
+  "Unexpected error ({0}): {1}": "予期しないエラー（{0}）: {1}",
+  "Ports are numbers between 1 and 65535.": "ポートは 1 から 65535 の数値です。",
+  "Port {0} is SysAdmin.IA's own port. Pick another one, e.g. 80.": "ポート {0} は SysAdmin.IA 自身のポートです。別のポート（例: 80）を選んでください。",
+  "The firewall keeps port {0} closed: open it in Network → Ports.": "ファイアウォールでポート {0} が閉じられています。ネットワーク → ポートで開いてください。",
+  "{0}:{1} is already a website here.": "{0}:{1} はすでにここの Webサイトです。",
+  "{0} still points to {1}: {2}": "{0} はまだ {1} を指しています: {2}",
+  "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} は {1} を指しており、このサーバー（{2}）ではありません。その名前でのアクセスは Webサイトに届きません。",
+  "Enter the port on the device too (or leave both ports empty for a plain name).": "デバイス側のポートも入力してください（単純な名前にするなら両方のポートを空欄に）。",
 });

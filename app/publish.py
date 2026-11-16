@@ -109,12 +109,18 @@ def cgnat_state(router_ip: str, pub: str | None) -> str:
 
 def lan_ip() -> str | None:
     """This server's address in the router's network (what port forwards point to)."""
-    gw = network.gateway()
-    ifs = network.interfaces()
+    try:
+        gw = network.gateway()
+        ifs = network.interfaces()
+    except Exception:  # noqa: BLE001 - not Linux / no network info
+        return None
     for i in ifs:
-        if gw and ipaddress.ip_address(gw) in ipaddress.ip_network(i["network"]):
-            return i["ip"]
-    return ifs[0]["ip"] if ifs else None
+        try:
+            if gw and ipaddress.ip_address(gw) in ipaddress.ip_network(i["network"], strict=False):
+                return i["ip"]
+        except (ValueError, KeyError, TypeError):
+            continue
+    return ifs[0].get("ip") if ifs else None
 
 
 # ---------------------------------------------------------------- containers (connector / proxy)
@@ -122,7 +128,7 @@ def lan_ip() -> str | None:
 def _container(name: str) -> dict | None:
     try:
         return next((c for c in containers.list_containers() if c["name"] == name), None)
-    except containers.DockerError:
+    except Exception:  # noqa: BLE001 - Docker missing, not allowed, or an odd answer: treat as "no container"
         return None
 
 
@@ -281,10 +287,13 @@ def caddyfile(services: list[dict], email: str, local_sites: list[dict] | None =
     for s in services:
         out += [f"{s['hostname']} {{", *_proxy_lines(s["target"]), "}", ""]
     for s in local_sites or []:
+        port = int(s.get("port") or (443 if s.get("https") else 80))
         if s.get("https"):
-            out += [f"https://{s['hostname']} {{", "\ttls internal", *_proxy_lines(s["target"]), "}", ""]
+            addr = f"https://{s['hostname']}" + ("" if port == 443 else f":{port}")
+            out += [f"{addr} {{", "\ttls internal", *_proxy_lines(s["target"]), "}", ""]
         else:
-            out += [f"http://{s['hostname']} {{", *_proxy_lines(s["target"]), "}", ""]
+            addr = f"http://{s['hostname']}" + ("" if port == 80 else f":{port}")
+            out += [f"{addr} {{", *_proxy_lines(s["target"]), "}", ""]
     return "\n".join(out)
 
 
@@ -298,10 +307,14 @@ def proxy_wanted() -> bool:
 
 
 def ports_free(ports: tuple[int, ...]) -> None:
-    """Raise if another program (not our proxy) listens on these ports of this server."""
-    if _container(CADDY_CONTAINER) and (_container(CADDY_CONTAINER) or {}).get("state") == "running":
+    """Raise if another program listens on these ports of this server. Pass only ports the proxy doesn't
+    already listen on (see lan_names._proxy_ports)."""
+    if not ports:
         return
-    used = containers.used_host_ports(CADDY_CONTAINER) if _docker_ok() else {}
+    try:
+        used = containers.used_host_ports(CADDY_CONTAINER) if _docker_ok() else {}
+    except Exception:  # noqa: BLE001
+        used = {}
     for p in ports:
         if p in used:
             raise PublishError(f"Port {p} on this server is already used by {used[p]}. The proxy needs it.")
@@ -340,7 +353,8 @@ def caddy_setup(email: str, forward_ports: bool = True) -> dict:
     if email and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
         raise PublishError("That doesn't look like an email address.")
     with _lock:
-        ports_free((80, 443))
+        from . import lan_names
+        ports_free(tuple(sorted({80, 443} - lan_names._proxy_ports(lan_names.list_sites()))))
         c = get_config()
         c["caddy"] = {"email": email, "enabled": True, "forwarded": False}
         _save_config(c)
@@ -366,7 +380,7 @@ def _docker_ok() -> bool:
     try:
         containers._req("GET", "/_ping")
         return True
-    except containers.DockerError:
+    except Exception:  # noqa: BLE001
         return False
 
 
@@ -594,10 +608,11 @@ def status(check_public: bool = False) -> dict:
     c = get_config()
     pub = public_ip() if check_public else _ip_cache["ip"]
     rip = routers.external_ip() if check_public else ""
-    cf_c, caddy_c = (_container(CF_CONTAINER), _container(CADDY_CONTAINER)) if _docker_ok() else (None, None)
+    docker = _docker_ok()
+    cf_c, caddy_c = (_container(CF_CONTAINER), _container(CADDY_CONTAINER)) if docker else (None, None)
     return {
         "public_ip": pub, "router_ip": rip, "nat": cgnat_state(rip, pub) if check_public else "unknown",
-        "lan_ip": lan_ip(), "docker": _docker_ok(), "app_port": settings.port,
+        "lan_ip": lan_ip(), "docker": docker, "app_port": settings.port,
         "cloudflare": {**{k: v for k, v in (c.get("cloudflare") or {}).items() if k != "account_id"},
                        "connected": bool((c.get("cloudflare") or {}).get("tunnel_id")),
                        "container": cf_c["state"] if cf_c else None, "token_saved": bool(_secret("cf_token"))},

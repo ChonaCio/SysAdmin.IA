@@ -799,4 +799,16 @@ SAI_I18N.register("fr", {
   "This router type can't hold local DNS names. OpenWrt and MikroTik can.": "Ce type de routeur ne peut pas garder de noms DNS locaux. OpenWrt et MikroTik le peuvent.",
   "Port {0} on this server is already used by {1}. The proxy needs it.": "Le port {0} de ce serveur est déjà utilisé par {1}. Le proxy en a besoin.",
   "Port {0} on this server is already used by another program. The proxy needs it (see Network → Ports for what's using it).": "Le port {0} de ce serveur est déjà utilisé par un autre programme. Le proxy en a besoin (voyez dans Réseau → Ports ce qui l’utilise).",
+  // ---- Network: name ports, router errors
+  "The router at {0} gave an answer that isn't valid HTTP ({1}). Check the address and whether it needs http:// or https://.": "Le routeur à {0} a donné une réponse qui n’est pas du HTTP valide ({1}). Vérifiez l’adresse et s’il faut http:// ou https://.",
+  "Unexpected answer from the router ({0}: {1}).": "Réponse inattendue du routeur ({0} : {1}).",
+  "Unexpected answer from the router (HTTP {0}). Is this an OpenWrt router?": "Réponse inattendue du routeur (HTTP {0}). Est-ce un routeur OpenWrt ?",
+  "Unexpected error ({0}): {1}": "Erreur inattendue ({0}) : {1}",
+  "Ports are numbers between 1 and 65535.": "Les ports sont des nombres entre 1 et 65535.",
+  "Port {0} is SysAdmin.IA's own port. Pick another one, e.g. 80.": "Le port {0} est le port de SysAdmin.IA lui-même. Choisissez-en un autre, p. ex. 80.",
+  "The firewall keeps port {0} closed: open it in Network → Ports.": "Le pare-feu garde le port {0} fermé : ouvrez-le dans Réseau → Ports.",
+  "{0}:{1} is already a website here.": "{0}:{1} est déjà un site ici.",
+  "{0} still points to {1}: {2}": "{0} pointe toujours vers {1} : {2}",
+  "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} pointe vers {1}, pas vers ce serveur ({2}) : les visites par ce nom n’atteindront pas le site.",
+  "Enter the port on the device too (or leave both ports empty for a plain name).": "Saisissez aussi le port de l’appareil (ou laissez les deux ports vides pour un nom simple).",
 });

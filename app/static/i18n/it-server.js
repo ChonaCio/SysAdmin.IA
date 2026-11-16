@@ -799,4 +799,16 @@ SAI_I18N.register("it", {
   "This router type can't hold local DNS names. OpenWrt and MikroTik can.": "Questo tipo di router non può conservare nomi DNS locali. OpenWrt e MikroTik possono.",
   "Port {0} on this server is already used by {1}. The proxy needs it.": "La porta {0} di questo server è già usata da {1}. Il proxy ne ha bisogno.",
   "Port {0} on this server is already used by another program. The proxy needs it (see Network → Ports for what's using it).": "La porta {0} di questo server è già usata da un altro programma. Il proxy ne ha bisogno (vedi in Rete → Porte cosa la usa).",
+  // ---- Network: name ports, router errors
+  "The router at {0} gave an answer that isn't valid HTTP ({1}). Check the address and whether it needs http:// or https://.": "Il router a {0} ha dato una risposta che non è HTTP valido ({1}). Controlla l’indirizzo e se serve http:// o https://.",
+  "Unexpected answer from the router ({0}: {1}).": "Risposta inattesa dal router ({0}: {1}).",
+  "Unexpected answer from the router (HTTP {0}). Is this an OpenWrt router?": "Risposta inattesa dal router (HTTP {0}). È un router OpenWrt?",
+  "Unexpected error ({0}): {1}": "Errore inatteso ({0}): {1}",
+  "Ports are numbers between 1 and 65535.": "Le porte sono numeri tra 1 e 65535.",
+  "Port {0} is SysAdmin.IA's own port. Pick another one, e.g. 80.": "La porta {0} è la porta di SysAdmin.IA. Scegline un’altra, es. 80.",
+  "The firewall keeps port {0} closed: open it in Network → Ports.": "Il firewall tiene chiusa la porta {0}: aprila in Rete → Porte.",
+  "{0}:{1} is already a website here.": "{0}:{1} è già un sito qui.",
+  "{0} still points to {1}: {2}": "{0} punta ancora a {1}: {2}",
+  "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} punta a {1}, non a questo server ({2}): le visite con quel nome non raggiungeranno il sito.",
+  "Enter the port on the device too (or leave both ports empty for a plain name).": "Inserisci anche la porta sul dispositivo (o lascia vuote entrambe le porte per un nome semplice).",
 });
