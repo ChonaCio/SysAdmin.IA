@@ -32,6 +32,7 @@ from . import variables as V
 log = logging.getLogger("sysadmin-ia.jobs")
 
 WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+FOLLOWUP_KEY = "job_update_followup"   # app_settings key: an update a job is installing
 REPEAT = {"key": "repeat_minutes", "label": "Run again every … minutes while it lasts", "type": "number",
           "min": 0, "max": 100000, "default": 60, "help": "0 = only once, until it's back to normal."}
 RECOVER = {"key": "notify_recovery", "label": "Also run when it's back to normal", "type": "bool", "default": False,
@@ -209,7 +210,9 @@ ACTIONS: dict[str, dict] = {
 
 
 class JobError(ValueError):
-    pass
+    def __init__(self, message: str, details: str = "") -> None:
+        super().__init__(message)
+        self.details = details
 
 
 def catalog() -> dict:
@@ -568,13 +571,21 @@ def _sig(t: dict) -> str:
 
 # ---------------------------------------------------------------- actions
 
-async def _act_send_mail(a: dict, ctx: dict) -> str:
+# Each action returns (one-line result, details shown when the history entry is expanded).
+# Errors are raised as JobError(message, details=…).
+
+async def _act_send_mail(a: dict, ctx: dict) -> tuple[str, str]:
     from . import mail
     acc = mail.get(a["account"])
     if not acc:
         raise JobError("The mail account was deleted.")
     to, subject, body = (V.render(a.get(k, ""), ctx) for k in ("to", "subject", "body"))
-    return await asyncio.to_thread(mail.send, acc, to, subject, body)
+    details = f"From: {acc['config'].get('from_address')} (account “{acc['name']}”)\nTo: {to}\nSubject: {subject}\n\n{body}"
+    try:
+        sent = await asyncio.to_thread(mail.send, acc, to, subject, body)
+    except Exception as e:
+        raise JobError(str(e), details=details)
+    return f"{sent} — “{subject[:120]}”", details
 
 
 async def _act_webhook(a: dict, ctx: dict) -> str:
@@ -603,12 +614,17 @@ async def _act_webhook(a: dict, ctx: dict) -> str:
         except (urllib.error.URLError, OSError) as e:
             raise JobError(f"Could not reach the webhook: {getattr(e, 'reason', e)}")
 
-    status, text = await asyncio.to_thread(call)
+    host = re.sub(r"^https?://([^/?#]+).*$", r"\1", url)
+    req_details = f"{method} {url}\nContent-Type: {ctype}\n\n{body}" if data else f"{method} {url}"
+    try:
+        status, text = await asyncio.to_thread(call)
+    except JobError as e:
+        raise JobError(str(e), details=req_details)
     ctx["last"] = {"output": text}
-    return f"HTTP {status}"
+    return f"{method} {host} → HTTP {status}", f"{req_details}\n\n— Response (HTTP {status}) —\n{text or '(empty)'}"
 
 
-async def _act_run_command(a: dict, ctx: dict) -> str:
+async def _act_run_command(a: dict, ctx: dict) -> tuple[str, str]:
     from .config import settings
     cmd = V.render(a["command"], ctx)
     timeout = int(a.get("timeout") or 120)
@@ -620,17 +636,22 @@ async def _act_run_command(a: dict, ctx: dict) -> str:
     except asyncio.TimeoutError:
         proc.kill()
         await proc.wait()
-        raise JobError(f"The command took longer than {timeout} seconds and was stopped.")
+        raise JobError(f"The command took longer than {timeout} seconds and was stopped.", details=f"$ {cmd}")
     text = out.decode("utf-8", "replace").strip()
     if len(text) > 8000:
         text = text[:4000] + "\n…\n" + text[-3900:]
     ctx["last"] = {"output": text, "exit_code": proc.returncode}
+    details = f"$ {cmd}\n{text or '(no output)'}\n\n[exit code {proc.returncode}]"
     if proc.returncode != 0:
-        raise JobError(f"The command failed (exit code {proc.returncode}): {text[-500:]}")
-    return f"Exit code 0. {text[:300]}" if text else "Exit code 0 (no output)."
+        last_line = (text.strip().splitlines() or [""])[-1][:200]
+        raise JobError(f"The command failed (exit code {proc.returncode}){': ' + last_line if last_line else ''}", details=details)
+    n = len(text.splitlines())
+    first = (text.splitlines() or [""])[0][:160]
+    return (f"Exit code 0 · {n} line{'s' if n != 1 else ''} of output" + (f": {first}" if first else "")
+            if text else "Exit code 0 (no output)."), details
 
 
-async def _act_ask_ai(a: dict, ctx: dict) -> str:
+async def _act_ask_ai(a: dict, ctx: dict) -> tuple[str, str]:
     from . import ai_connections as ai
     from . import providers
     conn = ai.get(int(a["connection"])) if a.get("connection") else ai.default()
@@ -640,43 +661,75 @@ async def _act_ask_ai(a: dict, ctx: dict) -> str:
     if blocked:
         raise JobError(blocked)
     prompt = V.render(a["prompt"], ctx)
-    answer, usage = await providers.for_connection(conn).complete(
-        prompt, "You help a Linux server administrator. Answer concisely in plain text (no Markdown).")
+    try:
+        answer, usage = await providers.for_connection(conn).complete(
+            prompt, "You help a Linux server administrator. Answer concisely in plain text (no Markdown).")
+    except Exception as e:
+        raise JobError(str(e), details=f"Connection: {conn['name']} ({conn['config'].get('model')})\n\nQuestion:\n{prompt}")
+    tokens = ""
     if usage:
         ai.record_usage(conn["id"], usage)
+        total = sum(int(usage.get(k) or 0) for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
+        tokens = f" · {total:,} tokens"
     ctx["ai"] = {"answer": answer}
     ctx["last"] = {"output": answer}
-    return f"{conn['name']} answered: {answer[:300]}"
+    first = " ".join(answer.split())[:200]
+    return (f"{conn['name']} answered{tokens}: {first}{'…' if len(answer) > 200 else ''}",
+            f"Connection: {conn['name']} ({conn['config'].get('model')})\n\nQuestion:\n{prompt}\n\nAnswer:\n{answer}")
 
 
-async def _act_check_updates(a: dict, ctx: dict) -> str:
+async def _act_check_updates(a: dict, ctx: dict) -> tuple[str, str]:
     from . import updater
     s = await updater.check(force=True)
     if s.get("error"):
-        raise JobError(s["error"])
+        raise JobError(f"Couldn't check for updates: {s['error']}")
     latest = (s.get("latest") or {}).get("version")
+    pending = s.get("pending") or []
     ctx["update"] = {"available": "yes" if s["update_available"] else "no", "current": s["current"], "latest": latest or ""}
+    notes = "\n\n".join(f"— {p['version']}{' · ' + p['published_at'][:10] if p.get('published_at') else ''} —\n"
+                        f"{(p.get('notes') or '').strip() or '(no release notes)'}" for p in reversed(pending))
+    source = f"Checked github.com/{s['repo']} at {time.strftime('%H:%M:%S')}."
     if not s["update_available"]:
-        msg = f"Up to date ({s['current']})."
-    elif a.get("install"):
-        r = await updater.apply()
-        msg = f"Installing {r['to']} (from {r['from']})."
-        if r.get("mode") == "code" and r.get("restart"):
-            # Code-only update: restart (systemd starts the new code) a moment after this run is saved.
-            import os
-            import signal
-            asyncio.get_running_loop().call_later(5, lambda: os.kill(os.getpid(), signal.SIGTERM))
-            msg += " The app restarts in a few seconds."
+        msg = f"No update found: {s['current']} is the latest version."
+        details = source
     else:
-        msg = f"Version {latest} is available (installed: {s['current']})."
+        incl = f" (includes {len(pending)} versions: {', '.join(p['version'] for p in pending)})" if len(pending) > 1 else ""
+        found = f"Update found: {s['current']} → {latest}{incl}."
+        details = f"{source}\n\nWhat's new:\n\n{notes}" if notes else source
+        if not a.get("install"):
+            msg = f"{found} Not installed (this action only checks)."
+        else:
+            try:
+                r = await updater.apply()
+            except Exception as e:
+                raise JobError(f"{found} Installing it failed: {e}", details=details)
+            if r.get("mode") == "full":
+                msg = (f"{found} Installing it now: the new version's installer is running in the background and "
+                       "the app restarts when it finishes. The result is added to this run.")
+            else:
+                msg = f"{found} Installed (app code); the app restarts in a few seconds. The result is added to this run."
+                if r.get("restart"):
+                    # Code-only update: restart (systemd starts the new code) a moment after this run is saved.
+                    import os
+                    import signal
+                    asyncio.get_running_loop().call_later(5, lambda: os.kill(os.getpid(), signal.SIGTERM))
+            ctx["_update_followup"] = {"from": s["current"], "to": r["to"], "mode": r.get("mode")}
+            log_lines = "\n".join(r.get("log") or [])
+            if log_lines:
+                details += f"\n\nInstaller:\n{log_lines}"
     ctx["last"] = {"output": msg}
-    return msg
+    return msg, details
 
 
-async def _act_set_variable(a: dict, ctx: dict) -> str:
+async def _act_set_variable(a: dict, ctx: dict) -> tuple[str, str]:
+    old = V.get(a["name"])
     value = V.render(a.get("value") or "", ctx)
     V.set_value(a["name"], value)
-    return f"{a['name']} = {value[:200]}"
+    if old is None:
+        return f"Created {a['name']} = “{value[:200]}”", ""
+    if old == value:
+        return f"{a['name']} unchanged (“{value[:200]}”)", ""
+    return f"{a['name']}: “{old[:100]}” → “{value[:200]}”", f"Before:\n{old}\n\nAfter:\n{value}"
 
 
 ACTION_FUNCS = {"send_mail": _act_send_mail, "webhook": _act_webhook, "run_command": _act_run_command,
@@ -702,6 +755,7 @@ class JobEngine:
 
     async def _loop(self) -> None:
         await asyncio.sleep(3)
+        asyncio.get_running_loop().create_task(self.finish_update_followup())
         for j in list_all():  # "App started" triggers
             if j["enabled"] and any(t["type"] == "app_started" for t in j["triggers"]):
                 self._spawn(j, {"summary": "SysAdmin.IA started", "time": time.strftime("%Y-%m-%d %H:%M:%S")},
@@ -921,19 +975,34 @@ class JobEngine:
             ctx["mail"] = trigger_ctx["_mail"]
         if "_update" in trigger_ctx:
             ctx["update"] = trigger_ctx["_update"]
-        entries, status = [], "ok"
+        # First history line: what started the run, with the values the trigger saw.
+        shown = {k: v for k, v in ctx["trigger"].items() if k not in ("summary",) and v not in (None, "")}
+        trig_details = "\n".join(f"{k}: {v}" for k, v in shown.items())
+        if "mail" in ctx:
+            m = ctx["mail"]
+            trig_details += f"\n\nFrom: {m.get('from')}\nSubject: {m.get('subject')}\nDate: {m.get('date')}\n\n{(m.get('body') or '')[:2000]}"
+        entries: list[dict] = [{"step": 0, "action": "Trigger", "ok": True, "message": V.mask(why)[:500],
+                                "details": V.mask(trig_details.strip())[:6000]}]
+        status = "ok"
         try:
             for i, a in enumerate(j["actions"], 1):
                 label = describe_action(a)
+                t0 = time.time()
                 try:
-                    msg = await ACTION_FUNCS[a["type"]](a, ctx)
-                    entries.append({"step": i, "action": label, "ok": True, "message": V.mask(str(msg))[:2000]})
+                    res = await ACTION_FUNCS[a["type"]](a, ctx)
+                    msg, details = res if isinstance(res, tuple) else (str(res), "")
+                    entries.append({"step": i, "action": label, "ok": True, "message": V.mask(str(msg))[:2000],
+                                    "details": V.mask(details or "")[:12000], "ms": int((time.time() - t0) * 1000)})
                 except Exception as e:
                     status = "failed"
-                    entries.append({"step": i, "action": label, "ok": False, "message": V.mask(str(e))[:2000]})
+                    entries.append({"step": i, "action": label, "ok": False, "message": V.mask(str(e))[:2000],
+                                    "details": V.mask(getattr(e, "details", "") or "")[:12000],
+                                    "ms": int((time.time() - t0) * 1000)})
                     if j["options"].get("stop_on_error", True):
-                        entries.append({"step": None, "action": "", "ok": False,
-                                        "message": "Stopped: the remaining actions were skipped."})
+                        skipped = len(j["actions"]) - i
+                        if skipped:
+                            entries.append({"step": None, "action": "", "ok": False,
+                                            "message": f"Stopped: the remaining {skipped} action{'s were' if skipped > 1 else ' was'} skipped."})
                         break
                 ctx["steps"][str(i)] = {"output": (ctx.get("last") or {}).get("output", "")}
         finally:
@@ -945,7 +1014,47 @@ class JobEngine:
             db.execute("DELETE FROM job_runs WHERE job_id=? AND id NOT IN "
                        "(SELECT id FROM job_runs WHERE job_id=? ORDER BY id DESC LIMIT 100)", (job_id, job_id))
             db.audit("job_run", user, "local", {"job": j["name"], "trigger": V.mask(why)[:200], "status": status})
+            if ctx.get("_update_followup"):
+                # The install restarts the app: remember to add its outcome to this run afterwards.
+                db.set_setting(FOLLOWUP_KEY, json.dumps({**ctx["_update_followup"], "run_id": run_id,
+                                                         "job_id": job_id, "started": done}))
         return {"id": run_id, "status": status, "log": entries}
+
+    # -- outcome of an update installed by a job (checked after the app restarts)
+    async def finish_update_followup(self) -> None:
+        raw = db.get_setting(FOLLOWUP_KEY)
+        if not raw:
+            return
+        from . import updater
+        f = json.loads(raw)
+        deadline = f.get("started", time.time()) + 45 * 60
+        entry = None
+        while time.time() < deadline:
+            cur = updater.current_version()
+            prog = updater.progress(log_lines=200)
+            if cur == f["to"] and prog.get("state") != "running":
+                entry = {"ok": True, "message": f"Update installed: the server now runs SysAdmin.IA {cur} (was {f['from']})."}
+                break
+            if prog.get("state") == "failed":
+                entry = {"ok": False, "message": f"The update to {f['to']} failed and was rolled back: {prog.get('message') or 'see Admin → Updates'}",
+                         "details": (prog.get("log") or "")[-6000:]}
+                break
+            if f.get("mode") == "code" and cur != f["to"] and time.time() - f.get("started", 0) > 300:
+                entry = {"ok": False, "message": f"The update to {f['to']} didn't take effect (still running {cur})."}
+                break
+            await asyncio.sleep(5)
+        if entry is None:
+            entry = {"ok": False, "message": f"Couldn't confirm the update to {f['to']} within 45 minutes; check Admin → Updates."}
+        db.set_setting(FOLLOWUP_KEY, None)
+        row = db.query_one("SELECT log, status FROM job_runs WHERE id=?", (f["run_id"],))
+        if not row:
+            return
+        log_entries = json.loads(row["log"] or "[]")
+        log_entries.append({"step": None, "action": "Update result", **entry})
+        status = row["status"] if entry["ok"] else "failed"
+        db.execute("UPDATE job_runs SET log=?, status=? WHERE id=?", (json.dumps(log_entries), status, f["run_id"]))
+        if not entry["ok"]:
+            db.execute("UPDATE jobs SET last_status='failed' WHERE id=?", (f["job_id"],))
 
 
 ENGINE = JobEngine()

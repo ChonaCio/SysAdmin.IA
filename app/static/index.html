@@ -399,7 +399,14 @@
         <div class="lai-hw" id="lai-hw"></div>
         <div class="lai-install" id="lai-install" hidden>
           <p class="small busy" id="lai-install-msg"></p>
-          <pre class="update-notes mono small" id="lai-install-log"></pre>
+          <div class="lai-progress" id="lai-install-progress" hidden>
+            <div class="small"><span id="lai-install-stage"></span> <strong id="lai-install-pct"></strong></div>
+            <div class="bar big-bar"><i id="lai-install-bar"></i></div>
+          </div>
+          <details id="lai-install-details">
+            <summary class="small">Show details</summary>
+            <pre class="update-notes mono small" id="lai-install-log"></pre>
+          </details>
         </div>
         <div class="row lai-context" id="lai-context" hidden>
           <label class="small">Context length <span class="muted">(how much text a model can keep in mind)</span>
@@ -419,11 +426,12 @@
       <div class="card" id="lai-get-card" hidden>
         <h3>Download a model</h3>
         <form class="row lai-pull-form" id="lai-pull-form" autocomplete="off">
-          <input id="lai-pull-name" spellcheck="false" placeholder="Any model from ollama.com/library, e.g. llama3.1:8b" aria-label="Model name">
+          <input id="lai-pull-name" spellcheck="false" placeholder="e.g. llama3.1:8b, or hf.co/user/repo:Q4_K_M from Hugging Face" aria-label="Model name">
           <button class="primary"><span data-icon="download"></span> Download</button>
         </form>
-        <p class="muted small">Browse every model at <a href="https://ollama.com/library" target="_blank" rel="noopener noreferrer">ollama.com/library</a>
-          and type its name above. Below are good choices for this app. The chat assistant needs models marked <strong>Tools</strong>.</p>
+        <p class="muted small">Type any model from <a href="https://ollama.com/library" target="_blank" rel="noopener noreferrer">ollama.com/library</a>,
+          or a GGUF model from <a href="https://huggingface.co/models?library=gguf" target="_blank" rel="noopener noreferrer">Hugging Face</a>
+          as <code>hf.co/user/repo:quantization</code>. Below are good choices by category. The chat assistant needs models marked <strong>Tools</strong>.</p>
         <div id="lai-catalog" class="lai-catalog"></div>
       </div>
 

@@ -164,7 +164,15 @@ The **Local AI** module (Settings) runs open AI models on the server itself with
 - **Install Ollama** runs Ollama's official installer (`https://ollama.com/install.sh`) as root through the app's helper, in the background with a live log. It adds the `ollama` service and user, with GPU support if a GPU is found. Ollama listens on `127.0.0.1:11434`, so only this server can reach it. **Start / Stop / Restart** control the service.
 - **Hardware** shows memory, GPUs (NVIDIA via `nvidia-smi`, or AMD) and free disk space where models are stored, so you can tell which models fit.
 - **Context length** sets how much text models keep in mind (Ollama's `OLLAMA_CONTEXT_LENGTH`, via a systemd drop-in). The installer sets 8k; the chat assistant needs at least that, and 16–32k for long tasks (more memory).
-- **Download a model:** pick from the recommended list (with download size, memory needed, and whether it supports **tools**), or type any name from [ollama.com/library](https://ollama.com/library). Downloads show live progress and can be cancelled.
+- **Install progress** shows a single progress bar with the current step (e.g. "Downloading Linux amd64 bundle… 64%"); the installer's full log is under **Show details**.
+- **Download a model:** about 40 recommended models, grouped and filterable:
+  - **Chat & tools**, **Coding**, **Vision** (models that understand images), **Embeddings** (search/RAG).
+  - **Tiny & low-cost:** down to about 300 MB, for small servers.
+  - **Huge:** 70B to 671B, flagged when they need more memory than the server has.
+  - **Image generation:** experimental in Ollama, officially macOS-only for now.
+  - **From Hugging Face:** GGUF models Ollama downloads directly.
+
+  Each model shows its download size, memory needed, whether it supports **tools**, and a link to its page. You can also type any name from [ollama.com/library](https://ollama.com/library) or `hf.co/user/repo:quantization` from Hugging Face. Downloads show live progress and can be cancelled. Ollama doesn't do video generation, so there are no video models.
 - **Installed models** shows size, parameters, quantization and capabilities (Tools, Vision, Thinking). It shows whether a model is loaded and how much memory it uses (and how much of that is on the GPU), with **Unload** to free that memory, **Delete**, and **Use in chat**.
 
 **Use in chat** creates an AI connection under the provider **Ollama (Server Managed)**. You can also add one yourself in AI connections; its model box lists the models installed on the server. The chat assistant needs a model with **Tools** to run commands. Models without tools (e.g. DeepSeek-R1, Gemma 3) still work for questions and for the "Ask the AI" job action. To use Ollama running on *another* computer, use the provider **Ollama (another server)**. **Remove Ollama** uninstalls it, optionally with all downloaded models.
@@ -173,7 +181,16 @@ Existing installations need the updated root helper for install and service cont
 
 ### Jobs, variables and mail accounts (Automation)
 
-**Jobs** are automations: *when* something happens, *then* do something. A job has one or more triggers (it runs when any of them fires) and a list of actions that run in order. **Run now** tests a job straight away, and **History** shows the last 100 runs with what each action did.
+**Jobs** are automations: *when* something happens, *then* do something. A job has one or more triggers (it runs when any of them fires) and a list of actions that run in order. **Run now** tests a job straight away.
+
+**History** shows the last 100 runs. Each run shows how long it took and how many actions succeeded, then what triggered it (with the values the trigger saw), then each action's result and duration. Expand **Details** to see:
+- for an email: the full message
+- for a webhook: the request and the response
+- for a command: its full output
+- for Ask the AI: the question and answer
+- for Set a variable: the old and new value
+
+**Check for updates** says whether an update was found (from which version to which, the versions it includes and their release notes) and whether it was installed. When it installs one, the app restarts, and the outcome ("now runs 1.6.0" or "failed and was rolled back") is added to the same run afterwards.
 
 | Triggers (When) | |
 |---|---|

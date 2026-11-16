@@ -2041,9 +2041,19 @@ function renderLaiStatus(s) {
     msg.innerHTML = installing ? '<span class="spinner" aria-hidden="true"></span> ' : "";
     msg.append(inst.message || "");
     msg.className = `small ${installing ? "busy" : inst.state === "failed" ? "error" : "ok-text"}`;
+    // One progress bar instead of the installer's terminal progress output.
+    const prog = $("#lai-install-progress");
+    const pct = inst.progress;
+    prog.hidden = pct == null || inst.state === "failed";
+    if (!prog.hidden) {
+      $("#lai-install-stage").textContent = inst.stage ? `${inst.stage.replace(/\.+$/, "")}…` : "Downloading…";
+      $("#lai-install-pct").textContent = `${Math.round(pct)}%`;
+      $("#lai-install-bar").style.width = `${pct}%`;
+    }
     const log = $("#lai-install-log");
     log.textContent = inst.log || "";
     log.scrollTop = log.scrollHeight;
+    if (inst.state === "failed") $("#lai-install-details").open = true;
   }
   $("#lai-context").hidden = !s.installed;
   const csel = $("#lai-context-select");
@@ -2105,22 +2115,64 @@ async function loadLaiModels() {
         : el("span", { class: "muted" }, "Not loaded (starts on first use)")),
       actions));
   }
-  // recommended models
-  const grid = $("#lai-catalog");
-  grid.innerHTML = "";
-  const downloading = new Set(r.pulls.filter((p) => p.state === "downloading").map((p) => p.name));
-  for (const c of cat) {
-    const badges = [c.tools ? el("span", { class: "tag tag-accent" }, "Tools") : el("span", { class: "tag" }, "No tools"),
-                    c.thinking ? el("span", { class: "tag" }, "Thinking") : null, c.vision ? el("span", { class: "tag" }, "Vision") : null];
-    grid.append(el("div", { class: `lai-pick ${c.installed ? "installed" : ""}` },
-      el("div", {}, el("strong", {}, c.title), " ", el("span", { class: "muted small mono" }, c.name)),
-      el("div", { class: "small" }, badges),
-      el("p", { class: "small muted" }, c.about),
-      el("div", { class: `small ${c.fits ? "muted" : "error"}` }, `${c.size} GB download · needs about ${c.ram} GB memory${c.fits ? "" : " — more than this server has"}`),
-      c.installed ? el("span", { class: "small ok-text" }, "✓ Installed")
-        : el("button", { type: "button", class: "small", disabled: downloading.has(c.name), onclick: () => pullModel(c.name) },
-             withIcon("download", downloading.has(c.name) ? "Downloading…" : "Download"))));
+  renderLaiCatalog(cat, r.pulls);
+}
+
+// Recommended models, grouped by category with a filter (All, Chat & tools, Tiny, Huge, …).
+function renderLaiCatalog(cat, pulls) {
+  state.laiCatalog = cat;
+  const filter = state.laiFilter || "all";
+  const box = $("#lai-catalog");
+  box.innerHTML = "";
+  const counts = {};
+  for (const m of cat.models) counts[m.cat] = (counts[m.cat] || 0) + 1;
+  const chips = el("div", { class: "seg lai-filter", role: "tablist" },
+    [{ id: "all", title: "All" }, ...cat.categories].filter((c) => c.id === "all" || counts[c.id]).map((c) =>
+      el("button", { type: "button", class: `seg-btn ${filter === c.id ? "active" : ""}`,
+                     onclick: () => { state.laiFilter = c.id; renderLaiCatalog(state.laiCatalog, pulls); } },
+         c.id === "all" ? `All (${cat.models.length})` : `${c.title} (${counts[c.id]})`)));
+  box.append(chips);
+  const downloading = new Set(pulls.filter((p) => p.state === "downloading").map((p) => p.name));
+  for (const c of cat.categories) {
+    if (filter !== "all" && filter !== c.id) continue;
+    const items = cat.models.filter((m) => m.cat === c.id);
+    if (!items.length) continue;
+    const grid = el("div", { class: "lai-grid" });
+    for (const m of items) grid.append(laiPick(m, downloading));
+    box.append(el("section", { class: "lai-cat" },
+      el("h4", {}, c.title), el("p", { class: "small muted" }, c.about), grid));
   }
+  for (const n of cat.notes || []) box.append(el("p", { class: "small muted" }, n));
+}
+
+function laiPick(m, downloading) {
+  const badges = [
+    m.tools === true ? el("span", { class: "tag tag-accent" }, "Tools")
+      : m.tools === null ? el("span", { class: "tag", title: "Shown under Installed models after downloading" }, "Tools: check after download")
+      : (!m.embedding && !m.image ? el("span", { class: "tag" }, "No tools") : null),
+    m.thinking ? el("span", { class: "tag" }, "Thinking") : null,
+    m.vision ? el("span", { class: "tag" }, "Vision") : null,
+    m.embedding ? el("span", { class: "tag" }, "Embeddings") : null,
+    m.image ? el("span", { class: "tag" }, "Image generation") : null,
+    m.experimental ? el("span", { class: "tag tag-warn" }, "Experimental") : null,
+  ];
+  const needs = m.size == null ? "Size: see the model page" :
+    `${m.size < 1 ? `${Math.round(m.size * 1000)} MB` : `${m.size} GB`} download · needs about ${m.ram} GB memory`;
+  const page = m.source === "Hugging Face"
+    ? `https://huggingface.co/${m.name.replace(/^hf\.co\//, "").replace(/:.*$/, "")}`
+    : `https://ollama.com/library/${m.name.replace(/:.*$/, "")}`;
+  const busy = downloading.has(m.name);
+  return el("div", { class: `lai-pick ${m.installed ? "installed" : ""}` },
+    el("div", {}, el("strong", {}, m.title)),
+    el("div", { class: "muted small mono lai-name" }, m.name),
+    el("div", { class: "small lai-badges" }, badges),
+    el("p", { class: "small muted" }, m.about),
+    el("div", { class: `small ${m.fits === false ? "error" : "muted"}` }, needs + (m.fits === false ? " — more than this server has" : "")),
+    el("div", { class: "lai-pick-foot small" },
+      el("a", { href: page, target: "_blank", rel: "noopener noreferrer", class: "muted" }, m.source),
+      m.installed ? el("span", { class: "ok-text" }, "✓ Installed")
+        : el("button", { type: "button", class: "small", disabled: busy, onclick: () => pullModel(m.name) },
+             withIcon("download", busy ? "Downloading…" : "Download"))));
 }
 
 async function pullModel(name) {
@@ -2428,14 +2480,34 @@ async function renderJobHistory(id, box) {
   try { runs = await api(`/api/jobs/${id}/runs`); } catch (ex) { box.textContent = ex.message; return; }
   box.innerHTML = "";
   if (!runs.length) { box.append(el("p", { class: "muted small" }, "No runs yet.")); return; }
-  for (const r of runs) {
-    box.append(el("details", { class: "run" },
-      el("summary", {}, el("span", { class: r.status === "ok" ? "ok-text" : r.status === "running" ? "muted" : "error" },
-        r.status === "ok" ? "✓ OK" : r.status === "running" ? "… Running" : "✗ Failed"),
-        ` · ${fmtWhen(r.started_at)} · `, el("span", { class: "muted" }, r.trigger)),
-      el("ol", { class: "run-log" }, r.log.map((x) => el("li", { class: x.ok ? "" : "error" },
-        x.action ? el("strong", {}, `${x.action}: `) : null, x.message)))));
-  }
+  const dur = (ms) => ms == null ? "" : ms < 1000 ? `${ms} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60000)} min`;
+  runs.forEach((r, idx) => {
+    const total = r.finished_at ? Math.round((r.finished_at - r.started_at) * 1000) : null;
+    const steps = r.log.filter((x) => typeof x.step === "number" && x.step > 0);
+    const okSteps = steps.filter((x) => x.ok).length;
+    const updateLine = r.log.find((x) => x.action === "Update result");
+    const rows = r.log.map((x) => {
+      const head = el("div", { class: "run-step-head" },
+        el("span", { class: `run-mark ${x.ok ? "ok-text" : "error"}` }, x.step === 0 ? "▶" : x.ok ? "✓" : "✗"),
+        el("div", { class: "run-step-text" },
+          x.action ? el("strong", {}, x.step > 0 ? `${x.step}. ${x.action}` : x.action) : null,
+          x.action ? el("br") : null,
+          el("span", { class: x.ok ? "" : "error" }, x.message)),
+        x.ms != null ? el("span", { class: "muted small run-ms" }, dur(x.ms)) : null);
+      return el("li", { class: `run-step ${x.action === "Update result" ? "run-result" : ""}` }, head,
+        x.details ? el("details", { class: "run-details" }, el("summary", { class: "small muted" }, "Details"),
+          el("pre", { class: "update-notes mono small" }, x.details)) : null);
+    });
+    box.append(el("details", { class: "run", open: idx === 0 && r.status !== "ok" },
+      el("summary", {},
+        el("span", { class: r.status === "ok" ? "ok-text" : r.status === "running" ? "muted" : "error" },
+          r.status === "ok" ? "✓ OK" : r.status === "running" ? "… Running" : "✗ Failed"),
+        ` · ${fmtWhen(r.started_at)}`, total != null ? el("span", { class: "muted" }, ` · took ${dur(total)}`) : null,
+        steps.length ? el("span", { class: "muted" }, ` · ${okSteps}/${steps.length} actions OK`) : null,
+        updateLine ? el("span", { class: updateLine.ok ? "ok-text" : "error" }, updateLine.ok ? " · updated" : " · update failed") : null,
+        el("div", { class: "muted small run-why" }, r.trigger)),
+      el("ol", { class: "run-log" }, rows)));
+  });
 }
 
 // ---- job editor

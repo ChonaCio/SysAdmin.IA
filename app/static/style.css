@@ -436,6 +436,10 @@ canvas { width: 100%; height: 160px; display: block; }
 .lai-install { margin-top: 12px; }
 .lai-install .busy { display: flex; align-items: center; gap: 8px; }
 .lai-install pre { max-height: 260px; }
+.lai-progress { display: flex; flex-direction: column; gap: 6px; max-width: 560px; margin: 4px 0 8px; }
+.bar.big-bar { height: 10px; margin: 0; }
+.bar.big-bar i { background: var(--accent); transition: width .4s ease; }
+#lai-install-details summary { cursor: pointer; }
 .lai-context { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--grid); }
 .lai-context label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
 .lai-context .row { display: flex; gap: 8px; align-items: center; }
@@ -445,7 +449,15 @@ canvas { width: 100%; height: 160px; display: block; }
 .var-row.lai-model { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr) minmax(0, 1.1fr) auto; }
 .lai-pull-form { display: flex; gap: 8px; margin-bottom: 4px; }
 .lai-pull-form input { flex: 1; min-width: 0; font-family: var(--mono); }
-.lai-catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-top: 8px; }
+.lai-catalog { display: flex; flex-direction: column; gap: 14px; margin-top: 8px; }
+.lai-filter { flex-wrap: wrap; margin-left: 0; align-self: flex-start; }
+.lai-filter .seg-btn { padding: 5px 10px; }
+.lai-cat h4 { margin: 0; font-size: 14px; }
+.lai-cat > p { margin: 2px 0 8px; }
+.lai-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; }
+.lai-name { overflow-wrap: anywhere; }
+.lai-badges { display: flex; gap: 4px; flex-wrap: wrap; }
+.lai-pick-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; width: 100%; margin-top: auto; }
 .lai-pick { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
 .lai-pick p { margin: 0; }
 .lai-pick.installed { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
@@ -463,8 +475,16 @@ canvas { width: 100%; height: 160px; display: block; }
 .job-foot { margin-top: 10px; }
 .job-history { margin-top: 10px; border-top: 1px solid var(--grid); padding-top: 8px; display: flex; flex-direction: column; gap: 4px; }
 .run summary { cursor: pointer; font-size: 13px; }
-.run-log { margin: 4px 0 6px; padding-left: 22px; font-size: 12.5px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
-.run-log li.error { color: var(--crit); }
+.run summary .run-why { margin: 2px 0 0 18px; }
+.run-log { list-style: none; margin: 6px 0 8px; padding: 0 0 0 4px; font-size: 12.5px; display: flex; flex-direction: column; gap: 6px; overflow-wrap: anywhere; }
+.run-step-head { display: flex; gap: 8px; align-items: flex-start; }
+.run-mark { width: 14px; flex-shrink: 0; text-align: center; font-weight: 700; }
+.run-step-text { flex: 1; min-width: 0; }
+.run-ms { flex-shrink: 0; }
+.run-details { margin: 2px 0 0 22px; }
+.run-details summary { cursor: pointer; }
+.run-details pre { max-height: 320px; margin-top: 4px; }
+.run-result { border-top: 1px dashed var(--border); padding-top: 6px; }
 
 .job-editor { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 16px; align-items: start; }
 .job-form { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
