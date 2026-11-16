@@ -225,6 +225,47 @@ The **Containers** module (Server) runs apps in [Docker](https://www.docker.com)
 
 Downloads and container changes run in the background with progress shown at the top of the page. Existing installations need the updated root helper for install and service control (refreshed automatically with full access; otherwise the page shows the one-time command).
 
+### Network
+
+The **Network** module (Server group) shows what's on your LAN, talks to your router, and publishes self-hosted services on the internet.
+
+**Devices.** **Scan now** finds every device that's switched on and identifies it, with no admin rights needed:
+- **How devices are found:** a quick contact to each address of the server's network, then the ARP table.
+- **What's identified:**
+  - the maker, from the network card's address (the IEEE list is downloaded once);
+  - names devices announce on the LAN (mDNS, UPnP, Windows names), and the router's DNS;
+  - about 30 common ports (web, SSH, file sharing, printers, cameras, Plex…), with links to web pages found.
+- **Kind guessed:** router, computer, phone, TV, media player, speaker, printer, NAS, camera, smart device, home-automation hub, console, server…
+- **Your changes:** rename a device, change its kind, add notes, or mark it as known. New devices are flagged until you do.
+- **Private addresses:** phones and laptops often use a private (randomized) Wi-Fi address, so they show without a maker.
+- **Watching:** the network is re-checked every 15 minutes (**Settings**), which powers the job triggers **New device on the network** and **Device offline**.
+
+**Router & DHCP.** Connect SysAdmin.IA to your router (**Detect my router** suggests the type):
+
+| Router type | What SysAdmin.IA can do |
+|---|---|
+| Automatic (UPnP) — most home routers | Port forwarding and reading the public address. It can't change DHCP. UPnP must be on in the router. |
+| OpenWrt (LuCI) | Everything: DHCP leases, reserved addresses, address range, lease time, DNS servers handed out, port forwarding |
+| MikroTik RouterOS 7 (REST API: IP → Services → www/www-ssl) | Everything, as for OpenWrt |
+| Other | A link to the router's admin page |
+
+Reserve an address straight from a device (**Reserve address**). The router password is stored on the server and never shown again.
+
+**Publish on the internet.** The tab shows your public address and the router's internet address. If they differ, your provider shares addresses between customers (carrier-grade NAT) and port forwarding can't work. Two ways to publish:
+
+- **Cloudflare Tunnel (recommended).** Works with any internet connection, opens nothing on the router, and keeps your address hidden.
+  - **You need:** a free Cloudflare account with your domain, and an API token with *Account · Cloudflare Tunnel · Edit* and *Zone · DNS · Edit*.
+  - **SysAdmin.IA does the rest:** it creates the tunnel and runs its connector as the container `sai-cloudflared`. For each service you publish, it adds the route and a proxied DNS name such as `photos.example.com`.
+- **Port forwarding + HTTPS.** Ports 80 and 443 are forwarded to this server, where Caddy (container `sai-caddy`) gets free Let's Encrypt certificates.
+  - **Router:** the forwards are created automatically when the router connection can do it.
+  - **DNS:** each name must point to your public address. **Dynamic DNS** (Cloudflare or DuckDNS) keeps that up to date when the address changes.
+
+**Publish a service:**
+1. Pick a container port or a web page found on the LAN, or type an address such as `127.0.0.1:8080`.
+2. Give it a public name.
+
+Anyone on the internet can then open it, so publish only apps with their own login and keep them updated. Publishing SysAdmin.IA itself needs an explicit confirmation. Both ways need Docker (Containers module).
+
 ### Local AI (Ollama on this server)
 
 The **Local AI** module (Settings) runs open AI models on the server itself with [Ollama](https://ollama.com). Prompts never leave the server, and there's no per-use cost.
@@ -272,6 +313,9 @@ Existing installations need the updated root helper for install and service cont
 | Docker stopped | The Docker service isn't running |
 | Local AI stopped | Ollama is installed but not answering |
 | AI usage | An AI connection used over N % of its monthly limit, or over N tokens this month |
+| New device on the network | A device never seen before joins the LAN (optionally ignoring devices marked as known) |
+| Device offline | A chosen device (NAS, camera, printer…) stops answering, optionally for N minutes |
+| Public address changed | The network's internet (public) IP address changes (checked every 5 minutes) |
 | Update available | A new SysAdmin.IA version is published (checked hourly) |
 | App started | SysAdmin.IA starts (e.g. after a reboot) |
 | Mail received | New unread mail in a mail account, optionally from someone or with a subject |
@@ -290,6 +334,7 @@ Condition triggers (disk, CPU, memory, load, temperature, service, containers, D
 | Ask the AI | Ask an AI connection (no tools); its answer is `{{ai.answer}}` |
 | Download or update a local AI model | Pull a model into Local AI (Ollama) and wait until it's done |
 | Start, stop or restart Local AI | Control the Ollama service |
+| Scan the network | Look for devices on the LAN now (new ones are identified) |
 | Check for updates | Optionally install the update |
 | Set a variable | Store a value, e.g. the time of the last alert |
 

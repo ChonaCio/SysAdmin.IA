@@ -36,6 +36,24 @@ CREATE TABLE IF NOT EXISTS conversations (
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS net_devices (            -- Network module: devices seen on the LAN
+    mac TEXT PRIMARY KEY,
+    ip TEXT, hostname TEXT, vendor TEXT,
+    kind TEXT NOT NULL DEFAULT 'unknown',
+    kind_set INTEGER NOT NULL DEFAULT 0,          -- 1 = kind chosen by a user (scans keep it)
+    label TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '',
+    info TEXT NOT NULL DEFAULT '{}',              -- JSON: ports, web titles, UPnP/mDNS/NetBIOS details
+    first_seen REAL, last_seen REAL,
+    known INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS published_services (     -- Network → Publish: services reachable from the internet
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    hostname TEXT NOT NULL UNIQUE,
+    target TEXT NOT NULL,                          -- http://127.0.0.1:8080 (what the hostname leads to)
+    method TEXT NOT NULL,                          -- cloudflare | caddy
+    state TEXT NOT NULL DEFAULT '{}',              -- JSON: DNS record ids etc.
+    created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

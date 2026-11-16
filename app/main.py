@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
-from . import containers, local_ai, model_search, user_prefs, variables
+from . import containers, local_ai, model_search, network, publish, routers, user_prefs, variables
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -1066,6 +1066,281 @@ async def jobs_runs(jid: int, user: User = Depends(admin_user)):
 @app.on_event("startup")
 async def _start_jobs() -> None:
     jobs.ENGINE.start()
+    network.ENGINE.start()
+
+
+# ---------------------------------------------------------------- network (admin)
+
+def _dump(b, **kw) -> dict:
+    return b.model_dump(**kw) if hasattr(b, "model_dump") else b.dict(**kw)
+
+
+def _net(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except (network.NetworkError, routers.RouterError, publish.PublishError, containers.DockerError) as e:
+        raise HTTPException(400, str(e))
+
+
+class NetScanBody(BaseModel):
+    deep: bool = True
+
+
+class NetDeviceBody(BaseModel):
+    label: str | None = None
+    kind: str | None = None
+    notes: str | None = None
+    known: bool | None = None
+
+
+class NetSettingsBody(BaseModel):
+    watch: bool = True
+    interval: int = 15
+    extra: str = ""
+
+
+class RouterBody(BaseModel):
+    type: str
+    address: str = ""
+    username: str = ""
+    password: str | None = None      # None = keep the saved one
+    verify_tls: bool = False
+
+
+class StaticLeaseBody(BaseModel):
+    mac: str
+    ip: str
+    name: str = ""
+
+
+class IdBody(BaseModel):
+    id: str
+
+
+class DhcpBody(BaseModel):
+    start: str
+    end: str
+    lease_time: str
+    dns: str = ""
+
+
+class ForwardBody(BaseModel):
+    name: str = ""
+    proto: str = "tcp"
+    ext_port: int
+    int_ip: str
+    int_port: int
+
+
+class CfBody(BaseModel):
+    token: str
+    zone_id: str = ""
+
+
+class CaddyBody(BaseModel):
+    email: str = ""
+    forward_ports: bool = True
+
+
+class PublishServiceBody(BaseModel):
+    hostname: str
+    target: str
+    method: str
+    allow_admin: bool = False
+
+
+class DdnsBody(BaseModel):
+    provider: str = ""
+    hostnames: str = ""
+    token: str | None = None
+
+
+@app.get("/api/network")
+async def net_overview(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(network.overview)
+
+
+@app.get("/api/network/devices")
+async def net_devices(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(network.devices)
+
+
+@app.get("/api/network/scan")
+async def net_scan_progress(user: User = Depends(admin_user)):
+    return network.progress()
+
+
+@app.post("/api/network/scan")
+async def net_scan(body: NetScanBody, request: Request, user: User = Depends(admin_user)):
+    db.audit("network_scan", user.username, auth.client_ip(request))
+    return await asyncio.to_thread(_net, network.scan, body.deep)
+
+
+@app.patch("/api/network/devices/{mac}")
+async def net_device_update(mac: str, body: NetDeviceBody, request: Request, user: User = Depends(admin_user)):
+    d = await asyncio.to_thread(_net, network.update_device, mac, body.label, body.kind, body.notes, body.known)
+    db.audit("network_device_updated", user.username, auth.client_ip(request), {"mac": mac, **_dump(body, exclude_none=True)})
+    return d
+
+
+@app.delete("/api/network/devices/{mac}")
+async def net_device_forget(mac: str, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(network.forget, mac)
+    db.audit("network_device_forgotten", user.username, auth.client_ip(request), {"mac": mac})
+    return {"ok": True}
+
+
+@app.post("/api/network/devices/known-all")
+async def net_devices_known(request: Request, user: User = Depends(admin_user)):
+    n = await asyncio.to_thread(network.mark_all_known)
+    db.audit("network_devices_known", user.username, auth.client_ip(request), {"count": n})
+    return {"ok": True, "count": n}
+
+
+@app.put("/api/network/settings")
+async def net_settings(body: NetSettingsBody, request: Request, user: User = Depends(admin_user)):
+    s = _net(network.save_settings, body.watch, body.interval, body.extra)
+    db.audit("network_settings", user.username, auth.client_ip(request), s)
+    return s
+
+
+@app.get("/api/network/router")
+async def net_router(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(routers.status)
+
+
+@app.get("/api/network/router/detect")
+async def net_router_detect(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(routers.detect)
+
+
+@app.put("/api/network/router")
+async def net_router_save(body: RouterBody, request: Request, user: User = Depends(admin_user)):
+    _net(routers.save_config, body.type, body.address, body.username, body.password, body.verify_tls)
+    db.audit("router_settings", user.username, auth.client_ip(request), {"type": body.type, "address": body.address,
+                                                                         "username": body.username, "password_changed": body.password is not None})
+    return await asyncio.to_thread(routers.status)
+
+
+@app.delete("/api/network/router")
+async def net_router_forget(request: Request, user: User = Depends(admin_user)):
+    routers.forget_config()
+    db.audit("router_forgotten", user.username, auth.client_ip(request))
+    return {"ok": True}
+
+
+@app.get("/api/network/router/leases")
+async def net_leases(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_net, routers.leases)
+
+
+@app.post("/api/network/router/static")
+async def net_static_add(body: StaticLeaseBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, routers.add_static, body.mac, body.ip, body.name)
+    db.audit("dhcp_reservation_added", user.username, auth.client_ip(request), _dump(body))
+    return {"ok": True}
+
+
+@app.post("/api/network/router/static/remove")
+async def net_static_remove(body: IdBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, routers.remove_static, body.id)
+    db.audit("dhcp_reservation_removed", user.username, auth.client_ip(request), {"id": body.id})
+    return {"ok": True}
+
+
+@app.get("/api/network/router/dhcp")
+async def net_dhcp(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_net, routers.dhcp_settings)
+
+
+@app.put("/api/network/router/dhcp")
+async def net_dhcp_save(body: DhcpBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_net, routers.set_dhcp_settings, body.start, body.end, body.lease_time, body.dns)
+    db.audit("dhcp_settings", user.username, auth.client_ip(request), _dump(body))
+    return r
+
+
+@app.get("/api/network/router/forwards")
+async def net_forwards(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_net, routers.forwards)
+
+
+@app.post("/api/network/router/forwards")
+async def net_forward_add(body: ForwardBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, routers.add_forward, body.name, body.proto, body.ext_port, body.int_ip, body.int_port)
+    db.audit("port_forward_added", user.username, auth.client_ip(request), _dump(body))
+    return {"ok": True}
+
+
+@app.post("/api/network/router/forwards/remove")
+async def net_forward_remove(body: IdBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, routers.remove_forward, body.id)
+    db.audit("port_forward_removed", user.username, auth.client_ip(request), {"id": body.id})
+    return {"ok": True}
+
+
+@app.get("/api/network/publish")
+async def net_publish(check: bool = False, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(publish.status, check)
+
+
+@app.get("/api/network/publish/targets")
+async def net_publish_targets(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(publish.targets)
+
+
+@app.post("/api/network/publish/cloudflare/check")
+async def net_cf_check(body: CfBody, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_net, publish.cf_check, body.token)
+
+
+@app.post("/api/network/publish/cloudflare")
+async def net_cf_connect(body: CfBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_net, publish.cf_connect, body.token, body.zone_id)
+    db.audit("publish_cloudflare_connected", user.username, auth.client_ip(request), {"zone": r["cloudflare"].get("zone_name")})
+    return r
+
+
+@app.delete("/api/network/publish/cloudflare")
+async def net_cf_disconnect(request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, publish.cf_disconnect)
+    db.audit("publish_cloudflare_disconnected", user.username, auth.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/network/publish/caddy")
+async def net_caddy(body: CaddyBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_net, publish.caddy_setup, body.email, body.forward_ports)
+    db.audit("publish_caddy_setup", user.username, auth.client_ip(request), _dump(body))
+    return r
+
+
+@app.delete("/api/network/publish/caddy")
+async def net_caddy_remove(request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, publish.caddy_remove)
+    db.audit("publish_caddy_removed", user.username, auth.client_ip(request))
+    return {"ok": True}
+
+
+@app.post("/api/network/publish/services")
+async def net_publish_add(body: PublishServiceBody, request: Request, user: User = Depends(admin_user)):
+    s = await asyncio.to_thread(_net, publish.add_service, body.hostname, body.target, body.method, body.allow_admin)
+    db.audit("service_published", user.username, auth.client_ip(request), _dump(body))
+    return s
+
+
+@app.delete("/api/network/publish/services/{sid}")
+async def net_publish_remove(sid: int, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_net, publish.remove_service, sid)
+    db.audit("service_unpublished", user.username, auth.client_ip(request), {"id": sid})
+    return {"ok": True}
+
+
+@app.put("/api/network/publish/ddns")
+async def net_ddns(body: DdnsBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_net, publish.ddns_save, body.provider, body.hostnames, body.token)
+    db.audit("dynamic_dns_settings", user.username, auth.client_ip(request), {"provider": body.provider, "hostnames": body.hostnames})
+    return r
 
 
 # ---------------------------------------------------------------- drives (admin)

@@ -161,6 +161,29 @@ TRIGGERS: dict[str, dict] = {
         ],
         "placeholders": COMMON_TRIGGER_PLACEHOLDERS + ["trigger.connection", "trigger.tokens", "trigger.limit"],
     },
+    # ---- network
+    "new_device": {
+        "label": "New device on the network", "icon": "network", "group": "Network",
+        "description": "When a device that wasn't seen before joins the LAN (found by the periodic scan, Network → Settings).",
+        "fields": [{"key": "only_unknown", "label": "Ignore devices marked as known", "type": "bool", "default": True}],
+        "placeholders": ["trigger.summary", "trigger.time", "trigger.devices", "trigger.name", "trigger.ip", "trigger.mac",
+                         "trigger.vendor", "trigger.kind"],
+    },
+    "device_offline": {
+        "label": "Device offline", "icon": "network", "group": "Network",
+        "description": "When a device stops answering on the LAN, e.g. the NAS, a camera or the printer.",
+        "fields": [{"key": "device", "label": "Device", "type": "choice", "source": "devices", "required": True},
+                   {"key": "for_minutes", "label": "For at least … minutes", "type": "number", "min": 0, "max": 1440, "default": 0,
+                    "help": "Devices are checked by the periodic scan (Network → Settings), so there is already some delay."},
+                   REPEAT, RECOVER],
+        "placeholders": COMMON_TRIGGER_PLACEHOLDERS + ["trigger.device", "trigger.ip"],
+    },
+    "public_ip_changed": {
+        "label": "Public address changed", "icon": "globe", "group": "Network",
+        "description": "When this network's internet (public) IP address changes (checked every 5 minutes).",
+        "fields": [],
+        "placeholders": ["trigger.summary", "trigger.time", "trigger.ip", "trigger.previous"],
+    },
     "update_available": {
         "label": "Update available", "icon": "refresh", "group": "SysAdmin.IA",
         "description": "When a newer version of SysAdmin.IA is published (checked hourly).",
@@ -288,6 +311,13 @@ ACTIONS: dict[str, dict] = {
                     "options": [["restart", "Restart"], ["start", "Start"], ["stop", "Stop"]]}],
         "provides": ["last.output"],
     },
+    # ---- network
+    "network_scan": {
+        "label": "Scan the network", "icon": "network", "group": "Network",
+        "description": "Look for devices on the LAN now; new ones are identified (and can trigger “New device on the network”).",
+        "fields": [],
+        "provides": ["last.output"],
+    },
     # ---- app
     "check_updates": {
         "label": "Check for updates", "icon": "refresh", "group": "SysAdmin.IA",
@@ -339,8 +369,12 @@ def catalog() -> dict:
 
 def _choices() -> dict[str, list[list[str]]]:
     """Lists for "choice" fields: containers, stacks, installed local AI models (empty if unavailable)."""
-    from . import containers, local_ai
-    out: dict[str, list[list[str]]] = {"containers": [], "stacks": [], "local_models": []}
+    from . import containers, local_ai, network
+    out: dict[str, list[list[str]]] = {"containers": [], "stacks": [], "local_models": [], "devices": []}
+    try:
+        out["devices"] = [[d["mac"], f"{d['name'] or d['vendor'] or d['mac']} ({d['ip']})"] for d in network.devices()]
+    except Exception:
+        pass
     try:
         out["containers"] = [[c["name"], f"{c['name']} ({c['image']}, {c['state']})"] for c in containers.list_containers()]
         out["stacks"] = [[s["name"], s["name"]] for s in containers.list_stacks() if s["managed"]]
@@ -494,6 +528,15 @@ def describe_trigger(t: dict) -> str:
         c = ai.get(int(t["connection"])) if t.get("connection") else ai.default()
         what = f"{t.get('threshold'):g}% of its monthly limit" if t.get("measure") == "percent" else f"{int(t.get('threshold') or 0):,} tokens this month"
         return f"When {c['name'] if c else 'the AI connection'} has used over {what}{_again(t)}"
+    if ty == "new_device":
+        return "When a new device joins the network"
+    if ty == "device_offline":
+        from . import network
+        d = next((x for x in network.devices() if x["mac"] == t.get("device")), None)
+        dur = int(t.get("for_minutes") or 0)
+        return f"When {(d['name'] or d['ip']) if d else t.get('device')} is offline{f' for {dur} min' if dur else ''}{_again(t)}"
+    if ty == "public_ip_changed":
+        return "When the public address changes"
     if ty == "update_available":
         return "When a new version of SysAdmin.IA is available"
     if ty == "app_started":
@@ -540,6 +583,8 @@ def describe_action(a: dict) -> str:
         return "Check for updates" + (" and install them" if a.get("install") else "")
     if ty == "set_variable":
         return f"Set variable {a.get('name')}"
+    if ty == "network_scan":
+        return "Scan the network"
     return ty or "?"
 
 
@@ -968,7 +1013,18 @@ async def _act_ollama_service(a: dict, ctx: dict) -> tuple[str, str]:
     return out.strip() or f"Local AI: {action} done.", ""
 
 
-ACTION_FUNCS = {"send_mail": _act_send_mail, "webhook": _act_webhook, "run_command": _act_run_command,
+async def _act_network_scan(a: dict, ctx: dict) -> tuple[str, str]:
+    from . import network
+    try:
+        p = await asyncio.to_thread(network.scan, False, True)
+    except network.NetworkError as e:
+        raise JobError(str(e))
+    out = f"Network scanned: {p['found']} devices online, {p['new']} new."
+    ctx["last"] = {"output": out}
+    return out, ""
+
+
+ACTION_FUNCS = {"network_scan": _act_network_scan, "send_mail": _act_send_mail, "webhook": _act_webhook, "run_command": _act_run_command,
                 "ask_ai": _act_ask_ai, "check_updates": _act_check_updates, "set_variable": _act_set_variable,
                 "container_action": _act_container_action, "container_update": _act_container_update,
                 "stack_action": _act_stack_action, "docker_prune": _act_docker_prune,
@@ -1050,6 +1106,9 @@ class JobEngine:
             from . import local_ai
             snap["ollama_installed"] = bool(local_ai._binary())
             snap["ollama_version"] = await asyncio.to_thread(local_ai.running_version)
+        if "device_offline" in types:
+            from . import network
+            snap["devices"] = await asyncio.to_thread(network.devices)
         if "update_available" in types and time.time() - self._last_update_check > 3600:
             from . import updater
             self._last_update_check = time.time()
@@ -1071,7 +1130,8 @@ class JobEngine:
                     state[key] = st
                     changed = True
                 fired = await self._check(j, t, st, snap, now)
-                changed = True if fired is not None or t["type"] in ("schedule", "mail_received") else changed
+                changed = True if fired is not None or t["type"] in ("schedule", "mail_received", "new_device",
+                                                                     "public_ip_changed") else changed
                 for ctx, why in fired or []:
                     self._spawn(j, ctx, why)
             if changed:
@@ -1098,6 +1158,22 @@ class JobEngine:
         if ty == "mail_received":
             return await self._check_mail(t, st, now, stamp)
         if ty == "app_started":
+            return None
+        if ty == "new_device":
+            return await asyncio.to_thread(self._check_new_device, t, st, now, stamp)
+        if ty == "public_ip_changed":
+            if now - st.get("checked", 0) < 300:
+                return None
+            st["checked"] = now
+            from . import publish
+            ip = await asyncio.to_thread(publish.public_ip, 240)
+            if not ip:
+                return None
+            prev = st.get("ip")
+            st["ip"] = ip
+            if prev and ip != prev:
+                ctx = {"summary": f"The public address changed from {prev} to {ip}", "time": stamp, "ip": ip, "previous": prev}
+                return [(ctx, ctx["summary"])]
             return None
         # condition triggers
         alert, ctx = self._condition(t, snap, st)
@@ -1126,10 +1202,35 @@ class JobEngine:
                     out.append(({**ctx, "summary": summary, "state": "recovered"}, summary))
         return out
 
+    @staticmethod
+    def _check_new_device(t: dict, st: dict, now: float, stamp: str) -> list | None:
+        from . import network
+        if "since" not in st:      # devices found before the trigger was saved don't count
+            st["since"] = now
+            return None
+        new = [d for d in network.new_devices_since(st["since"]) if not (t.get("only_unknown", True) and d["known"])]
+        if not new:
+            return None
+        st["since"] = max(d["first_seen"] for d in new)
+        label = lambda d: f"{d['name'] or d['vendor'] or 'unknown device'} ({d['ip']}, {d['mac']})"  # noqa: E731
+        first = new[0]
+        summary = (f"New device on the network: {label(first)}" if len(new) == 1
+                   else f"{len(new)} new devices on the network: " + "; ".join(label(d) for d in new))
+        ctx = {"summary": summary, "time": stamp, "devices": "\n".join(label(d) for d in new), "name": first["name"],
+               "ip": first["ip"], "mac": first["mac"], "vendor": first["vendor"], "kind": first["kind_label"]}
+        return [(ctx, summary)]
+
     def _condition(self, t: dict, snap: dict, st: dict | None = None) -> tuple[bool | None, dict]:
         ty, thr = t["type"], float(t.get("threshold") or 0)
         stats = snap.get("stats") or {}
         st = st if st is not None else {}
+        if ty == "device_offline":
+            d = next((x for x in snap.get("devices") or [] if x["mac"] == t.get("device")), None)
+            if not d:
+                return None, {}
+            name = d["name"] or d["vendor"] or d["mac"]
+            return not d["online"], {"value": "offline" if not d["online"] else "online", "device": name, "ip": d["ip"],
+                                     "summary": f"{name} ({d['ip']}) is offline", "ok_summary": f"{name} is back online"}
         if ty == "docker_down":
             if not snap.get("docker_installed"):
                 return None, {}

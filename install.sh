@@ -115,21 +115,27 @@ install_packages() {
     apt-get update -qq
     apt-get install -y -qq python3 python3-venv python3-pip git openssl sudo ca-certificates >/dev/null
     apt-get install -y -qq avahi-daemon libnss-mdns >/dev/null || c_warn "Could not install avahi (NAME.local won't work)."
+    # avahi-browse: the Network module reads the names devices announce on the LAN (optional)
+    apt-get install -y -qq avahi-utils >/dev/null || true
   elif command -v dnf >/dev/null; then
     dnf install -y -q python3 python3-pip git openssl sudo
     dnf install -y -q avahi nss-mdns || dnf install -y -q avahi || c_warn "Could not install avahi (NAME.local won't work)."
+    dnf install -y -q avahi-tools || true
   elif command -v yum >/dev/null; then
     yum install -y -q python3 python3-pip git openssl sudo
     yum install -y -q avahi || c_warn "Could not install avahi (NAME.local won't work)."
+    yum install -y -q avahi-tools || true
   elif command -v zypper >/dev/null; then
     zypper --non-interactive install -y python3 python3-pip git openssl sudo
     zypper --non-interactive install -y avahi nss-mdns || c_warn "Could not install avahi (NAME.local won't work)."
+    zypper --non-interactive install -y avahi-utils || true
   elif command -v pacman >/dev/null; then
     pacman -Sy --noconfirm --needed python python-pip git openssl sudo
     pacman -S --noconfirm --needed avahi nss-mdns || c_warn "Could not install avahi (NAME.local won't work)."
   elif command -v apk >/dev/null; then
     apk add --no-cache python3 py3-pip git openssl sudo bash shadow util-linux
     apk add --no-cache avahi || c_warn "Could not install avahi (NAME.local won't work)."
+    apk add --no-cache avahi-tools || true
   else
     c_warn "Unknown package manager; make sure python3 (>=3.10, with venv), git, openssl and sudo are installed,"
     c_warn "plus avahi-daemon if you want to reach the server as NAME.local."

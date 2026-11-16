@@ -136,7 +136,12 @@
     if (!t || lang === "en" || typeof s !== "string") return undefined;
     const core = norm(s);
     if (!core || !/[A-Za-z]/.test(core)) return undefined;
-    const out = exact(core, t) ?? viaPattern(core, t, 0);
+    let out = exact(core, t) ?? viaPattern(core, t, 0);
+    if (out === undefined && core.includes(" · ")) {   // status lines "a · b · c": translate the parts that are known
+      const parts = core.split(" · ");
+      const tp = parts.map((x) => exact(x, t) ?? viaPattern(x, t, 1));
+      if (tp.some((x) => x !== undefined)) out = parts.map((x, i) => tp[i] ?? x).join(" · ");
+    }
     if (out === undefined) return undefined;
     return s.match(/^\s*/)[0] + out + s.match(/\s*$/)[0];
   }

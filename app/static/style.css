@@ -791,6 +791,42 @@ button.big { padding: 8px 18px; font-size: 14px; }
 .login-card .login-prefs label { flex-direction: row; align-items: center; gap: 6px; font-size: 12px; }
 .login-prefs select { padding: 3px 6px; font-size: 12px; }
 
+/* ---------- network module ---------- */
+#net-pane { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+.net-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.net-toolbar input[type=search] { flex: 1; min-width: 180px; }
+.net-list { display: flex; flex-direction: column; }
+.net-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 12px; align-items: start; padding: 10px 2px; border-bottom: 1px solid var(--border); }
+.net-row:last-child { border-bottom: none; }
+.net-row.offline { opacity: .62; }
+.net-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; overflow-wrap: anywhere; }
+.net-ports { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 2px; }
+a.tag-link { color: var(--accent); text-decoration: none; border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border)); }
+a.tag-link:hover { background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.net-notes { white-space: pre-wrap; }
+.net-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.net-card { border-top: 1px solid var(--border); padding-top: 12px; display: flex; flex-direction: column; gap: 8px; }
+.net-card:first-child { border-top: none; padding-top: 0; }
+.net-card h3 { margin: 0; font-size: 15px; display: flex; align-items: center; gap: 6px; }
+.net-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.net-card p { margin: 0; }
+.net-form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
+.net-form label .muted, .net-form label.check { font-weight: 400; }
+.net-form label.check { flex-direction: row; align-items: center; gap: 8px; }
+.net-form input:not([type=checkbox]), .net-form select { max-width: 460px; }
+.net-lease { display: grid; grid-template-columns: minmax(110px, auto) minmax(0, 1.2fr) minmax(0, 1fr) auto auto; gap: 4px 12px; align-items: center;
+  padding: 6px 2px; border-bottom: 1px solid var(--border); font-size: 13px; overflow-wrap: anywhere; }
+.net-lease:last-child { border-bottom: none; }
+.net-steps { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.net-dialog-body { display: flex; flex-direction: column; gap: 10px; }
+.net-dialog-body label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; font-weight: 600; }
+.net-dialog-body label.check { flex-direction: row; align-items: center; gap: 8px; font-weight: 400; }
+@media (max-width: 760px) {
+  .net-row { grid-template-columns: auto minmax(0, 1fr); }
+  .net-actions { grid-column: 2; flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .net-lease { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+}
+
 /* ---------- appearance & language page ---------- */
 .pref-grid { display: grid; gap: 18px; max-width: 640px; }
 .pref-grid h3 { margin: 0 0 6px; font-size: 14px; }

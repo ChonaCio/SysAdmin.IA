@@ -60,6 +60,8 @@
       <span data-icon="internal"></span><span>Drives</span></button>
     <button data-view="containers" class="tab nav-item admin-only" id="tab-containers" title="Containers">
       <span data-icon="box"></span><span>Containers</span></button>
+    <button data-view="network" class="tab nav-item admin-only" id="tab-network" title="Network">
+      <span data-icon="network"></span><span>Network</span></button>
     <div class="nav-group admin-only">Automation</div>
     <button data-view="jobs" class="tab nav-item admin-only" id="tab-jobs" title="Jobs">
       <span data-icon="clock"></span><span>Jobs</span></button>
@@ -460,6 +462,41 @@
   </section>
   <!-- ================= LOCAL AI (Ollama) ================= -->
   <!-- ================= CONTAINERS (Docker) ================= -->
+  <!-- ================= NETWORK ================= -->
+  <section id="view-network" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Network</h2>
+          <p class="muted small">Everything connected to your network, your router's DHCP and port forwarding, and publishing
+            services on the internet.</p>
+        </div>
+      </div>
+      <div class="card">
+        <div class="ai-card-head">
+          <span class="icon-tile accent" id="net-tile"></span>
+          <div class="ai-card-title">
+            <div><strong id="net-title">This network</strong> <span class="status-pill" id="net-pill"></span></div>
+            <div class="muted small" id="net-sub"></div>
+          </div>
+          <div class="ai-actions" id="net-actions"></div>
+        </div>
+        <p class="small busy" id="net-progress" hidden></p>
+      </div>
+      <div class="card">
+        <div class="dk-tabs-row">
+          <div class="seg dk-tabs" id="net-tabs" role="tablist">
+            <button type="button" class="seg-btn active" data-tab="devices">Devices</button>
+            <button type="button" class="seg-btn" data-tab="router">Router &amp; DHCP</button>
+            <button type="button" class="seg-btn" data-tab="publish">Publish on the internet</button>
+            <button type="button" class="seg-btn" data-tab="settings">Settings</button>
+          </div>
+        </div>
+        <div id="net-pane"></div>
+      </div>
+    </div>
+  </section>
+
   <section id="view-containers" class="view">
     <div class="page">
       <div class="page-head">
@@ -694,6 +731,18 @@
   </main>
   </div>
 
+  <dialog id="net-dialog" class="dialog wide">
+    <form id="net-form" autocomplete="off">
+      <h3 id="net-dialog-title"></h3>
+      <div id="net-dialog-body" class="net-dialog-body"></div>
+      <p class="small error" id="net-dialog-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="net-cancel">Cancel</button>
+        <button class="primary" id="net-ok">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="dk-dialog" class="dialog wide">
     <form id="dk-form" autocomplete="off">
       <h3 id="dk-dialog-title">New container</h3>
@@ -891,5 +940,6 @@
   <script src="/static/markdown.js"></script>
   <script src="/static/app.js"></script>
   <script src="/static/containers.js"></script>
+  <script src="/static/network.js"></script>
 </body>
 </html>
