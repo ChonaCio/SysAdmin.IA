@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
-from . import local_ai, variables
+from . import local_ai, model_search, variables
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -464,6 +464,15 @@ async def localai_models(user: User = Depends(admin_user)):
 @app.get("/api/localai/catalog")
 async def localai_catalog(user: User = Depends(admin_user)):
     return await asyncio.to_thread(local_ai.catalog)
+
+
+@app.get("/api/localai/search")
+async def localai_search(source: str = "recommended", q: str = "", use: str = "", params: str = "",
+                         fits: bool = False, sort: str = "", offset: int = 0, refresh: bool = False,
+                         user: User = Depends(admin_user)):
+    """Find models: the recommended list, the whole Ollama library, or Hugging Face (GGUF)."""
+    return await asyncio.to_thread(model_search.search, source, q[:100], use, params, fits, sort, offset,
+                                   None, refresh)
 
 
 @app.post("/api/localai/pull")

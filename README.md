@@ -165,14 +165,14 @@ The **Local AI** module (Settings) runs open AI models on the server itself with
 - **Hardware** shows memory, GPUs (NVIDIA via `nvidia-smi`, or AMD) and free disk space where models are stored, so you can tell which models fit.
 - **Context length** sets how much text models keep in mind (Ollama's `OLLAMA_CONTEXT_LENGTH`, via a systemd drop-in). The installer sets 8k; the chat assistant needs at least that, and 16–32k for long tasks (more memory).
 - **Install progress** shows a single progress bar with the current step (e.g. "Downloading Linux amd64 bundle… 64%"); the installer's full log is under **Show details**.
-- **Download a model:** about 40 recommended models, grouped and filterable:
-  - **Chat & tools**, **Coding**, **Vision** (models that understand images), **Embeddings** (search/RAG).
-  - **Tiny & low-cost:** down to about 300 MB, for small servers.
-  - **Huge:** 70B to 671B, flagged when they need more memory than the server has.
-  - **Image generation:** experimental in Ollama, officially macOS-only for now.
-  - **From Hugging Face:** GGUF models Ollama downloads directly.
+- **Download a model:** search three places:
+  - **Recommended:** about 40 hand-picked models, from tiny (about 300 MB) to huge (671B), including coding, vision, embeddings, image generation (experimental in Ollama, officially macOS-only for now) and a few from Hugging Face.
+  - **Ollama library:** every model on [ollama.com/library](https://ollama.com/library) (about 250), read from the site and kept for 6 hours. Cloud-only models (they run on ollama.com, not on your server) are hidden.
+  - **Hugging Face:** a live search of GGUF models on [huggingface.co](https://huggingface.co/models?library=gguf), which Ollama downloads directly (`hf.co/user/repo`), top 100 matches. Kinds of models Ollama can't run (speech, music…) are hidden unless you choose **Audio & speech**.
 
-  Each model shows its download size, memory needed, whether it supports **tools**, and a link to its page. You can also type any name from [ollama.com/library](https://ollama.com/library) or `hf.co/user/repo:quantization` from Hugging Face. Downloads show live progress and can be cancelled. Ollama doesn't do video generation, so there are no video models.
+  Filter by text, **type of use** (chat, runs commands/tools, reasoning, coding, reads images, embeddings, audio, image generation), **size** in parameters (under 1B up to over 100B), and **Fits this server** (enough memory); sort by popularity, last update, size or name.
+
+  Each model shows a short **Best for** summary of what it's good at, its description, downloads/pulls, and its sizes. Models with several sizes (e.g. 8B / 70B / 405B) have a size picker. Sizes and memory marked ≈ are estimates for the usual 4-bit download. You can also type any name from the Ollama library or `hf.co/user/repo:quantization` from Hugging Face. Downloads show live progress and can be cancelled. Ollama doesn't do video generation, so there are no video models.
 - **Installed models** shows size, parameters, quantization and capabilities (Tools, Vision, Thinking). It shows whether a model is loaded and how much memory it uses (and how much of that is on the GPU), with **Unload** to free that memory, **Delete**, and **Use in chat**.
 
 **Use in chat** creates an AI connection under the provider **Ollama (Server Managed)**. You can also add one yourself in AI connections; its model box lists the models installed on the server. The chat assistant needs a model with **Tools** to run commands. Models without tools (e.g. DeepSeek-R1, Gemma 3) still work for questions and for the "Ask the AI" job action. To use Ollama running on *another* computer, use the provider **Ollama (another server)**. **Remove Ollama** uninstalls it, optionally with all downloaded models.

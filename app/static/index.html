@@ -431,8 +431,21 @@
         </form>
         <p class="muted small">Type any model from <a href="https://ollama.com/library" target="_blank" rel="noopener noreferrer">ollama.com/library</a>,
           or a GGUF model from <a href="https://huggingface.co/models?library=gguf" target="_blank" rel="noopener noreferrer">Hugging Face</a>
-          as <code>hf.co/user/repo:quantization</code>. Below are good choices by category. The chat assistant needs models marked <strong>Tools</strong>.</p>
-        <div id="lai-catalog" class="lai-catalog"></div>
+          as <code>hf.co/user/repo:quantization</code>, or find one below. The chat assistant needs models marked <strong>Tools</strong>.</p>
+        <div class="lai-search" id="lai-search">
+          <div class="seg lai-filter" id="lai-src" role="tablist" aria-label="Where to look"></div>
+          <div class="lai-filters">
+            <input type="search" id="lai-q" placeholder="Search by name or description…" aria-label="Search models" spellcheck="false">
+            <select id="lai-use" aria-label="Type of use"><option value="">Any use</option></select>
+            <select id="lai-params" aria-label="Number of parameters"><option value="">Any size</option></select>
+            <select id="lai-sort" aria-label="Sort"></select>
+            <label class="check small"><input type="checkbox" id="lai-fits"> Fits this server</label>
+          </div>
+          <div class="small muted" id="lai-results-info"></div>
+        </div>
+        <div id="lai-catalog" class="lai-grid"></div>
+        <div class="lai-more"><button type="button" class="small ghost" id="lai-more" hidden>Show more</button></div>
+        <div id="lai-notes" class="small muted"></div>
       </div>
 
       <details class="card lai-danger" id="lai-danger" hidden>

@@ -478,7 +478,7 @@ function handleEvent(ev) {
     case "assistant_start":
       state.currentAssistant = null;
       state.currentThinking = null;
-      setStatus("Claude is thinking…");
+      setStatus("Thinking…", true);
       break;
     case "thinking_start":
       state.currentThinking = addThinking("");
@@ -490,26 +490,29 @@ function handleEvent(ev) {
       scrollDown();
       break;
     case "text_start":
+      endStreaming();
       state.currentAssistant = addMessage("assistant", "");
-      setStatus("Claude is responding…");
+      state.currentAssistant.classList.add("streaming");   // blinking cursor while text arrives
+      setStatus("Responding…", true);
       break;
     case "text_delta":
-      if (!state.currentAssistant) state.currentAssistant = addMessage("assistant", "");
+      if (!state.currentAssistant) { state.currentAssistant = addMessage("assistant", ""); state.currentAssistant.classList.add("streaming"); }
       state.currentAssistant._raw += ev.text;
       $(".content", state.currentAssistant).innerHTML = md(state.currentAssistant._raw);
       scrollDown();
       break;
     case "tool_preparing":
-      setStatus(`Claude is preparing a ${ev.name === "bash" ? "command" : ev.name === "restart_app" ? "restart" : "file operation"}…`);
+      setStatus(`Preparing a ${ev.name === "bash" ? "command" : ev.name === "restart_app" ? "restart" : "file operation"}…`, true);
       break;
     case "tool_request":
+      endStreaming();
       state.currentAssistant = null;
       addToolCard(ev);
-      setStatus(ev.needs_approval ? "Waiting for your approval…" : "Running…");
+      setStatus(ev.needs_approval ? "Waiting for your approval…" : "Running…", !ev.needs_approval);
       break;
     case "tool_result":
       setToolResult(ev.id, ev.output, ev.is_error);
-      setStatus("Claude is thinking…");
+      setStatus("Thinking…", true);
       break;
     case "notice":
       addNotice(ev.message);
@@ -528,6 +531,7 @@ function handleEvent(ev) {
       state.lastUsage = turnUsageText(ev);
       break;
     case "done":
+      endStreaming();
       setBusy(false);
       if (state.lastUsage) { setStatus(state.lastUsage); state.lastUsage = null; }
       state.currentAssistant = null;
@@ -651,7 +655,17 @@ function setToolResult(id, output, isError) {
   scrollDown();
 }
 
-function setStatus(s) { $("#status").textContent = s; }
+function endStreaming() {
+  document.querySelectorAll(".msg.streaming").forEach((e) => e.classList.remove("streaming"));
+}
+
+// Chat status line; spin = show the loading spinner while the AI works.
+function setStatus(s, spin = false) {
+  const st = $("#status");
+  st.innerHTML = spin && s ? '<span class="spinner" aria-hidden="true"></span>' : "";
+  st.append(s);
+  st.classList.toggle("working", spin && !!s);
+}
 
 // 1234 → "1.2k", 5_300_000 → "5.3M"
 function fmtTok(n) {
@@ -671,7 +685,7 @@ function setBusy(b) {
   state.busy = b;
   $("#send").hidden = b;
   $("#stop").hidden = !b;
-  if (!b) setStatus("");
+  if (!b) { setStatus(""); endStreaming(); }
 }
 
 // ------------------------------------------------------------ composer
@@ -700,7 +714,7 @@ function sendMessage() {
   input.value = "";
   input.style.height = "auto";
   setBusy(true);
-  setStatus("Sending…");
+  setStatus("Sending…", true);
 }
 
 // ------------------------------------------------------------ conversations
@@ -2066,8 +2080,8 @@ function renderLaiStatus(s) {
 }
 
 async function loadLaiModels() {
-  let r, cat;
-  try { [r, cat] = await Promise.all([api("/api/localai/models"), api("/api/localai/catalog")]); }
+  let r;
+  try { r = await api("/api/localai/models"); }
   catch (ex) { $("#lai-models").textContent = ex.message; return; }
   state.laiModels = r;
   // downloads in progress
@@ -2115,65 +2129,146 @@ async function loadLaiModels() {
         : el("span", { class: "muted" }, "Not loaded (starts on first use)")),
       actions));
   }
-  renderLaiCatalog(cat, r.pulls);
+  // Re-run the model search when a download finishes (so it shows as installed), else just
+  // redraw the cards with the current downloads.
+  const finished = r.pulls.filter((p) => p.state === "done").length;
+  if (!state.laiResults || finished !== state.laiFinished) { state.laiFinished = finished; laiSearch(); }
+  else renderLaiResults();
 }
 
-// Recommended models, grouped by category with a filter (All, Chat & tools, Tiny, Huge, …).
-function renderLaiCatalog(cat, pulls) {
-  state.laiCatalog = cat;
-  const filter = state.laiFilter || "all";
+// ---- Find models: Recommended / whole Ollama library / Hugging Face, with filters.
+state.laiQuery = { source: "recommended", q: "", use: "", params: "", sort: "", fits: false };
+
+async function laiSearch(more = false) {
+  const qy = state.laiQuery;
+  const offset = more && state.laiResults ? state.laiResults.models.length : 0;
+  const params = new URLSearchParams({ ...qy, fits: qy.fits ? "true" : "false", offset: String(offset) });
+  const seq = (state.laiSeq = (state.laiSeq || 0) + 1);
+  $("#lai-results-info").textContent = qy.source === "recommended" ? "" :
+    `Searching ${qy.source === "hf" ? "Hugging Face" : "the Ollama library"}…`;
+  let r;
+  try { r = await api(`/api/localai/search?${params}`); }
+  catch (ex) { if (seq === state.laiSeq) $("#lai-results-info").textContent = ex.message; return; }
+  if (seq !== state.laiSeq) return;   // a newer search was started meanwhile
+  if (more) r.models = [...state.laiResults.models, ...r.models];
+  state.laiResults = r;
+  laiFillFilters(r.options);
+  renderLaiResults();
+}
+
+function laiFillFilters(o) {
+  const qy = state.laiQuery;
+  const src = $("#lai-src");
+  src.innerHTML = "";
+  for (const [id, label] of o.sources)
+    src.append(el("button", { type: "button", role: "tab", class: `seg-btn ${qy.source === id ? "active" : ""}`,
+      onclick: () => { if (qy.source !== id) { qy.source = id; qy.sort = ""; laiSearch(); } } }, label));
+  const fill = (sel, first, items, value) => {
+    if (sel.options.length <= 1 || sel.dataset.filled !== String(items.length)) {
+      sel.innerHTML = "";
+      if (first) sel.append(el("option", { value: "" }, first));
+      for (const [id, label] of items) sel.append(el("option", { value: id }, label));
+      sel.dataset.filled = String(items.length);
+    }
+    sel.value = value;
+  };
+  fill($("#lai-use"), "Any use", o.uses, qy.use);
+  fill($("#lai-params"), "Any size", o.params, qy.params);
+  fill($("#lai-sort"), "Default order", o.sorts, qy.sort);
+  $("#lai-fits").checked = qy.fits;
+}
+
+function renderLaiResults() {
+  const r = state.laiResults;
+  if (!r) return;
   const box = $("#lai-catalog");
   box.innerHTML = "";
-  const counts = {};
-  for (const m of cat.models) counts[m.cat] = (counts[m.cat] || 0) + 1;
-  const chips = el("div", { class: "seg lai-filter", role: "tablist" },
-    [{ id: "all", title: "All" }, ...cat.categories].filter((c) => c.id === "all" || counts[c.id]).map((c) =>
-      el("button", { type: "button", class: `seg-btn ${filter === c.id ? "active" : ""}`,
-                     onclick: () => { state.laiFilter = c.id; renderLaiCatalog(state.laiCatalog, pulls); } },
-         c.id === "all" ? `All (${cat.models.length})` : `${c.title} (${counts[c.id]})`)));
-  box.append(chips);
-  const downloading = new Set(pulls.filter((p) => p.state === "downloading").map((p) => p.name));
-  for (const c of cat.categories) {
-    if (filter !== "all" && filter !== c.id) continue;
-    const items = cat.models.filter((m) => m.cat === c.id);
-    if (!items.length) continue;
-    const grid = el("div", { class: "lai-grid" });
-    for (const m of items) grid.append(laiPick(m, downloading));
-    box.append(el("section", { class: "lai-cat" },
-      el("h4", {}, c.title), el("p", { class: "small muted" }, c.about), grid));
-  }
-  for (const n of cat.notes || []) box.append(el("p", { class: "small muted" }, n));
+  const downloading = new Set((state.laiModels?.pulls || []).filter((p) => p.state === "downloading").map((p) => p.name));
+  const where = { recommended: "recommended models", ollama: "models in the Ollama library", hf: "GGUF models on Hugging Face" }[r.source];
+  $("#lai-results-info").textContent = r.error && !r.models.length ? r.error
+    : `${r.total} ${where}${r.total > r.models.length ? ` · showing ${r.models.length}` : ""}` +
+      (r.fetched && r.source === "ollama" ? ` · list from ollama.com, ${timeAgoShort(r.fetched)}` : "") +
+      (r.error ? ` · ${r.error}` : "");
+  if (!r.models.length && !r.error) box.append(el("p", { class: "muted small" }, "No models match these filters."));
+  for (const m of r.models) box.append(laiPick(m, downloading));
+  $("#lai-more").hidden = !r.more;
+  const notes = $("#lai-notes");
+  notes.innerHTML = "";
+  for (const n of r.notes || []) notes.append(el("p", {}, n));
 }
+
+function timeAgoShort(iso) {
+  const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  return s < 90 ? "just now" : s < 5400 ? `${Math.round(s / 60)} min ago` : `${Math.round(s / 3600)} h ago`;
+}
+
+const LAI_BADGES = [["thinking", "Thinking"], ["vision", "Vision"], ["code", "Coding"], ["embedding", "Embeddings"],
+                    ["audio", "Audio"], ["image", "Image generation"]];
 
 function laiPick(m, downloading) {
   const badges = [
-    m.tools === true ? el("span", { class: "tag tag-accent" }, "Tools")
+    m.tools === true ? el("span", { class: "tag tag-accent", title: "Can run commands from the chat" }, "Tools")
       : m.tools === null ? el("span", { class: "tag", title: "Shown under Installed models after downloading" }, "Tools: check after download")
       : (!m.embedding && !m.image ? el("span", { class: "tag" }, "No tools") : null),
-    m.thinking ? el("span", { class: "tag" }, "Thinking") : null,
-    m.vision ? el("span", { class: "tag" }, "Vision") : null,
-    m.embedding ? el("span", { class: "tag" }, "Embeddings") : null,
-    m.image ? el("span", { class: "tag" }, "Image generation") : null,
+    ...LAI_BADGES.filter(([k]) => m[k]).map(([, label]) => el("span", { class: "tag" }, label)),
     m.experimental ? el("span", { class: "tag tag-warn" }, "Experimental") : null,
+    m.cloud ? el("span", { class: "tag", title: "Also offered as a cloud model on ollama.com; the sizes listed here run on this server" }, "Also in cloud") : null,
   ];
-  const needs = m.size == null ? "Size: see the model page" :
-    `${m.size < 1 ? `${Math.round(m.size * 1000)} MB` : `${m.size} GB`} download · needs about ${m.ram} GB memory`;
-  const page = m.source === "Hugging Face"
-    ? `https://huggingface.co/${m.name.replace(/^hf\.co\//, "").replace(/:.*$/, "")}`
-    : `https://ollama.com/library/${m.name.replace(/:.*$/, "")}`;
-  const busy = downloading.has(m.name);
+  // sizes: one line for a single variant, a picker for several (8B, 70B, 405B…)
+  const vText = (v) => {
+    const parts = [v.label && v.label !== "latest" ? v.label : null];
+    if (v.size != null) parts.push(`${v.estimated ? "≈" : ""}${v.size < 1 ? `${Math.round(v.size * 1000)} MB` : `${v.size} GB`} download`);
+    if (v.ram != null) parts.push(`${v.estimated ? "≈" : ""}${v.ram} GB RAM`);
+    if (v.size == null) parts.push("size: see the model page");
+    return parts.filter(Boolean).join(" · ") + (v.fits === false ? " — too big for this server" : "") + (v.installed ? " ✓" : "");
+  };
+  const vs = m.variants;
+  let pick = vs.find((v) => !v.installed && v.fits !== false) || vs[0];
+  let sizeEl, foot;
+  const busy = () => downloading.has(pick.tag);
+  const btn = el("button", { type: "button", class: "small" });
+  const refresh = () => {
+    btn.hidden = pick.installed;
+    btn.disabled = busy();
+    btn.innerHTML = "";
+    btn.append(withIcon("download", busy() ? "Downloading…" : "Download"));
+    btn.title = `ollama pull ${pick.tag}`;
+    btn.onclick = () => pullModel(pick.tag);
+    inst.hidden = !pick.installed;
+    if (sizeEl.tagName === "DIV") sizeEl.className = `small ${pick.fits === false ? "error" : "muted"}`;
+  };
+  const inst = el("span", { class: "ok-text" }, "✓ Installed");
+  if (vs.length > 1) {
+    sizeEl = el("select", { class: "small lai-variant", "aria-label": `Size of ${m.title}`,
+                            onchange: (e) => { pick = vs[Number(e.target.value)]; refresh(); } },
+      vs.map((v, i) => el("option", { value: String(i) }, vText(v))));
+    sizeEl.value = String(vs.indexOf(pick));
+  } else {
+    sizeEl = el("div", {}, vText(pick));
+  }
+  const stats = [m.popularity_label, m.likes ? `${m.likes} likes` : null, m.updated ? `updated ${new Date(m.updated).toLocaleDateString()}` : null]
+    .filter(Boolean).join(" · ");
+  foot = el("div", { class: "lai-pick-foot small" },
+    el("a", { href: m.url, target: "_blank", rel: "noopener noreferrer", class: "muted" }, m.source), inst, btn);
+  refresh();
   return el("div", { class: `lai-pick ${m.installed ? "installed" : ""}` },
-    el("div", {}, el("strong", {}, m.title)),
-    el("div", { class: "muted small mono lai-name" }, m.name),
+    el("div", { class: "lai-pick-head" }, el("strong", {}, m.title)),
+    el("div", { class: "muted small mono lai-name" }, vs.length > 1 ? m.name : pick.tag),
     el("div", { class: "small lai-badges" }, badges),
-    el("p", { class: "small muted" }, m.about),
-    el("div", { class: `small ${m.fits === false ? "error" : "muted"}` }, needs + (m.fits === false ? " — more than this server has" : "")),
-    el("div", { class: "lai-pick-foot small" },
-      el("a", { href: page, target: "_blank", rel: "noopener noreferrer", class: "muted" }, m.source),
-      m.installed ? el("span", { class: "ok-text" }, "✓ Installed")
-        : el("button", { type: "button", class: "small", disabled: busy, onclick: () => pullModel(m.name) },
-             withIcon("download", busy ? "Downloading…" : "Download"))));
+    el("p", { class: "small lai-use" }, m.use),
+    m.about ? el("p", { class: "small muted lai-about" }, m.about) : null,
+    stats ? el("div", { class: "small muted" }, stats) : null,
+    sizeEl, foot);
 }
+
+$("#lai-q").addEventListener("input", (e) => {
+  clearTimeout(state.laiQTimer);
+  state.laiQTimer = setTimeout(() => { state.laiQuery.q = e.target.value.trim(); laiSearch(); }, 450);
+});
+for (const [id, key] of [["#lai-use", "use"], ["#lai-params", "params"], ["#lai-sort", "sort"]])
+  $(id).addEventListener("change", (e) => { state.laiQuery[key] = e.target.value; laiSearch(); });
+$("#lai-fits").addEventListener("change", (e) => { state.laiQuery.fits = e.target.checked; laiSearch(); });
+$("#lai-more").addEventListener("click", () => laiSearch(true));
 
 async function pullModel(name) {
   try { await api("/api/localai/pull", { method: "POST", body: JSON.stringify({ name }) }); toast(`Downloading ${name}…`); }
