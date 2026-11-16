@@ -23,6 +23,10 @@
 #                                   mount block device DEV at /mnt/NAME (nosuid,nodev; FAT/
 #                                   exFAT/NTFS owned by the service user); --persist adds an
 #                                   /etc/fstab entry (by UUID, nofail) so it mounts at boot
+#   sysadmin-ia-hostname ollama-install | ollama-service start|stop|restart | ollama-context N |
+#                        ollama-uninstall [--delete-models]
+#                                   install Ollama (local AI models) with its official installer
+#                                   from ollama.com, control its service and default context length
 #   sysadmin-ia-hostname unmount DIR [--forget]
 #                                   unmount DIR (only under /mnt, /media, /run/media);
 #                                   --forget also removes the fstab entry this helper added
@@ -436,7 +440,114 @@ do_unmount() {  # unmount DIR [--forget]
   [[ "$real" == /mnt/* && -d "$real" && -z "$(ls -A "$real")" ]] && rmdir "$real" || true
 }
 
+# ---------------------------------------------------------------- Ollama (local AI models)
+OLLAMA_LOG="${LOG_DIR}/ollama.log"
+OLLAMA_STATUS="${LOG_DIR}/ollama.status"
+OLLAMA_DROPIN="/etc/systemd/system/ollama.service.d/sysadmin-ia.conf"
+OLLAMA_CONTEXTS=" 4096 8192 16384 32768 65536 131072 "
+
+ollama_status() {  # ollama_status STATE MESSAGE
+  printf 'state=%s\nupdated=%s\nmessage=%s\n' "$1" "$(date +%s)" "$2" > "${OLLAMA_STATUS}.tmp"
+  chown root:"$SVC_USER" "${OLLAMA_STATUS}.tmp"; chmod 640 "${OLLAMA_STATUS}.tmp"
+  mv "${OLLAMA_STATUS}.tmp" "$OLLAMA_STATUS"
+}
+
+do_ollama_context() {  # ollama-context N   (Ollama's default context window for all models)
+  local n="$1"
+  [[ "$OLLAMA_CONTEXTS" == *" $n "* ]] || die "invalid context length"
+  mkdir -p "$(dirname "$OLLAMA_DROPIN")"
+  printf '# Written by SysAdmin.IA (Local AI → Context length)\n[Service]\nEnvironment="OLLAMA_CONTEXT_LENGTH=%s"\n' "$n" > "$OLLAMA_DROPIN"
+  systemctl daemon-reload
+  if systemctl is-active --quiet ollama; then systemctl restart ollama; fi
+  echo "Context length set to ${n} tokens."
+}
+
+do_ollama_install() {  # ollama-install   (runs Ollama's official installer in the background)
+  prepare_log_dir
+  if [[ -f "$OLLAMA_STATUS" ]] && grep -q '^state=running' "$OLLAMA_STATUS" \
+     && (( $(date +%s) - $(sed -n 's/^updated=//p' "$OLLAMA_STATUS") < 1800 )); then
+    die "an Ollama installation is already running"
+  fi
+  : > "$OLLAMA_LOG"; chown root:"$SVC_USER" "$OLLAMA_LOG"; chmod 640 "$OLLAMA_LOG"
+  ollama_status running "Starting"
+  local self; self="$(readlink -f "${BASH_SOURCE[0]}")"
+  if command -v systemd-run >/dev/null && [[ -d /run/systemd/system ]]; then
+    systemd-run --quiet --collect --unit="${APP_NAME}-ollama-install-$(date +%s)" /bin/bash "$self" _ollama-install-run
+  else
+    nohup setsid /bin/bash "$self" _ollama-install-run >/dev/null 2>&1 &
+  fi
+  echo "Ollama installation started."
+}
+
+do_ollama_install_run() {
+  prepare_log_dir
+  exec >>"$OLLAMA_LOG" 2>&1
+  set -E
+  trap 'ollama_status failed "Unexpected error; see the log"' ERR
+  local work; work="$(mktemp -d)"
+  trap 'rm -rf "$work"' EXIT
+  echo "==> $(date -Is) Downloading the official installer from https://ollama.com/install.sh"
+  ollama_status running "Downloading the installer"
+  if ! python3 -I -c '
+import sys, urllib.request
+req = urllib.request.Request("https://ollama.com/install.sh", headers={"User-Agent": "SysAdmin.IA"})
+with urllib.request.urlopen(req, timeout=60) as r, open(sys.argv[1], "wb") as f:
+    f.write(r.read())
+' "${work}/install.sh"; then
+    ollama_status failed "Could not download the installer from ollama.com"; return 1
+  fi
+  echo "==> Running the installer (this downloads Ollama itself, about 1-2 GB with GPU libraries)"
+  ollama_status running "Installing Ollama"
+  if ! sh "${work}/install.sh"; then
+    ollama_status failed "The Ollama installer failed; see the log"; return 1
+  fi
+  # A default context window large enough for the chat assistant's instructions and tools.
+  if [[ ! -f "$OLLAMA_DROPIN" ]]; then do_ollama_context 8192; fi
+  systemctl enable --now ollama 2>/dev/null || true
+  for i in $(seq 1 30); do
+    if (exec 3<>/dev/tcp/127.0.0.1/11434) 2>/dev/null; then
+      echo "==> $(date -Is) Ollama is installed and running."
+      ollama_status done "Ollama is installed and running"
+      return 0
+    fi
+    sleep 2
+  done
+  ollama_status failed "Ollama was installed but didn't start; see the log"
+  return 1
+}
+
+do_ollama_service() {  # ollama-service start|stop|restart
+  case "${1:-}" in start|stop|restart) ;; *) die "usage: ollama-service start|stop|restart" ;; esac
+  systemctl "$1" ollama
+  [[ "$1" == start ]] && systemctl enable ollama >/dev/null 2>&1 || true
+  echo "Ollama: ${1} done."
+}
+
+do_ollama_uninstall() {  # ollama-uninstall [--delete-models]
+  local del=0
+  [[ "${1:-}" == "--delete-models" ]] && del=1
+  systemctl disable --now ollama 2>/dev/null || true
+  rm -f /etc/systemd/system/ollama.service
+  rm -rf /etc/systemd/system/ollama.service.d
+  systemctl daemon-reload 2>/dev/null || true
+  rm -f "$(command -v ollama 2>/dev/null || echo /usr/local/bin/ollama)" /usr/local/bin/ollama /usr/bin/ollama
+  rm -rf /usr/local/lib/ollama /usr/lib/ollama
+  if [[ $del -eq 1 ]]; then
+    rm -rf /usr/share/ollama
+    userdel ollama 2>/dev/null || true
+    groupdel ollama 2>/dev/null || true
+    echo "Ollama and all downloaded models were removed."
+  else
+    echo "Ollama was removed. Downloaded models were kept in /usr/share/ollama."
+  fi
+}
+
 case "${1:-}" in
+  ollama-install)   do_ollama_install ;;
+  _ollama-install-run) do_ollama_install_run ;;
+  ollama-service)   [[ $# -eq 2 ]] || die "usage: $0 ollama-service start|stop|restart"; do_ollama_service "$2" ;;
+  ollama-context)   [[ $# -eq 2 ]] || die "usage: $0 ollama-context N"; do_ollama_context "$2" ;;
+  ollama-uninstall) shift; do_ollama_uninstall "$@" ;;
   mount)   [[ $# -ge 3 ]] || die "usage: $0 mount DEV NAME [--persist] [--readonly]"; shift; do_mount "$@" ;;
   unmount) [[ $# -ge 2 ]] || die "usage: $0 unmount DIR [--forget]"; shift; do_unmount "$@" ;;
   set)     [[ $# -eq 2 ]] || die "usage: $0 set NAME"; do_set "$2" ;;
@@ -447,5 +558,5 @@ case "${1:-}" in
   install) do_install ;;
   upgrade) [[ $# -eq 3 ]] || die "usage: $0 upgrade REF VERSION"; do_upgrade "$2" "$3" ;;
   _upgrade-run) [[ $# -eq 3 ]] || die "usage: $0 _upgrade-run REF VERSION"; do_upgrade_run "$2" "$3" ;;
-  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION|mount DEV NAME|unmount DIR}" ;;
+  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION|mount DEV NAME|unmount DIR|ollama-install|ollama-service ACTION|ollama-context N|ollama-uninstall}" ;;
 esac

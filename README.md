@@ -157,6 +157,20 @@ Supported filesystems: ext2/3/4, XFS, Btrfs, FAT32, exFAT, NTFS, F2FS, ISO 9660/
 - **Users** tab (admins only): everyone who can sign in, with their picture. Change roles (admin or viewer), set a new password for someone, delete users, and add new ones. There's always at least one admin.
 - **Your profile card** (top right) shows your picture and username. Click it for **Edit profile** (picture, username, display name, email), **Change password**, and **Sign out**. Pictures are cropped to a square in the browser and stored in the app database.
 
+### Local AI (Ollama on this server)
+
+The **Local AI** module (Settings) runs open AI models on the server itself with [Ollama](https://ollama.com). Prompts never leave the server, and there's no per-use cost.
+
+- **Install Ollama** runs Ollama's official installer (`https://ollama.com/install.sh`) as root through the app's helper, in the background with a live log. It adds the `ollama` service and user, with GPU support if a GPU is found. Ollama listens on `127.0.0.1:11434`, so only this server can reach it. **Start / Stop / Restart** control the service.
+- **Hardware** shows memory, GPUs (NVIDIA via `nvidia-smi`, or AMD) and free disk space where models are stored, so you can tell which models fit.
+- **Context length** sets how much text models keep in mind (Ollama's `OLLAMA_CONTEXT_LENGTH`, via a systemd drop-in). The installer sets 8k; the chat assistant needs at least that, and 16–32k for long tasks (more memory).
+- **Download a model:** pick from the recommended list (with download size, memory needed, and whether it supports **tools**), or type any name from [ollama.com/library](https://ollama.com/library). Downloads show live progress and can be cancelled.
+- **Installed models** shows size, parameters, quantization and capabilities (Tools, Vision, Thinking). It shows whether a model is loaded and how much memory it uses (and how much of that is on the GPU), with **Unload** to free that memory, **Delete**, and **Use in chat**.
+
+**Use in chat** creates an AI connection under the provider **Ollama (Server Managed)**. You can also add one yourself in AI connections; its model box lists the models installed on the server. The chat assistant needs a model with **Tools** to run commands. Models without tools (e.g. DeepSeek-R1, Gemma 3) still work for questions and for the "Ask the AI" job action. To use Ollama running on *another* computer, use the provider **Ollama (another server)**. **Remove Ollama** uninstalls it, optionally with all downloaded models.
+
+Existing installations need the updated root helper for install and service control (it's refreshed automatically with full access; otherwise the page shows the one-time command).
+
 ### Jobs, variables and mail accounts (Automation)
 
 **Jobs** are automations: *when* something happens, *then* do something. A job has one or more triggers (it runs when any of them fires) and a list of actions that run in order. **Run now** tests a job straight away, and **History** shows the last 100 runs with what each action did.

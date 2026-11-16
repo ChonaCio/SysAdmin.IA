@@ -426,6 +426,33 @@ canvas { width: 100%; height: 160px; display: block; }
 .ai-fields textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
 .conn-pick select { max-width: 260px; padding: 4px 8px; font-size: 12.5px; }
 
+/* ---------- AI connections grouping ---------- */
+.provider-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px;
+  font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.provider-head:first-child { margin-top: 0; }
+
+/* ---------- local AI ---------- */
+.lai-hw { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--grid); }
+.lai-install { margin-top: 12px; }
+.lai-install .busy { display: flex; align-items: center; gap: 8px; }
+.lai-install pre { max-height: 260px; }
+.lai-context { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--grid); }
+.lai-context label { display: flex; flex-direction: column; gap: 4px; font-weight: 600; }
+.lai-context .row { display: flex; gap: 8px; align-items: center; }
+.lai-pulls { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
+.lai-pull { display: flex; flex-direction: column; gap: 4px; }
+.lai-pull .bar { margin: 0; max-width: 520px; }
+.var-row.lai-model { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1.4fr) minmax(0, 1.1fr) auto; }
+.lai-pull-form { display: flex; gap: 8px; margin-bottom: 4px; }
+.lai-pull-form input { flex: 1; min-width: 0; font-family: var(--mono); }
+.lai-catalog { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 10px; margin-top: 8px; }
+.lai-pick { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.lai-pick p { margin: 0; }
+.lai-pick.installed { border-color: color-mix(in srgb, var(--ok) 40%, var(--border)); }
+.lai-danger summary { cursor: pointer; font-weight: 600; color: var(--crit); }
+.lai-danger { display: flex; flex-direction: column; gap: 8px; }
+.lai-danger[open] > *:not(summary) { margin-top: 8px; }
+
 /* ---------- jobs ---------- */
 .job-list { display: flex; flex-direction: column; gap: 10px; }
 .job-card.disabled { opacity: .72; }

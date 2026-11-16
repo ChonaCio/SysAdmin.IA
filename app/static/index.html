@@ -65,6 +65,8 @@
     <div class="nav-group admin-only">Settings</div>
     <button data-view="ai" class="tab nav-item admin-only" id="tab-ai" title="AI connections">
       <span data-icon="ai"></span><span>AI connections</span></button>
+    <button data-view="localai" class="tab nav-item admin-only" id="tab-localai" title="Local AI">
+      <span data-icon="chip"></span><span>Local AI</span></button>
     <button data-view="users" class="tab nav-item admin-only" id="tab-users" title="Users">
       <span data-icon="users"></span><span>Users</span></button>
     <button data-view="admin" class="tab nav-item admin-only" id="tab-admin" title="Admin">
@@ -373,6 +375,67 @@
         under Anthropic's terms: to use Claude with your Google account, add Claude through <strong>Google Cloud (Vertex AI)</strong>.</p>
     </div>
   </section>
+  <!-- ================= LOCAL AI (Ollama) ================= -->
+  <section id="view-localai" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Local AI</h2>
+          <p class="muted small">Run open AI models on this server with <strong>Ollama</strong>. Prompts and answers never leave the server,
+            and there's no per-use cost. Installed models appear in AI connections as <strong>Ollama (Server Managed)</strong>.</p>
+        </div>
+      </div>
+      <p class="note warn" id="lai-setup" hidden></p>
+
+      <div class="card" id="lai-status-card">
+        <div class="ai-card-head">
+          <span class="icon-tile" data-icon-tile="chip" id="lai-tile"></span>
+          <div class="ai-card-title">
+            <div><strong>Ollama</strong> <span class="status-pill" id="lai-pill"></span></div>
+            <div class="muted small" id="lai-version"></div>
+          </div>
+          <div class="ai-actions" id="lai-actions"></div>
+        </div>
+        <div class="lai-hw" id="lai-hw"></div>
+        <div class="lai-install" id="lai-install" hidden>
+          <p class="small busy" id="lai-install-msg"></p>
+          <pre class="update-notes mono small" id="lai-install-log"></pre>
+        </div>
+        <div class="row lai-context" id="lai-context" hidden>
+          <label class="small">Context length <span class="muted">(how much text a model can keep in mind)</span>
+            <span class="row"><select id="lai-context-select"></select>
+            <button type="button" class="small" id="lai-context-apply">Apply</button></span>
+            <span class="muted small">The chat assistant needs at least 8k; 16–32k for long tasks. Larger uses more memory.</span>
+          </label>
+        </div>
+      </div>
+
+      <div class="card" id="lai-models-card" hidden>
+        <h3>Installed models</h3>
+        <div id="lai-pulls" class="lai-pulls"></div>
+        <div id="lai-models" class="var-list"></div>
+      </div>
+
+      <div class="card" id="lai-get-card" hidden>
+        <h3>Download a model</h3>
+        <form class="row lai-pull-form" id="lai-pull-form" autocomplete="off">
+          <input id="lai-pull-name" spellcheck="false" placeholder="Any model from ollama.com/library, e.g. llama3.1:8b" aria-label="Model name">
+          <button class="primary"><span data-icon="download"></span> Download</button>
+        </form>
+        <p class="muted small">Browse every model at <a href="https://ollama.com/library" target="_blank" rel="noopener noreferrer">ollama.com/library</a>
+          and type its name above. Below are good choices for this app. The chat assistant needs models marked <strong>Tools</strong>.</p>
+        <div id="lai-catalog" class="lai-catalog"></div>
+      </div>
+
+      <details class="card lai-danger" id="lai-danger" hidden>
+        <summary>Remove Ollama</summary>
+        <p class="small">Stops Ollama and removes it from the server. AI connections that use local models stop working.</p>
+        <label class="check small"><input type="checkbox" id="lai-delete-models"> Also delete all downloaded models (frees disk space)</label>
+        <button type="button" class="danger small" id="lai-uninstall"><span data-icon="trash"></span> Remove Ollama</button>
+      </details>
+    </div>
+  </section>
+
   <!-- ================= JOBS ================= -->
   <section id="view-jobs" class="view">
     <div class="page">
@@ -538,10 +601,11 @@
       <label>Name <input name="name" maxlength="60" required placeholder="e.g. Claude (work)"></label>
       <div id="ai-fields" class="ai-fields"></div>
       <label><span id="ai-model-label">Model</span>
-        <span class="row">
+        <span class="row" id="ai-model-row">
           <input name="model" list="ai-model-options" spellcheck="false" required>
           <button type="button" class="ghost small" id="ai-load-models" title="Ask the service which models you can use">Load models</button>
         </span>
+        <select id="ai-model-select" hidden aria-label="Installed model"></select>
         <datalist id="ai-model-options"></datalist>
         <span class="muted small" id="ai-model-help"></span>
       </label>

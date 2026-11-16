@@ -434,6 +434,9 @@ class OpenAICompatProvider:
             return openai.AsyncAzureOpenAI(api_key=key, azure_endpoint=self.cfg.get("endpoint"),
                                            api_version=self.cfg.get("api_version") or "2024-10-21", max_retries=1)
         base = self.cfg.get("base_url") or self.p.get("base_url")
+        if self.conn["provider"] == "ollama_managed":
+            from .local_ai import OLLAMA_URL
+            base = f"{OLLAMA_URL}/v1"
         headers = {}
         if self.conn["provider"] == "openrouter":
             headers = {"X-Title": "SysAdmin.IA"}
@@ -460,6 +463,8 @@ class OpenAICompatProvider:
         if isinstance(e, openai.APIStatusError):
             return ProviderError(f"AI service error ({e.status_code}): {getattr(e, 'message', e)}")
         if isinstance(e, openai.APIConnectionError):
+            if self.conn["provider"] == "ollama_managed":
+                return ProviderError("Ollama isn't running on this server. Start it in Local AI.")
             return ProviderError(f"Could not reach the AI service for “{name}” (network error or wrong address).")
         return ProviderError(f"“{name}”: {type(e).__name__}: {e}")
 

@@ -167,7 +167,7 @@ if [[ $UPGRADE -eq 1 && -d "$PREFIX/.git" ]]; then
 fi
 
 c_info "Copying application to $PREFIX"
-tar -C "$SRC_DIR" --exclude='.venv' --exclude='data' --exclude='.git' --exclude='__pycache__' --exclude='.env' -cf - . \
+tar -C "$SRC_DIR" --exclude='.venv' --exclude='data' --exclude='.git' --exclude='__pycache__' --exclude='.env' --exclude='HANDOFF.md' -cf - . \
   | tar -C "$PREFIX" -xf -
 
 # The version being installed: the highest of the VERSION file, the git tag this copy was

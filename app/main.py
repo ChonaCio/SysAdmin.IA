@@ -18,7 +18,7 @@ from pydantic import BaseModel
 
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
-from . import variables
+from . import local_ai, variables
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -420,6 +420,131 @@ async def chat_connections(user: User = Depends(admin_user)):
     """Enabled connections for the chat's picker."""
     return [{"id": c["id"], "name": c["name"], "short": ai.public(c)["short"], "model": ai.public(c)["model"],
              "is_default": c["is_default"]} for c in ai.list_all() if c["enabled"]]
+
+
+# ---------------------------------------------------------------- local AI / Ollama (admin)
+
+class ModelBody(BaseModel):
+    name: str
+
+
+class OllamaServiceBody(BaseModel):
+    action: str
+
+
+class OllamaContextBody(BaseModel):
+    context_length: int
+
+
+class OllamaUninstallBody(BaseModel):
+    delete_models: bool = False
+
+
+def _lai(fn, *a):
+    try:
+        return fn(*a)
+    except local_ai.LocalAIError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/localai/status")
+async def localai_status(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(local_ai.status)
+
+
+@app.get("/api/localai/models")
+async def localai_models(user: User = Depends(admin_user)):
+    data = await asyncio.to_thread(local_ai.models)
+    used = {c["config"].get("model"): c["name"] for c in ai.list_all() if c["provider"] == "ollama_managed"}
+    for m in data["models"]:
+        m["connection"] = used.get(m["name"])
+    return data
+
+
+@app.get("/api/localai/catalog")
+async def localai_catalog(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(local_ai.catalog)
+
+
+@app.post("/api/localai/pull")
+async def localai_pull(body: ModelBody, request: Request, user: User = Depends(admin_user)):
+    r = await asyncio.to_thread(_lai, local_ai.pull, body.name)
+    db.audit("localai_pull", user.username, auth.client_ip(request), {"model": r["name"]})
+    return r
+
+
+@app.post("/api/localai/pull/cancel")
+async def localai_pull_cancel(body: ModelBody, user: User = Depends(admin_user)):
+    local_ai.cancel_pull(body.name)
+    return {"ok": True}
+
+
+@app.post("/api/localai/unload")
+async def localai_unload(body: ModelBody, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_lai, local_ai.unload, body.name)
+    return {"ok": True}
+
+
+@app.post("/api/localai/delete")
+async def localai_delete(body: ModelBody, request: Request, user: User = Depends(admin_user)):
+    users = [c["name"] for c in ai.list_all() if c["provider"] == "ollama_managed" and c["config"].get("model") == body.name]
+    await asyncio.to_thread(_lai, local_ai.delete, body.name)
+    db.audit("localai_delete", user.username, auth.client_ip(request), {"model": body.name})
+    return {"ok": True, "connections": users}
+
+
+@app.post("/api/localai/use")
+async def localai_use(body: ModelBody, request: Request, user: User = Depends(admin_user)):
+    """Create (or return) the AI connection for an installed model, so it can be picked in chats."""
+    for c in ai.list_all():
+        if c["provider"] == "ollama_managed" and c["config"].get("model") == body.name:
+            return ai.public(c)
+    try:
+        c = ai.create({"name": f"{body.name} (local)", "provider": "ollama_managed", "method": "local",
+                       "config": {"model": body.name}, "is_default": not ai.any_enabled()})
+    except ai.ConnectionError_ as e:
+        raise HTTPException(400, str(e))
+    db.audit("ai_connection_created", user.username, auth.client_ip(request),
+             {"id": c["id"], "name": c["name"], "provider": "ollama_managed"})
+    return ai.public(c)
+
+
+@app.post("/api/localai/install")
+async def localai_install(request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_lai, local_ai.helper, "ollama-install")
+    db.audit("localai_install", user.username, auth.client_ip(request))
+    return {"ok": True, "message": out}
+
+
+@app.get("/api/localai/install/progress")
+async def localai_install_progress(user: User = Depends(admin_user)):
+    return local_ai.install_progress()
+
+
+@app.post("/api/localai/service")
+async def localai_service(body: OllamaServiceBody, request: Request, user: User = Depends(admin_user)):
+    if body.action not in ("start", "stop", "restart"):
+        raise HTTPException(400, "Unknown action.")
+    out = await asyncio.to_thread(_lai, local_ai.helper, "ollama-service", body.action)
+    db.audit("localai_service", user.username, auth.client_ip(request), body.action)
+    return {"ok": True, "message": out}
+
+
+@app.post("/api/localai/context")
+async def localai_context(body: OllamaContextBody, request: Request, user: User = Depends(admin_user)):
+    if body.context_length not in local_ai.CONTEXT_CHOICES:
+        raise HTTPException(400, "Unsupported context length.")
+    out = await asyncio.to_thread(_lai, local_ai.helper, "ollama-context", str(body.context_length))
+    db.audit("localai_context", user.username, auth.client_ip(request), body.context_length)
+    return {"ok": True, "message": out}
+
+
+@app.post("/api/localai/uninstall")
+async def localai_uninstall(body: OllamaUninstallBody, request: Request, user: User = Depends(admin_user)):
+    args = ["ollama-uninstall"] + (["--delete-models"] if body.delete_models else [])
+    out = await asyncio.to_thread(_lai, local_ai.helper, *args)
+    db.audit("localai_uninstall", user.username, auth.client_ip(request), {"delete_models": body.delete_models})
+    return {"ok": True, "message": out}
 
 
 # ---------------------------------------------------------------- variables (admin)

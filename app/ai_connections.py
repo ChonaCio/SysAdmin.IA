@@ -186,9 +186,20 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "methods": {"api_key": {"label": "OpenRouter API key", "help": "Create a key at openrouter.ai/keys.",
                                 "fields": [dict(F_API_KEY, placeholder="sk-or-…", required=True)]}},
     },
+    "ollama_managed": {
+        "label": "Ollama (Server Managed)", "short": "Local", "kind": "openai", "color": "#555555",
+        "description": "Models installed on this server from the Local AI module. Private: nothing leaves the server.",
+        "base_url": "http://127.0.0.1:11434/v1", "default_model": "", "models": [], "dynamic_models": True,
+        "methods": {"local": {
+            "label": "This server",
+            "help": "Pick one of the models installed in Local AI. Models marked “tools” can run commands for you in the chat.",
+            "fields": [],
+            "model_label": "Installed model",
+        }},
+    },
     "ollama": {
-        "label": "Ollama (local models)", "short": "Ollama", "kind": "openai", "color": "#555555",
-        "description": "Models running on this server or your network with Ollama. No account needed.",
+        "label": "Ollama (another server)", "short": "Ollama", "kind": "openai", "color": "#555555",
+        "description": "Models running with Ollama on another computer in your network. No account needed.",
         "base_url": "http://localhost:11434/v1", "default_model": "llama3.1",
         "models": ["llama3.1", "qwen2.5", "mistral"],
         "methods": {"local": {
@@ -225,6 +236,12 @@ def catalog() -> dict:
         out[pid] = {k: v for k, v in p.items() if k != "env_key"}
         out[pid]["env_key_available"] = bool(p.get("env_key") and os.environ.get(p["env_key"]))
         out[pid]["env_key"] = p.get("env_key")
+    # Server-managed Ollama: the models are whatever is installed in Local AI right now.
+    from . import local_ai
+    installed = local_ai.installed_names()
+    out["ollama_managed"]["models"] = installed
+    out["ollama_managed"]["default_model"] = installed[0] if installed else ""
+    out["ollama_managed"]["installed"] = bool(installed) or local_ai.running_version() is not None
     return {"providers": out, "effort_levels": list(EFFORT_LEVELS)}
 
 
@@ -367,6 +384,11 @@ def _clean(data: dict, existing: dict | None = None, consume: bool = True) -> tu
     if len(model) > 200 or any(c.isspace() for c in model):
         raise ConnectionError_("Invalid model name.")
     config["model"] = model
+    if provider == "ollama_managed":
+        from . import local_ai
+        installed = local_ai.installed_names()
+        if installed and model not in installed and f"{model}:latest" not in installed:
+            raise ConnectionError_(f"“{model}” isn't installed on this server. Download it in Local AI first.")
     if p.get("supports_effort"):
         effort = incoming.get("effort", old_cfg.get("effort", "high")) or "high"
         if effort not in EFFORT_LEVELS:

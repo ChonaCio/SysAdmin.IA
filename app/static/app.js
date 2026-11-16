@@ -58,6 +58,8 @@ const ICON = {
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
+  chip: '<rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9 2v4M15 2v4M9 18v4M15 18v4M2 9h4M2 15h4M18 9h4M18 15h4"/>',
+  stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
 };
 function icon(name, cls = "") {
   return `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name] || ""}</svg>`;
@@ -153,6 +155,7 @@ function switchView(v) {
   clearInterval(state.drivesTimer);
   if (v === "ai") loadAi();
   if (v === "jobs") loadJobs();
+  if (v === "localai") loadLocalAI();
   if (v === "variables") loadVariables();
   if (v === "mail") loadMail();
   if (v === "admin") loadAdmin();
@@ -941,7 +944,18 @@ async function loadAi() {
       el("p", { class: "muted small" }, "Add one to start chatting: Claude, ChatGPT, Grok, Gemini, Copilot (Azure / GitHub Models), Groq, Mistral, local models with Ollama, and more."),
       el("button", { type: "button", class: "primary", onclick: () => openAiEditor() }, "+ Add connection")));
   }
+  // Grouped by provider (e.g. all "Ollama (Server Managed)" models together); the default first.
+  const provOrder = Object.keys(state.aiCatalog.providers);
+  conns.sort((a, b) => (provOrder.indexOf(a.provider) - provOrder.indexOf(b.provider)) || (b.is_default - a.is_default) || a.name.localeCompare(b.name));
+  const multiProviders = new Set(conns.map((c) => c.provider)).size > 1;
+  let lastProvider = null;
   for (const c of conns) {
+    if (multiProviders && c.provider !== lastProvider) {
+      lastProvider = c.provider;
+      const extra = c.provider === "ollama_managed"
+        ? el("button", { type: "button", class: "small ghost", onclick: () => switchView("localai") }, withIcon("settings", "Manage in Local AI")) : null;
+      list.append(el("div", { class: "provider-head" }, el("span", {}, c.provider_label), extra));
+    }
     const status = [];
     if (c.is_default) status.push(el("span", { class: "tag tag-accent" }, "Default"));
     if (!c.enabled) status.push(el("span", { class: "tag" }, "Disabled"));
@@ -991,6 +1005,7 @@ $("#goto-ai").addEventListener("click", (e) => { e.preventDefault(); switchView(
 
 // ---- editor dialog
 async function openAiEditor(conn = null) {
+  state.aiCatalog = null;          // fresh: e.g. models just installed in Local AI
   const cat = await loadAiCatalog();
   const f = $("#ai-form");
   state.aiEditing = conn;
@@ -1032,6 +1047,18 @@ function renderAiProvider(conn = null) {
   const sameProvider = conn && conn.provider === pid;
   f.model.value = sameProvider ? conn.model : (p.default_model || "");
   $("#ai-model-options").innerHTML = (p.models || []).map((m) => `<option value="${esc(m)}">`).join("");
+  // Server-managed Ollama: choose from the models installed on this server.
+  const msel = $("#ai-model-select");
+  $("#ai-model-row").hidden = !!p.dynamic_models;
+  msel.hidden = !p.dynamic_models;
+  if (p.dynamic_models) {
+    msel.innerHTML = "";
+    if (!p.models.length) msel.append(el("option", { value: "" }, p.installed ? "No models installed yet — download one in Local AI" : "Ollama isn't installed — set it up in Local AI"));
+    for (const m of p.models) msel.append(el("option", { value: m }, m));
+    if (f.model.value && !p.models.includes(f.model.value)) msel.prepend(el("option", { value: f.model.value }, `${f.model.value} (not installed)`));
+    msel.value = f.model.value || (p.models[0] || "");
+    f.model.value = msel.value;
+  }
   $("#ai-effort-wrap").hidden = !p.supports_effort;
   f.effort.value = (sameProvider && conn.config.effort) || "high";
   renderAiFields(conn);
@@ -1077,6 +1104,7 @@ function renderAiFields(conn) {
   }
 }
 $("#ai-provider").addEventListener("change", () => { state.aiMethod = null; renderAiProvider(state.aiEditing); });
+$("#ai-model-select").addEventListener("change", (e) => { $("#ai-form").model.value = e.target.value; });
 
 // "Sign in with Google" (Claude on Vertex AI). Google sends the browser to a loopback address
 // (http://127.0.0.1:53682/…) that doesn't load; the admin pastes that address back here and the
@@ -1941,6 +1969,182 @@ $("#fb-sizes").addEventListener("click", async () => {
     renderBrowser();
   } catch (ex) { toast(ex.message); }
   finally { btn.disabled = false; btn.textContent = old; }
+});
+
+// ------------------------------------------------------------ local AI (Ollama) module
+const CAP_LABELS = { tools: "Tools", vision: "Vision", thinking: "Thinking", embedding: "Embeddings", insert: "Code fill" };
+
+async function loadLocalAI() {
+  clearTimeout(state.laiTimer);
+  let s;
+  try { s = await api("/api/localai/status"); } catch (ex) { toast(ex.message); return; }
+  state.lai = s;
+  renderLaiStatus(s);
+  if (s.running) await loadLaiModels();
+  const installing = s.install && s.install.state === "running";
+  const pulling = (state.laiModels?.pulls || []).some((p) => p.state === "downloading");
+  if (state.view === "localai") state.laiTimer = setTimeout(loadLocalAI, installing || pulling ? 2000 : 15000);
+}
+
+function renderLaiStatus(s) {
+  $("#lai-tile").innerHTML = icon("chip");
+  $("#lai-tile").className = `icon-tile ${s.running ? "accent" : ""}`;
+  const setup = $("#lai-setup");
+  setup.hidden = !s.available || s.can_manage;
+  if (!setup.hidden) { setup.innerHTML = ""; setup.append("Installing and controlling Ollama needs a one-time setup on the server. Run this as root, then reload: ", el("code", {}, s.setup_command || "")); }
+  const pill = $("#lai-pill");
+  const inst = s.install || {};
+  const installing = inst.state === "running";
+  if (!s.available) { pill.textContent = "Linux only"; pill.className = "status-pill warn"; }
+  else if (installing) { pill.textContent = "installing…"; pill.className = "status-pill warn"; }
+  else if (s.running) { pill.textContent = "running"; pill.className = "status-pill ok"; }
+  else if (s.installed) { pill.textContent = "stopped"; pill.className = "status-pill warn"; }
+  else { pill.textContent = "not installed"; pill.className = "status-pill"; }
+  $("#lai-version").textContent = !s.available ? "Local AI is only available when the app runs on Linux."
+    : s.running ? `Version ${s.version} · listening on ${s.url} (this server only)`
+    : s.installed ? "Installed, but the service isn't running." : "Not installed yet. Installing takes a few minutes and about 1–2 GB of disk.";
+
+  const acts = $("#lai-actions");
+  acts.innerHTML = "";
+  const svc = (action, label, iconName) => el("button", { type: "button", class: "small", disabled: !s.can_manage, onclick: async (e) => {
+    e.currentTarget.disabled = true;
+    try { await api("/api/localai/service", { method: "POST", body: JSON.stringify({ action }) }); toast(`Ollama: ${label.toLowerCase()} done.`); }
+    catch (ex) { toast(ex.message); }
+    setTimeout(loadLocalAI, 1500);
+  } }, withIcon(iconName, label));
+  if (s.available && !s.installed && !installing) {
+    acts.append(el("button", { type: "button", class: "primary", disabled: !s.can_manage, onclick: async (e) => {
+      if (!confirm("Install Ollama on this server?\n\nThis downloads and runs Ollama's official installer (ollama.com/install.sh) as root. "
+        + "It adds an “ollama” service and user, and GPU support if a GPU is found.")) return;
+      e.currentTarget.disabled = true;
+      try { await api("/api/localai/install", { method: "POST" }); } catch (ex) { toast(ex.message); }
+      loadLocalAI();
+    } }, withIcon("download", "Install Ollama")));
+  } else if (s.installed && !installing) {
+    if (s.running) acts.append(svc("restart", "Restart", "refresh"), svc("stop", "Stop", "stop"));
+    else acts.append(svc("start", "Start", "play"));
+  }
+
+  const hw = $("#lai-hw");
+  hw.innerHTML = "";
+  if (s.available) {
+    const stat = (label, value, sub) => el("div", { class: "u-stat" }, el("div", { class: "label" }, label), el("div", { class: "u-value" }, value), el("div", { class: "muted small" }, sub));
+    hw.append(el("div", { class: "u-stats" },
+      stat("Memory", fmtBytes(s.ram_total), `${fmtBytes(s.ram_available)} free now`),
+      stat("Graphics", s.gpus.length ? `${s.gpus.length} GPU${s.gpus.length > 1 ? "s" : ""}` : "CPU only",
+           s.gpus.length ? s.gpus.join(", ") : "No GPU found: models run on the processor (slower)"),
+      stat("Disk for models", s.disk_free != null ? fmtBytes(s.disk_free) : "–", s.models_dir ? `free in ${s.models_dir}` : "free space")));
+  }
+  $("#lai-install").hidden = !(installing || inst.state === "failed" || (inst.state === "done" && !s.running));
+  if (!$("#lai-install").hidden) {
+    const msg = $("#lai-install-msg");
+    msg.innerHTML = installing ? '<span class="spinner" aria-hidden="true"></span> ' : "";
+    msg.append(inst.message || "");
+    msg.className = `small ${installing ? "busy" : inst.state === "failed" ? "error" : "ok-text"}`;
+    const log = $("#lai-install-log");
+    log.textContent = inst.log || "";
+    log.scrollTop = log.scrollHeight;
+  }
+  $("#lai-context").hidden = !s.installed;
+  const csel = $("#lai-context-select");
+  csel.innerHTML = s.context_choices.map((n) => `<option value="${n}">${n >= 1024 ? n / 1024 + "k" : n} tokens</option>`).join("");
+  csel.value = String(s.context_length || 4096);
+  $("#lai-context-apply").disabled = !s.can_manage;
+  $("#lai-models-card").hidden = !s.running;
+  $("#lai-get-card").hidden = !s.running;
+  $("#lai-danger").hidden = !s.installed || !s.can_manage || installing;
+}
+
+async function loadLaiModels() {
+  let r, cat;
+  try { [r, cat] = await Promise.all([api("/api/localai/models"), api("/api/localai/catalog")]); }
+  catch (ex) { $("#lai-models").textContent = ex.message; return; }
+  state.laiModels = r;
+  // downloads in progress
+  const pulls = $("#lai-pulls");
+  pulls.innerHTML = "";
+  for (const p of r.pulls) {
+    const pct = p.total ? Math.round(100 * p.completed / p.total) : 0;
+    const done = p.state === "done", failed = p.state === "failed";
+    pulls.append(el("div", { class: "lai-pull" },
+      el("div", { class: "small" }, el("strong", {}, p.name), " · ",
+        el("span", { class: failed ? "error" : done ? "ok-text" : "muted" },
+          failed ? `Failed: ${p.error}` : done ? "Downloaded" : `${p.status}${p.total ? ` — ${fmtBytes(p.completed)} of ${fmtBytes(p.total)} (${pct}%)` : ""}`),
+        p.state === "downloading" ? el("button", { type: "button", class: "small ghost", onclick: async () => {
+          await api("/api/localai/pull/cancel", { method: "POST", body: JSON.stringify({ name: p.name }) }).catch(() => {});
+        } }, "Cancel") : null),
+      p.state === "downloading" ? usageBar(pct) : null));
+  }
+  // installed models
+  const box = $("#lai-models");
+  box.innerHTML = "";
+  if (!r.models.length) box.append(el("p", { class: "muted small" }, "No models yet. Download one below — Qwen 3 8B or Llama 3.1 8B are good starting points."));
+  for (const m of r.models) {
+    const caps = m.capabilities.filter((c) => CAP_LABELS[c]).map((c) => el("span", { class: `tag ${c === "tools" ? "tag-accent" : ""}` }, CAP_LABELS[c]));
+    const actions = el("div", { class: "var-actions" },
+      m.connection
+        ? el("span", { class: "small muted", title: "Already in AI connections" }, `In chat as “${m.connection}”`)
+        : el("button", { type: "button", class: "small", title: m.capabilities.includes("tools") ? "" : "This model can't use tools: it can answer questions but not run commands",
+            onclick: async () => {
+              try { const c = await api("/api/localai/use", { method: "POST", body: JSON.stringify({ name: m.name }) });
+                    toast(`Added to AI connections as “${c.name}”.`); loadChatConnections(); loadLaiModels(); }
+              catch (ex) { toast(ex.message); }
+            } }, withIcon("chat", "Use in chat")),
+      m.loaded ? el("button", { type: "button", class: "small ghost", title: "Free the memory it uses", onclick: async () => {
+        try { await api("/api/localai/unload", { method: "POST", body: JSON.stringify({ name: m.name }) }); loadLaiModels(); } catch (ex) { toast(ex.message); }
+      } }, withIcon("pause", "Unload")) : null,
+      el("button", { type: "button", class: "small ghost danger", onclick: async () => {
+        if (!confirm(`Delete ${m.name} (${fmtBytes(m.size)})?${m.connection ? `\n\nThe AI connection “${m.connection}” will stop working.` : ""}`)) return;
+        try { await api("/api/localai/delete", { method: "POST", body: JSON.stringify({ name: m.name }) }); loadLaiModels(); } catch (ex) { toast(ex.message); }
+      } }, withIcon("trash", "Delete")));
+    box.append(el("div", { class: "var-row lai-model" },
+      el("div", { class: "var-name" }, el("strong", { class: "mono" }, m.name)),
+      el("div", { class: "small" }, [m.parameters, m.quantization, fmtBytes(m.size)].filter(Boolean).join(" · "), " ", caps),
+      el("div", { class: "small" }, m.loaded
+        ? el("span", { class: "ok-text" }, `● Loaded · ${fmtBytes(m.memory)}${m.vram ? ` (${Math.round(100 * m.vram / m.memory)}% on GPU)` : " on CPU"}`)
+        : el("span", { class: "muted" }, "Not loaded (starts on first use)")),
+      actions));
+  }
+  // recommended models
+  const grid = $("#lai-catalog");
+  grid.innerHTML = "";
+  const downloading = new Set(r.pulls.filter((p) => p.state === "downloading").map((p) => p.name));
+  for (const c of cat) {
+    const badges = [c.tools ? el("span", { class: "tag tag-accent" }, "Tools") : el("span", { class: "tag" }, "No tools"),
+                    c.thinking ? el("span", { class: "tag" }, "Thinking") : null, c.vision ? el("span", { class: "tag" }, "Vision") : null];
+    grid.append(el("div", { class: `lai-pick ${c.installed ? "installed" : ""}` },
+      el("div", {}, el("strong", {}, c.title), " ", el("span", { class: "muted small mono" }, c.name)),
+      el("div", { class: "small" }, badges),
+      el("p", { class: "small muted" }, c.about),
+      el("div", { class: `small ${c.fits ? "muted" : "error"}` }, `${c.size} GB download · needs about ${c.ram} GB memory${c.fits ? "" : " — more than this server has"}`),
+      c.installed ? el("span", { class: "small ok-text" }, "✓ Installed")
+        : el("button", { type: "button", class: "small", disabled: downloading.has(c.name), onclick: () => pullModel(c.name) },
+             withIcon("download", downloading.has(c.name) ? "Downloading…" : "Download"))));
+  }
+}
+
+async function pullModel(name) {
+  try { await api("/api/localai/pull", { method: "POST", body: JSON.stringify({ name }) }); toast(`Downloading ${name}…`); }
+  catch (ex) { toast(ex.message); }
+  loadLocalAI();
+}
+$("#lai-pull-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const name = $("#lai-pull-name").value.trim();
+  if (name) { pullModel(name); $("#lai-pull-name").value = ""; }
+});
+$("#lai-context-apply").addEventListener("click", async () => {
+  const n = Number($("#lai-context-select").value);
+  try { const r = await api("/api/localai/context", { method: "POST", body: JSON.stringify({ context_length: n }) }); toast(r.message); }
+  catch (ex) { toast(ex.message); }
+  loadLocalAI();
+});
+$("#lai-uninstall").addEventListener("click", async () => {
+  const del = $("#lai-delete-models").checked;
+  if (!confirm(`Remove Ollama from this server?${del ? "\n\nAll downloaded models will be deleted too." : ""}`)) return;
+  try { const r = await api("/api/localai/uninstall", { method: "POST", body: JSON.stringify({ delete_models: del }) }); toast(r.message); }
+  catch (ex) { toast(ex.message); }
+  loadLocalAI();
 });
 
 // ------------------------------------------------------------ variables module
