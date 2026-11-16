@@ -694,8 +694,14 @@ async def docker_container_recreate(cid: str, body: DockerSpecBody, request: Req
 
 
 @app.get("/api/docker/prepare")
-async def docker_prepare(image: str, name: str = "", user: User = Depends(admin_user)):
-    return await asyncio.to_thread(_dk, containers.prepare, image, name)
+async def docker_prepare(image: str = "", name: str = "", app_id: str = "", user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.prepare, image, name, app_id)
+
+
+@app.get("/api/docker/apps")
+async def docker_apps(user: User = Depends(admin_user)):
+    """Common apps (PostgreSQL, Jellyfin, Nextcloud…) with ready-made settings."""
+    return await asyncio.to_thread(containers.apps_catalog)
 
 
 @app.get("/api/docker/host")
@@ -1148,6 +1154,26 @@ async def put_server_name(body: ServerNameBody, request: Request, user: User = D
     if result["restarting"]:
         _schedule_restart()
     return {**result, "status": await asyncio.to_thread(server_name.status)}
+
+
+class TimezoneBody(BaseModel):
+    timezone: str
+
+
+@app.get("/api/server/timezone")
+async def get_timezone(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(server_name.timezone_status)
+
+
+@app.put("/api/server/timezone")
+async def put_timezone(body: TimezoneBody, request: Request, user: User = Depends(admin_user)):
+    old = await asyncio.to_thread(server_name.get_timezone)
+    try:
+        r = await asyncio.to_thread(server_name.set_timezone, body.timezone)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
+    db.audit("server_timezone", user.username, auth.client_ip(request), {"from": old, "to": r["timezone"]})
+    return {**r, "status": await asyncio.to_thread(server_name.timezone_status)}
 
 
 @app.post("/api/server/reboot")

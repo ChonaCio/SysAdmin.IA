@@ -395,7 +395,7 @@ def inspect(cid: str) -> dict:
         "restart": rp.get("Name") or "no", "command": " ".join(shlex.quote(a) for a in (cfg.get("Cmd") or []))
         if d.get("Args") is not None and cfg.get("Cmd") and cfg.get("Cmd") != _image_cmd(cfg.get("Image")) else "",
         "network": hc.get("NetworkMode") if hc.get("NetworkMode") not in (None, "default") else (nets[0] if nets else "bridge"),
-        "privileged": bool(hc.get("Privileged")), "state": (d.get("State") or {}).get("Status"),
+        "privileged": bool(hc.get("Privileged")), "sysctls": hc.get("Sysctls") or {}, "state": (d.get("State") or {}).get("Status"),
         "labels": cfg.get("Labels") or {}, "created": d.get("Created"),
         "ip": next((n.get("IPAddress") for n in ((d.get("NetworkSettings") or {}).get("Networks") or {}).values() if n.get("IPAddress")), None),
     }
@@ -505,13 +505,94 @@ def image_details(image: str) -> dict | None:
             "labels": cfg.get("Labels") or {}, "workdir": cfg.get("WorkingDir")}
 
 
-def prepare(image: str, name: str = "") -> dict:
-    """Pre-fill the create form for an image: free host ports, shared folders on a drive."""
-    image = _check_image(image)
+def apps_catalog() -> dict:
+    """Common apps (docker_apps.APPS) with whether each is already running here."""
+    from . import docker_apps
+    have: dict[str, list[str]] = {}
+    try:
+        for c in list_containers():
+            have.setdefault(docker_apps.repo(c["image"] or ""), []).append(c["name"])
+    except DockerError:
+        pass
+    apps = []
+    for a in docker_apps.APPS:
+        apps.append({k: a.get(k) for k in ("id", "cat", "title", "image", "logo", "about", "notes", "open", "network")} |
+                    {"ports": [{"container": p["container"], "proto": p.get("proto", "tcp"), "label": p.get("label")} for p in a["ports"]],
+                     "containers": have.get(docker_apps.repo(a["image"]), []),
+                     "needs": [e["label"] for e in a["env"] if e.get("required")] +
+                              [f["label"] for f in a["folders"] if f.get("kind") == "media"]})
+    return {"categories": [{"id": i, "title": t} for i, t in docker_apps.CATEGORIES], "apps": apps}
+
+
+def _prepare_app(app: dict, det: dict, name: str, used: dict[int, str]) -> dict:
+    """Form values from a catalog app's preset. Essential settings (user names, passwords, your media
+    folders) start empty and must be filled in before the container can be created."""
+    base = re.sub(r"[^a-z0-9_.-]", "-", (name or app["id"]).lower()).strip("-.") or app["id"]
+    if not name:   # a second copy of the same app gets postgres-2, postgres-3…
+        try:
+            names = {c["name"] for c in list_containers()}
+        except DockerError:
+            names = set()
+        n, first = 2, base
+        while base in names:
+            base, n = f"{first}-{n}", n + 1
+    taken: set[int] = set()
+    ports = []
+    host_net = app.get("network") == "host"
+    for p in app["ports"]:
+        want = p.get("host", p["container"])
+        host = want if host_net else suggest_port(want, used, taken)
+        taken.add(host)
+        note = p.get("label")
+        if host != want:
+            note = f"{note}. {want} is used by {used.get(want, 'something else')}, so {host} was picked"
+        ports.append({"host": host, "container": p["container"], "proto": p.get("proto", "tcp"),
+                      "ip": "127.0.0.1" if p.get("local") else "", "note": note, "label": p.get("label")})
+    hf = host_folders()
+    root = hf["suggested_root"]
+    media_root = root.rsplit("/appdata", 1)[0] if root.endswith("/appdata") else "/srv"
+    mounts = []
+    for f in app["folders"]:
+        kind = f.get("kind")
+        if kind == "host":
+            src = f["source"]
+        elif kind == "media":
+            src = ""   # the user must choose their own folder (movies, music…)
+        else:
+            src = f"{root}/{base}/{f.get('sub', 'data')}"
+        mounts.append({"type": "bind", "source": src, "target": f["target"], "readonly": bool(f.get("readonly")),
+                       "label": f.get("label"), "media": kind == "media", "required": kind == "media",
+                       "suggest": media_root if kind == "media" else None})
+    from . import server_name
+    tz = server_name.get_timezone() if hasattr(server_name, "get_timezone") else None
+    env = []
+    for e in app["env"]:
+        v = e.get("value", "")
+        if e["key"] in ("TZ", "GENERIC_TIMEZONE") and v == "Etc/UTC" and tz:
+            v = tz   # the server's own time zone
+        env.append({"key": e["key"], "value": v, "label": e.get("label"), "required": bool(e.get("required")),
+                    "secret": bool(e.get("secret")), "generate": bool(e.get("generate")), "placeholder": e.get("placeholder", ""),
+                    "preset": True})
+    return {"present": True, "image": app["image"], "details": det, "name": base, "ports": ports, "mounts": mounts, "env": env,
+            "network": app.get("network") or "bridge", "command": app.get("command", ""), "privileged": bool(app.get("privileged")),
+            "sysctls": app.get("sysctls") or {}, "allow_system_paths": any(f.get("kind") == "host" for f in app["folders"]),
+            "app": {"id": app["id"], "title": app["title"], "notes": app.get("notes"), "open": app.get("open"), "logo": app.get("logo")},
+            "used_ports": {str(k): v for k, v in sorted(used.items())}}
+
+
+def prepare(image: str, name: str = "", app_id: str = "") -> dict:
+    """Pre-fill the create form for an image (or a catalog app): free host ports, shared folders on a drive."""
+    from . import docker_apps
+    app = docker_apps.get(app_id) if app_id else None
+    if app_id and not app:
+        raise DockerError("Unknown app.")
+    image = _check_image(app["image"] if app else image)
     det = image_details(image)
     if det is None:
         return {"present": False, "image": image}
     used = used_host_ports()
+    if app:
+        return _prepare_app(app, det, name, used)
     taken: set[int] = set()
     ports = []
     for p in det["ports"]:
@@ -584,6 +665,8 @@ def validate_spec(spec: dict, exclude_container: str | None = None) -> dict:
         if not target.startswith("/") or ":" in target:
             raise DockerError("The folder inside the container must be an absolute path like /data.")
         if kind == "bind":
+            if not src:
+                raise DockerError(f"Choose the folder on the server for “{m.get('label') or target}”.")
             if not src.startswith("/") or ":" in src or "\n" in src:
                 raise DockerError("The folder on the server must be an absolute path like /mnt/data/app.")
             src = posixpath.normpath(src)
@@ -607,6 +690,16 @@ def validate_spec(spec: dict, exclude_container: str | None = None) -> dict:
             shlex.split(s["command"])
         except ValueError as e:
             raise DockerError(f"Command: {e}")
+    # kernel settings for the container's own network namespace (e.g. a VPN needs ip_forward)
+    s["sysctls"] = {}
+    for k, v in (spec.get("sysctls") or {}).items():
+        if not re.fullmatch(r"net\.[a-z0-9_.]{1,100}", str(k)) or not re.fullmatch(r"[A-Za-z0-9 ._-]{1,50}", str(v)):
+            raise DockerError(f"Unsupported kernel setting: {k}")
+        s["sysctls"][str(k)] = str(v)
+    for e in s["env"]:
+        req = next((x for x in spec.get("env") or [] if (x.get("key") or "").strip() == e["key"]), {})
+        if req.get("required") and not e["value"].strip():
+            raise DockerError(f"Fill in {req.get('label') or e['key']}.")
     return s
 
 
@@ -624,6 +717,8 @@ def _create_body(s: dict) -> dict:
                        "RestartPolicy": {"Name": s["restart"]} if s["restart"] != "on-failure" else {"Name": "on-failure", "MaximumRetryCount": 5},
                        "NetworkMode": s["network"], "Privileged": s["privileged"]},
     }
+    if s["sysctls"]:
+        body["HostConfig"]["Sysctls"] = s["sysctls"]
     if s["command"]:
         body["Cmd"] = shlex.split(s["command"])
     return body
@@ -735,8 +830,32 @@ def create_container(spec: dict) -> dict:
     return _task("create", f"Create {s['name']}", run)
 
 
-def recreate_container(cid: str, spec: dict) -> dict:
-    """Edit = make a new container with the new settings, keep the old one until the new one runs."""
+def _sync_upd(lines: list[str]):
+    """Progress callback for jobs that wait for the result: keep the log lines, ignore the rest."""
+    def upd(**kw):
+        if "line" in kw:
+            lines.append(str(kw["line"]))
+    return upd
+
+
+def update_container(name: str) -> dict:
+    """Download the newest version of a container's image; recreate the container if it changed (blocking)."""
+    old = inspect(name)
+    before = _req("GET", f"/containers/{old['id']}/json").get("Image")
+    lines: list[str] = []
+    _pull(old["image"], _sync_upd(lines))
+    after = (_req("GET", f"/images/{urllib.parse.quote(old['image'], safe='')}/json") or {}).get("Id")
+    if not after or after == before:
+        return {"updated": False, "image": old["image"], "log": lines}
+    spec = {**old, "start": old["state"] == "running" or old["state"] == "restarting",
+            "allow_system_paths": any(m["type"] == "bind" and _is_system_path(m["source"]) for m in old["mounts"])}
+    recreate_container(old["id"], spec, wait=True)
+    return {"updated": True, "image": old["image"], "old": _short_id(before), "new": _short_id(after), "log": lines}
+
+
+def recreate_container(cid: str, spec: dict, wait: bool = False) -> dict:
+    """Edit = make a new container with the new settings, keep the old one until the new one runs.
+    wait=True runs it here and returns the result (for jobs) instead of starting a background task."""
     old = inspect(cid)
     s = validate_spec(spec, exclude_container=old["id"])
 
@@ -772,6 +891,8 @@ def recreate_container(cid: str, spec: dict) -> dict:
         upd(status="Removing the old container")
         _req("DELETE", f"/containers/{old['id']}", {"force": "1", "v": "0"})
         return {"id": r["Id"]}
+    if wait:
+        return run(_sync_upd([]))
     return _task("recreate", f"Update {old['name']}", run)
 
 
@@ -987,7 +1108,7 @@ def save_stack(name: str, compose: str, env: str = "") -> dict:
     return get_stack(name)
 
 
-def stack_action(name: str, action: str) -> dict:
+def stack_action(name: str, action: str, wait: bool = False) -> dict:
     _check_stack(name)
     if not (_stacks_dir() / name / "compose.yaml").is_file():
         raise DockerError("This stack wasn't created here, so its compose file isn't available.")
@@ -1009,6 +1130,10 @@ def stack_action(name: str, action: str) -> dict:
         if p.returncode != 0:
             raise DockerError((p.stderr or p.stdout).strip()[-1500:] or f"docker compose {action} failed")
         return {"ok": True}
+    if wait:
+        lines: list[str] = []
+        res = run(_sync_upd(lines))
+        return {**res, "log": lines}
     return _task("stack", f"Stack {name}: {action.replace('_', ' ')}", run)
 
 

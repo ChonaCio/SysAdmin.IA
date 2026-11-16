@@ -19,6 +19,9 @@
 #                                   the current name and IP addresses
 #   sysadmin-ia-hostname status     print the name and LAN-discovery state (no changes)
 #   sysadmin-ia-hostname reboot     reboot the server (after a few seconds)
+#   sysadmin-ia-hostname timezone ZONE
+#                                   set the server's time zone (e.g. Europe/Madrid; must exist in
+#                                   /usr/share/zoneinfo)
 #   sysadmin-ia-hostname mount DEV NAME [--persist] [--readonly]
 #                                   mount block device DEV at /mnt/NAME (nosuid,nodev; FAT/
 #                                   exFAT/NTFS owned by the service user); --persist adds an
@@ -547,6 +550,22 @@ do_ollama_uninstall() {  # ollama-uninstall [--delete-models]
   fi
 }
 
+# ---------------------------------------------------------------- time zone
+do_timezone() {  # timezone ZONE   (e.g. Europe/Madrid)
+  local zone="$1"
+  [[ "$zone" =~ ^[A-Za-z0-9_+-]{1,40}(/[A-Za-z0-9_+-]{1,40}){0,2}$ ]] || die "invalid time zone"
+  [[ -f "/usr/share/zoneinfo/${zone}" ]] || die "unknown time zone: ${zone}"
+  if command -v timedatectl >/dev/null && [[ -d /run/systemd/system ]]; then
+    timedatectl set-timezone "$zone"
+  else
+    ln -sf "/usr/share/zoneinfo/${zone}" /etc/localtime
+    echo "$zone" > /etc/timezone
+  fi
+  # Debian/Ubuntu also keep it in /etc/timezone
+  [[ -f /etc/timezone ]] && echo "$zone" > /etc/timezone
+  echo "Time zone set to ${zone}. Local time is now $(date '+%Y-%m-%d %H:%M %Z')."
+}
+
 # ---------------------------------------------------------------- Docker (containers module)
 DOCKER_LOG="${LOG_DIR}/docker.log"
 DOCKER_STATUS="${LOG_DIR}/docker.status"
@@ -663,6 +682,7 @@ do_docker_uninstall() {  # docker-uninstall [--delete-data]
 }
 
 case "${1:-}" in
+  timezone)         [[ $# -eq 2 ]] || die "usage: $0 timezone ZONE"; do_timezone "$2" ;;
   docker-install)   do_docker_install ;;
   _docker-install-run) do_docker_install_run ;;
   docker-access)    [[ $# -eq 2 ]] || die "usage: $0 docker-access grant|revoke"; do_docker_access "$2" ;;
@@ -683,5 +703,5 @@ case "${1:-}" in
   install) do_install ;;
   upgrade) [[ $# -eq 3 ]] || die "usage: $0 upgrade REF VERSION"; do_upgrade "$2" "$3" ;;
   _upgrade-run) [[ $# -eq 3 ]] || die "usage: $0 _upgrade-run REF VERSION"; do_upgrade_run "$2" "$3" ;;
-  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION|mount DEV NAME|unmount DIR|ollama-install|ollama-service ACTION|ollama-context N|ollama-uninstall|docker-install|docker-access ACTION|docker-service ACTION|docker-uninstall}" ;;
+  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION|mount DEV NAME|unmount DIR|ollama-install|ollama-service ACTION|ollama-context N|ollama-uninstall|docker-install|docker-access ACTION|docker-service ACTION|docker-uninstall|timezone ZONE}" ;;
 esac

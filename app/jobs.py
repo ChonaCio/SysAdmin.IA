@@ -119,14 +119,56 @@ TRIGGERS: dict[str, dict] = {
         ],
         "placeholders": COMMON_TRIGGER_PLACEHOLDERS + ["trigger.services"],
     },
+    # ---- containers (Docker)
+    "container_down": {
+        "label": "Container stopped", "icon": "box", "group": "Containers",
+        "description": "When a container that was running stops, crashes, keeps restarting or (optionally) reports itself unhealthy.",
+        "fields": [
+            {"key": "container", "label": "Container", "type": "choice", "source": "containers", "any": "Any container that was running",
+             "default": "*", "help": "“Any” watches every container seen running since the job was saved (also if someone stops it)."},
+            {"key": "unhealthy", "label": "Also when its health check says “unhealthy”", "type": "bool", "default": True},
+            {"key": "for_minutes", "label": "For at least … minutes", "type": "number", "min": 0, "max": 1440, "default": 1,
+             "help": "Avoids alerts during a quick restart or update."},
+            REPEAT, RECOVER,
+        ],
+        "placeholders": COMMON_TRIGGER_PLACEHOLDERS + ["trigger.container", "trigger.containers", "trigger.status"],
+    },
+    "docker_down": {
+        "label": "Docker stopped", "icon": "box", "group": "Containers",
+        "description": "When the Docker service itself isn't running (all containers are down).",
+        "fields": [{"key": "for_minutes", "label": "For at least … minutes", "type": "number", "min": 0, "max": 1440, "default": 1},
+                   REPEAT, RECOVER],
+        "placeholders": COMMON_TRIGGER_PLACEHOLDERS,
+    },
+    # ---- AI
+    "ollama_down": {
+        "label": "Local AI stopped", "icon": "chip", "group": "AI",
+        "description": "When Ollama (Local AI) is installed but not answering.",
+        "fields": [{"key": "for_minutes", "label": "For at least … minutes", "type": "number", "min": 0, "max": 1440, "default": 2},
+                   REPEAT, RECOVER],
+        "placeholders": COMMON_TRIGGER_PLACEHOLDERS,
+    },
+    "ai_usage": {
+        "label": "AI usage", "icon": "ai", "group": "AI",
+        "description": "When an AI connection has used a lot of tokens this month (to control costs).",
+        "fields": [
+            {"key": "connection", "label": "AI connection", "type": "ai_connection", "default": ""},
+            {"key": "measure", "label": "Measure", "type": "select", "default": "percent",
+             "options": [["percent", "% of its monthly limit"], ["tokens", "Tokens used this month"]]},
+            {"key": "threshold", "label": "Above", "type": "number", "min": 1, "max": 1e12, "default": 80,
+             "help": "A percentage (needs a monthly limit set in AI connections) or a number of tokens."},
+            REPEAT, RECOVER,
+        ],
+        "placeholders": COMMON_TRIGGER_PLACEHOLDERS + ["trigger.connection", "trigger.tokens", "trigger.limit"],
+    },
     "update_available": {
-        "label": "Update available", "icon": "refresh", "group": "App",
+        "label": "Update available", "icon": "refresh", "group": "SysAdmin.IA",
         "description": "When a newer version of SysAdmin.IA is published (checked hourly).",
         "fields": [],
         "placeholders": ["trigger.summary", "update.current", "update.latest", "update.notes"],
     },
     "app_started": {
-        "label": "App started", "icon": "login", "group": "App",
+        "label": "App started", "icon": "login", "group": "SysAdmin.IA",
         "description": "When SysAdmin.IA starts, e.g. after a reboot or an update.",
         "fields": [],
         "placeholders": ["trigger.summary", "trigger.time"],
@@ -147,7 +189,7 @@ TRIGGERS: dict[str, dict] = {
 
 ACTIONS: dict[str, dict] = {
     "send_mail": {
-        "label": "Send an email", "icon": "mail",
+        "label": "Send an email", "icon": "mail", "group": "Notify",
         "description": "Send a message, e.g. a warning with the details of what happened.",
         "fields": [
             {"key": "account", "label": "Send with", "type": "mail_account", "required": True, "need": "send"},
@@ -160,7 +202,7 @@ ACTIONS: dict[str, dict] = {
         "provides": [],
     },
     "webhook": {
-        "label": "Call a webhook", "icon": "login",
+        "label": "Call a webhook", "icon": "login", "group": "Notify",
         "description": "Send a message to Slack, Teams, Discord, ntfy or any web address.",
         "fields": [
             {"key": "url", "label": "Address (URL)", "type": "text", "required": True, "placeholder": "https://hooks.slack.com/services/…"},
@@ -172,7 +214,7 @@ ACTIONS: dict[str, dict] = {
         "provides": ["last.output"],
     },
     "run_command": {
-        "label": "Run a command", "icon": "console",
+        "label": "Run a command", "icon": "console", "group": "Server",
         "description": "Run a shell command on the server (as the app's user; sudo only with full access). Its output can be used by later actions.",
         "fields": [
             {"key": "command", "label": "Command", "type": "textarea", "required": True, "mono": True, "placeholder": "df -h"},
@@ -180,8 +222,50 @@ ACTIONS: dict[str, dict] = {
         ],
         "provides": ["last.output", "last.exit_code"],
     },
+    # ---- containers
+    "container_action": {
+        "label": "Start, stop or restart a container", "icon": "box", "group": "Containers",
+        "description": "Control a Docker container, e.g. restart it when it stops answering.",
+        "fields": [
+            {"key": "container", "label": "Container", "type": "choice", "source": "containers", "required": True,
+             "extra": [["{{trigger.container}}", "The container from the trigger (“Container stopped”)"]]},
+            {"key": "action", "label": "Do", "type": "select", "default": "restart",
+             "options": [["restart", "Restart"], ["start", "Start"], ["stop", "Stop"]]},
+        ],
+        "provides": ["last.output"],
+    },
+    "container_update": {
+        "label": "Update a container", "icon": "download", "group": "Containers",
+        "description": "Download the newest version of a container's image and recreate the container if there is one "
+                       "(same ports, folders and settings).",
+        "fields": [{"key": "container", "label": "Container", "type": "choice", "source": "containers", "required": True}],
+        "provides": ["last.output", "container.updated"],
+    },
+    "stack_action": {
+        "label": "Start, stop or update a stack", "icon": "box", "group": "Containers",
+        "description": "Run a Docker Compose stack created in the Containers module.",
+        "fields": [
+            {"key": "stack", "label": "Stack", "type": "choice", "source": "stacks", "required": True},
+            {"key": "action", "label": "Do", "type": "select", "default": "up",
+             "options": [["up", "Update and start (pull newer images)"], ["restart", "Restart"], ["start", "Start"], ["stop", "Stop"]]},
+        ],
+        "provides": ["last.output"],
+    },
+    "docker_prune": {
+        "label": "Clean up Docker", "icon": "trash", "group": "Containers",
+        "description": "Free disk space: delete stopped containers, unused images, networks and build cache.",
+        "fields": [
+            {"key": "containers", "label": "Stopped containers", "type": "bool", "default": True},
+            {"key": "images", "label": "Images not used by any container", "type": "bool", "default": True},
+            {"key": "networks", "label": "Unused networks", "type": "bool", "default": True},
+            {"key": "build_cache", "label": "Build cache", "type": "bool", "default": True},
+            {"key": "volumes", "label": "Unused volumes (deletes their data!)", "type": "bool", "default": False},
+        ],
+        "provides": ["last.output"],
+    },
+    # ---- AI
     "ask_ai": {
-        "label": "Ask the AI", "icon": "ai",
+        "label": "Ask the AI", "icon": "ai", "group": "AI",
         "description": "Ask an AI connection a question (e.g. “explain this and suggest a fix”); its answer can be used in later actions.",
         "fields": [
             {"key": "connection", "label": "AI connection", "type": "ai_connection", "default": ""},
@@ -190,15 +274,30 @@ ACTIONS: dict[str, dict] = {
         ],
         "provides": ["ai.answer", "last.output"],
     },
+    "pull_model": {
+        "label": "Download or update a local AI model", "icon": "chip", "group": "AI",
+        "description": "Download a model into Local AI (Ollama), or fetch its newest version if it's already installed.",
+        "fields": [{"key": "model", "label": "Model", "type": "choice", "source": "local_models", "required": True, "free": True,
+                    "placeholder": "e.g. qwen3:8b", "help": "An installed model, or any name from the Ollama library or hf.co/…"}],
+        "provides": ["last.output"],
+    },
+    "ollama_service": {
+        "label": "Start, stop or restart Local AI", "icon": "chip", "group": "AI",
+        "description": "Control the Ollama service, e.g. restart it when it stops answering.",
+        "fields": [{"key": "action", "label": "Do", "type": "select", "default": "restart",
+                    "options": [["restart", "Restart"], ["start", "Start"], ["stop", "Stop"]]}],
+        "provides": ["last.output"],
+    },
+    # ---- app
     "check_updates": {
-        "label": "Check for updates", "icon": "refresh",
+        "label": "Check for updates", "icon": "refresh", "group": "SysAdmin.IA",
         "description": "Check GitHub for a newer version of SysAdmin.IA, and optionally install it.",
         "fields": [{"key": "install", "label": "Install it if there is one", "type": "bool", "default": False,
                     "help": "The app restarts during the installation."}],
         "provides": ["update.available", "update.current", "update.latest", "last.output"],
     },
     "set_variable": {
-        "label": "Set a variable", "icon": "edit",
+        "label": "Set a variable", "icon": "edit", "group": "SysAdmin.IA",
         "description": "Store a value in a global variable (created if needed), e.g. the time of the last alert.",
         "fields": [
             {"key": "name", "label": "Variable", "type": "variable", "required": True},
@@ -234,7 +333,24 @@ def catalog() -> dict:
                                 "sys.os", "sys.version", "sys.url"],
         "monitor_placeholders": [{"key": f"mon.{m['key']}", "label": m["label"], "group": m["group"]}
                                  for m in V.monitor_values()],
+        "choices": _choices(),
     }
+
+
+def _choices() -> dict[str, list[list[str]]]:
+    """Lists for "choice" fields: containers, stacks, installed local AI models (empty if unavailable)."""
+    from . import containers, local_ai
+    out: dict[str, list[list[str]]] = {"containers": [], "stacks": [], "local_models": []}
+    try:
+        out["containers"] = [[c["name"], f"{c['name']} ({c['image']}, {c['state']})"] for c in containers.list_containers()]
+        out["stacks"] = [[s["name"], s["name"]] for s in containers.list_stacks() if s["managed"]]
+    except Exception:
+        pass
+    try:
+        out["local_models"] = [[m, m] for m in local_ai.installed_names()]
+    except Exception:
+        pass
+    return out
 
 
 # ---------------------------------------------------------------- schedules
@@ -364,6 +480,20 @@ def describe_trigger(t: dict) -> str:
         return f"When {where} is hotter than {t.get('threshold')} °C{_again(t)}"
     if ty == "service_failed":
         return f"When {'service ' + t['service'] if t.get('service') else 'any service'} has failed{_again(t)}"
+    if ty == "container_down":
+        who = "any running container" if t.get("container") in ("", "*", None) else f"container {t['container']}"
+        dur = int(t.get("for_minutes") or 0)
+        return (f"When {who} stops{' or is unhealthy' if t.get('unhealthy') else ''}"
+                f"{f' for {dur} min' if dur else ''}{_again(t)}")
+    if ty == "docker_down":
+        return f"When Docker isn't running{_again(t)}"
+    if ty == "ollama_down":
+        return f"When Local AI (Ollama) isn't answering{_again(t)}"
+    if ty == "ai_usage":
+        from . import ai_connections as ai
+        c = ai.get(int(t["connection"])) if t.get("connection") else ai.default()
+        what = f"{t.get('threshold'):g}% of its monthly limit" if t.get("measure") == "percent" else f"{int(t.get('threshold') or 0):,} tokens this month"
+        return f"When {c['name'] if c else 'the AI connection'} has used over {what}{_again(t)}"
     if ty == "update_available":
         return "When a new version of SysAdmin.IA is available"
     if ty == "app_started":
@@ -393,6 +523,19 @@ def describe_action(a: dict) -> str:
         from . import ai_connections as ai
         c = ai.get(int(a["connection"])) if a.get("connection") else ai.default()
         return f"Ask {c['name'] if c else 'the AI'}"
+    if ty == "container_action":
+        who = "the container from the trigger" if "{{" in (a.get("container") or "") else a.get("container")
+        return f"{(a.get('action') or 'restart').capitalize()} {who}"
+    if ty == "container_update":
+        return f"Update container {a.get('container')}"
+    if ty == "stack_action":
+        return f"{'Update and start' if a.get('action') == 'up' else (a.get('action') or '').capitalize()} stack {a.get('stack')}"
+    if ty == "docker_prune":
+        return "Clean up Docker"
+    if ty == "pull_model":
+        return f"Download model {a.get('model')}"
+    if ty == "ollama_service":
+        return f"{(a.get('action') or 'restart').capitalize()} Local AI"
     if ty == "check_updates":
         return "Check for updates" + (" and install them" if a.get("install") else "")
     if ty == "set_variable":
@@ -466,6 +609,10 @@ def _clean_items(items: list, catalog_: dict, what: str) -> list[dict]:
                 v = acc["id"]
             if ft == "ai_connection" and v and not ai.get(int(v)):
                 raise JobError(f"{label}: that AI connection no longer exists.")
+            if ft == "choice" and v:
+                allowed = {e[0] for e in f.get("extra") or []} | ({"*"} if f.get("any") else set())
+                if v not in allowed and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/@-]{0,200}", v):
+                    raise JobError(f"{label}: invalid “{f['label']}”.")
             if ft == "variable" and not V.NAME_RE.fullmatch(v):
                 raise JobError(f"{label}: variable names start with a letter and use letters, digits and _.")
             if k == "url" and not re.match(r"^https?://", v) and "{{" not in v:
@@ -732,8 +879,100 @@ async def _act_set_variable(a: dict, ctx: dict) -> tuple[str, str]:
     return f"{a['name']}: “{old[:100]}” → “{value[:200]}”", f"Before:\n{old}\n\nAfter:\n{value}"
 
 
+def _docker_call(fn, *a, **kw):
+    from . import containers
+    try:
+        return fn(*a, **kw)
+    except containers.DockerError as e:
+        raise JobError(containers._err_text(e))
+
+
+async def _act_container_action(a: dict, ctx: dict) -> tuple[str, str]:
+    from . import containers
+    name = V.render(a["container"], ctx).strip()
+    if not name:
+        raise JobError("No container: the trigger didn't name one.")
+    action = a.get("action") or "restart"
+    await asyncio.to_thread(_docker_call, containers.container_action, name, action)
+    msg = f"{ {'start': 'Started', 'stop': 'Stopped', 'restart': 'Restarted'}[action]} container {name}."
+    ctx["last"] = {"output": msg}
+    return msg, ""
+
+
+async def _act_container_update(a: dict, ctx: dict) -> tuple[str, str]:
+    from . import containers
+    name = V.render(a["container"], ctx).strip()
+    r = await asyncio.to_thread(_docker_call, containers.update_container, name)
+    ctx["container"] = {"updated": "yes" if r["updated"] else "no"}
+    msg = (f"Updated {name}: {r['image']} {r['old']} → {r['new']}; the container was recreated with the same settings."
+           if r["updated"] else f"{name} is up to date ({r['image']}).")
+    ctx["last"] = {"output": msg}
+    return msg, "\n".join(r.get("log") or [])
+
+
+async def _act_stack_action(a: dict, ctx: dict) -> tuple[str, str]:
+    from . import containers
+    r = await asyncio.to_thread(_docker_call, containers.stack_action, a["stack"], a.get("action") or "up", True)
+    msg = f"Stack {a['stack']}: {describe_action(a).split(' stack ')[0].lower()} done."
+    ctx["last"] = {"output": msg}
+    return msg, "\n".join(r.get("log") or [])
+
+
+async def _act_docker_prune(a: dict, ctx: dict) -> tuple[str, str]:
+    from . import containers
+    what = [k for k in ("containers", "images", "networks", "build_cache", "volumes") if a.get(k)]
+    if not what:
+        return "Nothing selected to clean up.", ""
+    r = await asyncio.to_thread(_docker_call, containers.prune, what)
+    freed = r["freed"]
+    size = f"{freed / 1e9:.1f} GB" if freed >= 1e9 else f"{freed / 1e6:.0f} MB"
+    removed = ", ".join(f"{v} {k}" for k, v in r["removed"].items() if v)
+    msg = f"Freed {size}" + (f" ({removed} removed)." if removed else ".")
+    ctx["last"] = {"output": msg}
+    return msg, ""
+
+
+async def _act_pull_model(a: dict, ctx: dict) -> tuple[str, str]:
+    from . import local_ai
+    name = V.render(a["model"], ctx).strip()
+    try:
+        name = local_ai.check_name(name)
+        await asyncio.to_thread(local_ai.pull, name)
+    except local_ai.LocalAIError as e:
+        raise JobError(str(e))
+    deadline = time.time() + 4 * 3600
+    while time.time() < deadline:
+        await asyncio.sleep(3)
+        p = next((x for x in local_ai.pull_progress() if x["name"] == name), None)
+        if not p or p["state"] == "downloading":
+            continue
+        if p["state"] == "failed":
+            raise JobError(f"Downloading {name} failed: {p.get('error')}")
+        if p["state"] == "cancelled":
+            raise JobError(f"Downloading {name} was cancelled.")
+        size = p.get("total") or 0
+        msg = f"{name} is downloaded and up to date" + (f" ({size / 1e9:.1f} GB)." if size else ".")
+        ctx["last"] = {"output": msg}
+        return msg, ""
+    raise JobError(f"Downloading {name} took more than 4 hours.")
+
+
+async def _act_ollama_service(a: dict, ctx: dict) -> tuple[str, str]:
+    from . import local_ai
+    action = a.get("action") or "restart"
+    try:
+        out = await asyncio.to_thread(local_ai.helper, "ollama-service", action)
+    except local_ai.LocalAIError as e:
+        raise JobError(str(e))
+    ctx["last"] = {"output": out}
+    return out.strip() or f"Local AI: {action} done.", ""
+
+
 ACTION_FUNCS = {"send_mail": _act_send_mail, "webhook": _act_webhook, "run_command": _act_run_command,
-                "ask_ai": _act_ask_ai, "check_updates": _act_check_updates, "set_variable": _act_set_variable}
+                "ask_ai": _act_ask_ai, "check_updates": _act_check_updates, "set_variable": _act_set_variable,
+                "container_action": _act_container_action, "container_update": _act_container_update,
+                "stack_action": _act_stack_action, "docker_prune": _act_docker_prune,
+                "pull_model": _act_pull_model, "ollama_service": _act_ollama_service}
 
 
 # ---------------------------------------------------------------- engine
@@ -799,6 +1038,18 @@ class JobEngine:
         if "service_failed" in types:
             from . import monitor
             snap["services"] = await monitor.services()
+        if types & {"container_down", "docker_down"}:
+            from . import containers
+            snap["docker_installed"] = bool(containers._binary()) or containers.DOCKER_HOST.startswith("tcp://")
+            try:
+                snap["containers"] = await asyncio.to_thread(containers.list_containers)
+            except Exception as e:  # Docker stopped, not installed or no access
+                snap["containers"] = None
+                snap["docker_error"] = str(e)
+        if "ollama_down" in types:
+            from . import local_ai
+            snap["ollama_installed"] = bool(local_ai._binary())
+            snap["ollama_version"] = await asyncio.to_thread(local_ai.running_version)
         if "update_available" in types and time.time() - self._last_update_check > 3600:
             from . import updater
             self._last_update_check = time.time()
@@ -849,7 +1100,7 @@ class JobEngine:
         if ty == "app_started":
             return None
         # condition triggers
-        alert, ctx = self._condition(t, snap)
+        alert, ctx = self._condition(t, snap, st)
         if alert is None:
             return None
         ctx.update({"time": stamp, "threshold": t.get("threshold")})
@@ -875,9 +1126,69 @@ class JobEngine:
                     out.append(({**ctx, "summary": summary, "state": "recovered"}, summary))
         return out
 
-    def _condition(self, t: dict, snap: dict) -> tuple[bool | None, dict]:
+    def _condition(self, t: dict, snap: dict, st: dict | None = None) -> tuple[bool | None, dict]:
         ty, thr = t["type"], float(t.get("threshold") or 0)
         stats = snap.get("stats") or {}
+        st = st if st is not None else {}
+        if ty == "docker_down":
+            if not snap.get("docker_installed"):
+                return None, {}
+            if snap.get("containers") is None and "no access" in (snap.get("docker_error") or "").lower():
+                return None, {}   # can't tell: the app has no access to Docker
+            down = snap.get("containers") is None
+            return down, {"value": "stopped" if down else "running",
+                          "summary": f"Docker isn't running: {snap.get('docker_error') or ''}".strip(": "),
+                          "ok_summary": "Docker is running again"}
+        if ty == "container_down":
+            cs = snap.get("containers")
+            if cs is None:
+                return None, {}
+            want = t.get("container") or "*"
+            bad_state = lambda c: c["state"] in ("exited", "dead", "restarting") or (  # noqa: E731
+                t.get("unhealthy") and "(unhealthy)" in (c.get("status") or ""))
+            if want == "*":
+                # watch every container seen running since the trigger was saved
+                watch = set(st.get("watch") or [])
+                names = {c["name"] for c in cs}
+                watch = (watch & names) | {c["name"] for c in cs if c["state"] == "running" and not bad_state(c)}
+                st["watch"] = sorted(watch)
+                pick = [c for c in cs if c["name"] in watch]
+            else:
+                pick = [c for c in cs if c["name"] == want]
+                if not pick:   # removed: report it as down
+                    return True, {"value": "missing", "container": want, "containers": want,
+                                  "summary": f"Container {want} doesn't exist any more", "ok_summary": f"Container {want} is back"}
+            down = [c for c in pick if bad_state(c)]
+            names = ", ".join(c["name"] for c in down)
+            first = down[0] if down else (pick[0] if pick else {"name": want, "status": ""})
+            return bool(down), {"value": first.get("status", ""), "status": first.get("status", ""), "container": first["name"],
+                                "containers": names,
+                                "summary": (f"Container {first['name']} is down: {first.get('status')}" if len(down) == 1
+                                            else f"{len(down)} containers are down: {names}"),
+                                "ok_summary": f"Container{'s' if want == '*' else ' ' + want} running again"}
+        if ty == "ollama_down":
+            if not snap.get("ollama_installed"):
+                return None, {}
+            down = snap.get("ollama_version") is None
+            return down, {"value": "stopped" if down else snap.get("ollama_version"),
+                          "summary": "Local AI (Ollama) isn't answering", "ok_summary": "Local AI (Ollama) is answering again"}
+        if ty == "ai_usage":
+            from . import ai_connections as ai
+            c = ai.get(int(t["connection"])) if t.get("connection") else ai.default()
+            if not c:
+                return None, {}
+            u = ai.usage_summary(c)
+            tokens = int(u["month"]["tokens"])
+            if t.get("measure") == "percent":
+                if not u["limit"]:
+                    return None, {}
+                v = u["used_pct"] or 0
+                val = f"{v:g}%"
+            else:
+                v, val = tokens, f"{tokens:,} tokens"
+            return v >= thr, {"value": val, "connection": c["name"], "tokens": f"{tokens:,}", "limit": f"{u['limit']:,}" if u["limit"] else "",
+                              "summary": f"{c['name']} has used {val} this month" + (f" (limit {u['limit']:,})" if u["limit"] else ""),
+                              "ok_summary": f"{c['name']} usage is back below the threshold"}
         if ty == "disk_usage":
             disks = stats.get("disks") or []
             pick = disks if t.get("mount") in ("", "*", None) else [d for d in disks if d["mount"] == t["mount"]]

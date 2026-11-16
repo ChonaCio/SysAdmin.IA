@@ -242,6 +242,23 @@
           </div>
         </form>
       </div>
+      <div class="card admin-only" id="tz-card">
+        <h3>Time zone <span class="status-pill" id="tz-status"></span></h3>
+        <form id="tz-form" class="settings-form" autocomplete="off">
+          <label>Server time zone
+            <span class="row">
+              <input name="timezone" list="tz-list" spellcheck="false" placeholder="Type a city, e.g. Madrid or New_York" required>
+              <datalist id="tz-list"></datalist>
+              <button class="primary" id="tz-save">Change</button>
+            </span>
+            <span class="muted small" id="tz-now"></span>
+          </label>
+          <div class="row tz-quick" id="tz-quick"></div>
+          <pre class="update-notes mono small" id="tz-setup" hidden></pre>
+          <span class="small" id="tz-msg" hidden></span>
+          <span class="muted small">Used by the server's clock, logs, job schedules and the containers created from the App catalog.</span>
+        </form>
+      </div>
       <div class="card admin-only">
         <h3>Audit log <button id="refresh-audit" class="ghost small">Refresh</button></h3>
         <div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>User</th><th>IP</th><th>Action</th><th>Detail</th></tr></thead><tbody id="audit"></tbody></table></div>
@@ -418,6 +435,7 @@
         <div class="dk-tabs-row">
           <div class="seg dk-tabs" id="dk-tabs" role="tablist">
             <button type="button" class="seg-btn active" data-tab="containers">Containers</button>
+            <button type="button" class="seg-btn" data-tab="apps">App catalog</button>
             <button type="button" class="seg-btn" data-tab="images">Images</button>
             <button type="button" class="seg-btn" data-tab="stacks">Stacks</button>
             <button type="button" class="seg-btn" data-tab="volumes">Volumes</button>

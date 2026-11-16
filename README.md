@@ -48,6 +48,10 @@ Change the name later in **Admin → Server name**, or with `sudo sysadmin-ia se
 
 No reboot is needed: the new name works right away. If a device on the network still uses the old name (for example, a router that registered it), use **Reboot server** in the same card, or `sudo sysadmin-ia reboot`.
 
+### Time zone
+
+**Admin → Time zone** shows the server's time zone, its current time and whether the clock is synchronized with internet time (NTP). Type a city to pick another zone (e.g. `Europe/Madrid`), or click **Use my time zone** to copy your browser's. It's changed through the app's helper (`timedatectl set-timezone`). The server clock, logs and job schedules switch to the new local time right away, and containers from the App catalog get it as their `TZ` setting.
+
 These steps need root, so the installer adds a small root-owned helper, `/usr/local/sbin/sysadmin-ia-hostname`, which the `sysadmin-ia` user may run through sudo. This works even without full access; the helper can only do the steps above, reboot, and install updates from the configured GitHub repository. If the app was updated from GitHub and the helper is missing or outdated, the app installs or refreshes it by itself when it has full access. Without full access, the card shows a one-time command to run as root instead:
 
 ```bash
@@ -176,6 +180,26 @@ The **Containers** module (Server) runs apps in [Docker](https://www.docker.com)
      - **Settings:** environment variables (e.g. `TZ`, passwords).
      - **When it stops:** the restart policy.
      - **Advanced:** command, privileged mode, and sharing system folders. System folders such as `/etc` or the Docker socket are refused unless you tick the box.
+- **App catalog:** about 35 popular apps, searchable and grouped by category, ready to install with recommended settings:
+  - **Databases:** PostgreSQL, MariaDB, MySQL, MongoDB, Redis, Valkey, InfluxDB.
+  - **Database tools:** Adminer, pgAdmin.
+  - **Web servers & proxies:** nginx, Apache, Caddy, Nginx Proxy Manager.
+  - **Media:** Jellyfin, Plex, Navidrome, Audiobookshelf.
+  - **Files & sync:** Nextcloud, File Browser, Syncthing.
+  - **Home & network:** Home Assistant, Pi-hole, AdGuard Home, Mosquitto.
+  - **Monitoring & management:** Uptime Kuma, Grafana, Prometheus, Portainer, Dozzle, Watchtower.
+  - **Development & automation:** Gitea, n8n, code-server, RabbitMQ, Docker Registry.
+  - **Security:** Vaultwarden, WireGuard (wg-easy).
+
+  **Install** downloads the image and fills in the form:
+  - the app's ports, with free server ports picked if they're taken;
+  - its data folders on your data drive (e.g. `/mnt/media/appdata/postgres/data`);
+  - its settings, with descriptions, and the time zone set to the server's;
+  - anything special it needs: the server's network for Home Assistant and Plex, kernel network settings for WireGuard, the Docker socket for Portainer.
+
+  **What you must choose yourself** is listed at the top of the form and marked `*`: for example the PostgreSQL superuser name and password, MariaDB/MySQL root passwords, admin users and passwords for pgAdmin, Grafana, RabbitMQ, code-server and Pi-hole, and the folder with your movies or music for Jellyfin, Plex, Navidrome, Audiobookshelf and File Browser. These start empty, and the container can't be created until they're filled in. Password fields have **Generate** (a random password; copy it somewhere safe) and **Show**.
+
+  Notes from each app's documentation are shown at the top of the form. Apps you already run show **Running as …** and an **Open** button. **Install again** adds another copy with its own name and ports (e.g. `postgres-2` on port 5433).
 - **Edit** changes ports, folders, settings or the image version (**Download the newest version** updates the app). Docker can't change a container's ports or folders in place, so the container is recreated. The old one is kept until the new one starts, and put back if the new one fails. Data in shared folders and volumes is kept.
 - **Images:** download, update or delete images, search Docker Hub, and create a container from an image.
 - **Stacks:** several containers in one Docker Compose file (e.g. an app and its database). Paste the `docker-compose.yml` from an app's documentation, with optional `.env` values. It's checked before saving. A button inserts a folder path from your drives. You can **Start**, **Update** (pull newer images and recreate), **Stop**, view **Logs**, **Edit** or **Delete** a stack. Stacks are stored in `/var/lib/sysadmin-ia/stacks/NAME/`. Stacks started outside the app are listed but read-only.
@@ -227,20 +251,32 @@ Existing installations need the updated root helper for install and service cont
 | System load | 5-minute load per CPU core over N |
 | Temperature | A sensor (or any sensor) over N °C |
 | Service failed | A systemd service (or any service) has failed |
+| Container stopped | A container (or any container seen running) stops, crashes, keeps restarting or is unhealthy, optionally for N minutes |
+| Docker stopped | The Docker service isn't running |
+| Local AI stopped | Ollama is installed but not answering |
+| AI usage | An AI connection used over N % of its monthly limit, or over N tokens this month |
 | Update available | A new SysAdmin.IA version is published (checked hourly) |
 | App started | SysAdmin.IA starts (e.g. after a reboot) |
 | Mail received | New unread mail in a mail account, optionally from someone or with a subject |
 
-Condition triggers (disk, CPU, memory, load, temperature, service) fire when the problem starts. They fire again every N minutes while it lasts (0 = only once), and optionally once more when it's back to normal: in actions, `{{trigger.state}}` is `alert` or `recovered`. The engine checks every 20 seconds.
+Condition triggers (disk, CPU, memory, load, temperature, service, containers, Docker, Local AI, AI usage) fire when the problem starts. They fire again every N minutes while it lasts (0 = only once), and optionally once more when it's back to normal: in actions, `{{trigger.state}}` is `alert` or `recovered`. The engine checks every 20 seconds.
 
 | Actions (Then) | |
 |---|---|
 | Send an email | Through a mail account, with subject and message filled from placeholders |
 | Call a webhook | POST/GET to Slack, Teams, Discord, ntfy or any URL |
 | Run a command | A shell command as the `sysadmin-ia` user; its output is available to later actions |
+| Start, stop or restart a container | A chosen container, or the one a "Container stopped" trigger found |
+| Update a container | Pull its image's newest version; if there is one, recreate the container with the same ports, folders and settings |
+| Start, stop or update a stack | A Docker Compose stack created in Containers |
+| Clean up Docker | Delete stopped containers, unused images, networks, build cache (and optionally unused volumes) |
 | Ask the AI | Ask an AI connection (no tools); its answer is `{{ai.answer}}` |
+| Download or update a local AI model | Pull a model into Local AI (Ollama) and wait until it's done |
+| Start, stop or restart Local AI | Control the Ollama service |
 | Check for updates | Optionally install the update |
 | Set a variable | Store a value, e.g. the time of the last alert |
+
+In the editor, the trigger and action lists are grouped by the module they belong to (Server, Containers, AI, Mail, SysAdmin.IA…).
 
 **Placeholders** in any action text are replaced when the job runs. The editor lists the ones available (click one to insert it):
 - `{{trigger.summary}}`, `{{trigger.value}}`, `{{trigger.mount}}`, `{{mail.subject}}`, … come from the trigger.

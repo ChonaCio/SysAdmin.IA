@@ -181,3 +181,77 @@ def set_name(name: str) -> dict:
 
 def reboot() -> str:
     return _helper("reboot", timeout=30)
+
+
+# ---------------------------------------------------------------- time zone
+
+TZ_RE = re.compile(r"^[A-Za-z0-9_+-]{1,40}(/[A-Za-z0-9_+-]{1,40}){0,2}$")
+
+
+def get_timezone() -> str | None:
+    """The server's time zone name, e.g. Europe/Madrid (None if unknown)."""
+    if not sys.platform.startswith("linux"):
+        return None
+    if shutil.which("timedatectl"):
+        try:
+            r = _run(["timedatectl", "show", "-p", "Timezone", "--value"], 5)
+            if r.returncode == 0 and r.stdout.strip():
+                return r.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    try:
+        tz = Path("/etc/timezone").read_text().strip()
+        if tz:
+            return tz
+    except OSError:
+        pass
+    try:
+        target = str(Path("/etc/localtime").resolve())
+        return target.split("/zoneinfo/", 1)[1] if "/zoneinfo/" in target else None
+    except OSError:
+        return None
+
+
+def list_timezones() -> list[str]:
+    try:
+        import zoneinfo
+        zones = set(zoneinfo.available_timezones())
+    except Exception:
+        zones = set()
+    base = Path("/usr/share/zoneinfo")
+    if not zones and base.is_dir():   # fallback: read the system's zone files directly
+        for p in base.rglob("*"):
+            if p.is_file() and p.name[0].isupper():
+                zones.add(str(p.relative_to(base)))
+    return sorted(z for z in zones if TZ_RE.fullmatch(z) and not z.startswith(("posix/", "right/", "SystemV/"))
+                  and z not in ("localtime", "Factory"))
+
+
+def timezone_status() -> dict:
+    import time as _t
+    ntp = None
+    if sys.platform.startswith("linux") and shutil.which("timedatectl"):
+        try:
+            r = _run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"], 5)
+            ntp = r.stdout.strip() == "yes" if r.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    off = -_t.altzone if _t.localtime().tm_isdst > 0 else -_t.timezone
+    can = helper_supports("timezone")
+    return {"timezone": get_timezone(), "zones": list_timezones(), "now": _t.strftime("%Y-%m-%d %H:%M:%S"),
+            "utc_offset": f"UTC{'+' if off >= 0 else '-'}{abs(off) // 3600:02d}:{abs(off) % 3600 // 60:02d}",
+            "ntp_synced": ntp, "can_change": can, "linux": sys.platform.startswith("linux"),
+            "setup_command": None if can or not sys.platform.startswith("linux") else setup_command()}
+
+
+def set_timezone(zone: str) -> dict:
+    zone = (zone or "").strip()
+    if not TZ_RE.fullmatch(zone) or zone not in list_timezones():
+        raise ValueError("Unknown time zone. Pick one from the list, e.g. Europe/Madrid or America/New_York.")
+    out = _helper("timezone", zone, timeout=30)
+    import os
+    import time as _t
+    os.environ.pop("TZ", None)
+    if hasattr(_t, "tzset"):
+        _t.tzset()   # this process (job schedules, logs) uses the new zone right away
+    return {"timezone": get_timezone() or zone, "output": out}

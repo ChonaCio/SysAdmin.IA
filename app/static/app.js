@@ -1683,8 +1683,49 @@ async function loadAdmin() {
   if (state.me.role !== "admin") return;
   loadUpdate().catch((e) => setUpdateMsg(e.message, false));
   loadServerName().catch((e) => setSnMsg(e.message, false));
+  loadTimezone().catch((e) => setFormMsg("#tz-msg", e.message, false));
   loadAudit();
 }
+
+// ---- server time zone
+async function loadTimezone() {
+  renderTimezone(await api("/api/server/timezone"));
+}
+function renderTimezone(s) {
+  const form = $("#tz-form");
+  form.timezone.value = s.timezone || "";
+  form.timezone.disabled = !s.can_change;
+  $("#tz-save").disabled = !s.can_change;
+  $("#tz-list").innerHTML = s.zones.map((z) => `<option value="${esc(z)}">`).join("");
+  const pill = $("#tz-status");
+  pill.textContent = s.timezone ? `${s.timezone} (${s.utc_offset})` : "unknown";
+  pill.className = "status-pill ok";
+  $("#tz-now").textContent = `Server time now: ${s.now} · ${s.ntp_synced === true ? "synchronized with internet time (NTP)"
+    : s.ntp_synced === false ? "not synchronized with internet time" : ""}`;
+  // one-click: the browser's own time zone
+  const mine = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const quick = $("#tz-quick");
+  quick.innerHTML = "";
+  if (mine && mine !== s.timezone && s.zones.includes(mine) && s.can_change)
+    quick.append(el("button", { type: "button", class: "small ghost", onclick: () => { form.timezone.value = mine; form.requestSubmit(); } },
+      withIcon("clock", `Use my time zone (${mine})`)));
+  const setup = $("#tz-setup");
+  setup.hidden = !s.setup_command;
+  setup.textContent = s.setup_command ? `Changing it needs a one-time setup on the server. Run this as root, then reload:\n  ${s.setup_command}` : "";
+  if (!s.linux) setFormMsg("#tz-msg", "The time zone can only be changed when the app runs on Linux.", false);
+}
+$("#tz-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const zone = e.target.timezone.value.trim();
+  if (!confirm(`Change the server's time zone to ${zone}?\n\nThe clock, logs and job schedules switch to the new local time.`)) return;
+  $("#tz-save").disabled = true;
+  try {
+    const r = await api("/api/server/timezone", { method: "PUT", body: JSON.stringify({ timezone: zone }) });
+    renderTimezone(r.status);
+    setFormMsg("#tz-msg", r.output || `Time zone set to ${r.timezone}.`, true);
+  } catch (ex) { setFormMsg("#tz-msg", ex.message, false); }
+  $("#tz-save").disabled = false;
+});
 async function loadAudit() {
   const rows = await api("/api/audit?limit=200").catch(() => []);
   $("#audit").innerHTML = rows.map((r) =>
@@ -2125,6 +2166,8 @@ async function loadLaiModels() {
   const box = $("#lai-models");
   box.innerHTML = "";
   if (!r.models.length) box.append(el("p", { class: "muted small" }, "No models yet. Download one below — Qwen 3 8B or Llama 3.1 8B are good starting points."));
+  else box.append(el("div", { class: "lai-models-head", "aria-hidden": "true" },
+    el("span", {}, "Model"), el("span", {}, "Size & abilities"), el("span", {}, "Memory"), el("span", {}, "")));
   for (const m of r.models) {
     const caps = m.capabilities.filter((c) => CAP_LABELS[c]).map((c) => el("span", { class: `tag ${c === "tools" ? "tag-accent" : ""}` }, CAP_LABELS[c]));
     const actions = el("div", { class: "var-actions" },
@@ -2663,15 +2706,14 @@ function addJobItem(kind, item) {
   const card = el("div", { class: "card job-item" });
   card.dataset.kind = kind;
   const typeSel = el("select", { class: "item-type", "aria-label": kind === "trigger" ? "Trigger type" : "Action type" });
-  if (kind === "trigger") {
-    const groups = {};
-    for (const [k, t] of Object.entries(cat)) (groups[t.group] ||= []).push([k, t]);
-    for (const [g, items] of Object.entries(groups)) {
-      const og = el("optgroup", { label: g });
-      for (const [k, t] of items) og.append(el("option", { value: k }, t.label));
-      typeSel.append(og);
-    }
-  } else for (const [k, a] of Object.entries(cat)) typeSel.append(el("option", { value: k }, a.label));
+  // grouped by the module they come from (Server, Containers, AI, Mail, …)
+  const groups = {};
+  for (const [k, t] of Object.entries(cat)) (groups[t.group || "Other"] ||= []).push([k, t]);
+  for (const [g, items] of Object.entries(groups)) {
+    const og = el("optgroup", { label: g });
+    for (const [k, t] of items) og.append(el("option", { value: k }, t.label));
+    typeSel.append(og);
+  }
   typeSel.value = item.type;
   const head = el("div", { class: "item-head" },
     el("span", { class: "icon-tile small-tile item-icon" }),
@@ -2746,6 +2788,24 @@ function jobField(fd, value) {
       input = el("select", {}, opts(cat.ai_connections.map((c) => [c.value, c.label]), [["", "Default connection"]]));
       input.value = value ? String(value) : "";
       break;
+    case "choice": {   // containers, stacks, local models (lists from the server)
+      const list = (cat.choices || {})[fd.source] || [];
+      const empty = { containers: "No containers yet", stacks: "No stacks yet", local_models: "No models installed" }[fd.source] || "None";
+      if (fd.free) {   // a list of suggestions, but any value can be typed
+        const id = `choices-${fd.source}`;
+        if (!$(`#${id}`)) document.body.append(el("datalist", { id }));
+        $(`#${id}`).innerHTML = list.map(([v]) => `<option value="${esc(v)}">`).join("");
+        input = el("input", { list: id, spellcheck: "false", placeholder: fd.placeholder || "", class: "mono" });
+        input.value = value ?? "";
+        break;
+      }
+      const extra = [...(fd.any ? [["*", fd.any]] : []), ...(fd.extra || [])];
+      input = el("select", {}, opts(list, [...(fd.any ? [] : [["", list.length ? "Choose…" : empty]]), ...extra]));
+      const v = value ?? (fd.any ? "*" : "");
+      if (v && ![...input.options].some((o) => o.value === v)) input.append(el("option", { value: v }, `${v} (not found now)`));
+      input.value = v;
+      break;
+    }
     case "weekdays": {
       input = el("div", { class: "weekdays" });
       for (const d of cat.weekdays) {
@@ -2770,7 +2830,7 @@ function jobField(fd, value) {
   if (["text", "textarea"].includes(fd.type)) input.dataset.ph = "1";
   const label = fd.type === "bool"
     ? el("label", { class: "check field" }, input, fd.label)
-    : el("label", { class: "field" }, fd.label, fd.required ? null : (["bool", "select", "mount", "sensor", "ai_connection", "weekdays", "number", "time"].includes(fd.type) ? null : el("span", { class: "muted small" }, " (optional)")), input);
+    : el("label", { class: "field" }, fd.label, fd.required ? null : (["bool", "select", "mount", "sensor", "ai_connection", "weekdays", "number", "time", "choice"].includes(fd.type) ? null : el("span", { class: "muted small" }, " (optional)")), input);
   label.dataset.key = fd.key;
   if (fd.help) label.append(el("span", { class: "muted small" }, fd.help));
   return label;
