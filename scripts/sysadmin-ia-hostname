@@ -19,6 +19,13 @@
 #                                   the current name and IP addresses
 #   sysadmin-ia-hostname status     print the name and LAN-discovery state (no changes)
 #   sysadmin-ia-hostname reboot     reboot the server (after a few seconds)
+#   sysadmin-ia-hostname mount DEV NAME [--persist] [--readonly]
+#                                   mount block device DEV at /mnt/NAME (nosuid,nodev; FAT/
+#                                   exFAT/NTFS owned by the service user); --persist adds an
+#                                   /etc/fstab entry (by UUID, nofail) so it mounts at boot
+#   sysadmin-ia-hostname unmount DIR [--forget]
+#                                   unmount DIR (only under /mnt, /media, /run/media);
+#                                   --forget also removes the fstab entry this helper added
 #   sysadmin-ia-hostname install    install/refresh this helper in /usr/local/sbin and the
 #                                   sudoers rule that lets the service user run it; e.g.
 #                                   sudo bash /opt/sysadmin-ia/scripts/sysadmin-ia-hostname install
@@ -332,7 +339,106 @@ do_reboot() {
   fi
 }
 
+# ---------------------------------------------------------------- drives
+MOUNT_BASE="/mnt"
+MOUNTABLE_FS=" ext2 ext3 ext4 xfs btrfs vfat exfat ntfs ntfs3 f2fs iso9660 udf hfsplus jfs reiserfs "
+# Entries this helper adds to /etc/fstab are preceded by this exact comment line.
+fstab_mark() { printf '# added by SysAdmin.IA: %s' "$1"; }
+fstab_has() { grep -qxF "$(fstab_mark "$1")" /etc/fstab; }
+fstab_drop() {  # remove the marker line for mount point $1 and the entry right after it
+  local tmp
+  tmp="$(mktemp)"
+  awk -v m="$(fstab_mark "$1")" '$0 == m { skip = 1; next } skip { skip = 0; next } { print }' /etc/fstab > "$tmp"
+  cat "$tmp" > /etc/fstab   # keep the file's owner and permissions
+  rm -f "$tmp"
+}
+
+do_mount() {  # mount DEV NAME [--persist] [--readonly]
+  local dev="$1" name="$2" persist=0 ro=0 fstype uuid target opts uid gid line
+  shift 2
+  for a in "$@"; do
+    case "$a" in --persist) persist=1 ;; --readonly) ro=1 ;; *) die "unknown option $a" ;; esac
+  done
+  [[ "$dev" =~ ^/dev/[A-Za-z0-9/_.:-]+$ && "$dev" != *..* ]] || die "invalid device"
+  [[ -b "$dev" ]] || die "$dev is not a block device"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || die "invalid name"
+  if findmnt -rn -S "$dev" >/dev/null 2>&1; then die "$dev is already mounted"; fi
+  fstype="$(blkid -o value -s TYPE "$dev" 2>/dev/null || true)"
+  [[ -n "$fstype" && "$MOUNTABLE_FS" == *" $fstype "* ]] || die "unsupported or missing filesystem '${fstype:-none}'"
+  uuid="$(blkid -o value -s UUID "$dev" 2>/dev/null || true)"
+  target="${MOUNT_BASE}/${name}"
+  if [[ -e "$target" ]]; then
+    [[ -d "$target" && ! -L "$target" ]] || die "$target exists and is not a folder"
+    mountpoint -q "$target" && die "$target is already in use"
+    [[ -z "$(ls -A "$target")" ]] || die "$target is not empty"
+  fi
+  mkdir -p "$target"
+
+  opts="nosuid,nodev"
+  [[ $ro -eq 1 ]] && opts="${opts},ro"
+  case "$fstype" in
+    vfat|exfat|ntfs|ntfs3)
+      # No Unix permissions on these: give the files to the service user, readable by all.
+      uid="$(id -u "$SVC_USER")"; gid="$(id -g "$SVC_USER")"
+      opts="${opts},uid=${uid},gid=${gid},umask=0022"
+      ;;
+  esac
+  local mtype="$fstype"
+  if [[ "$fstype" == ntfs ]] && grep -qw ntfs3 /proc/filesystems 2>/dev/null; then mtype=ntfs3; fi
+  if ! mount -t "$mtype" -o "$opts" "$dev" "$target" 2>&1; then
+    rmdir "$target" 2>/dev/null || true
+    die "mount failed"
+  fi
+  echo "Mounted ${dev} (${fstype}) at ${target}."
+
+  if [[ $persist -eq 1 ]]; then
+    if [[ -z "$uuid" ]]; then
+      echo "Not added to /etc/fstab: the volume has no UUID."
+    else
+      cp -p /etc/fstab "/etc/fstab.sysadmin-ia.bak"
+      # Remove an older entry of ours for the same mount point, then add the new one.
+      fstab_drop "$target"
+      line="UUID=${uuid} ${target} ${mtype} ${opts},nofail,x-systemd.device-timeout=10s 0 0"
+      # Make sure the file ends with a newline before appending.
+      [[ -s /etc/fstab && -n "$(tail -c1 /etc/fstab)" ]] && echo >> /etc/fstab
+      printf '%s\n%s\n' "$(fstab_mark "$target")" "$line" >> /etc/fstab
+      command -v systemctl >/dev/null && systemctl daemon-reload 2>/dev/null || true
+      echo "Added to /etc/fstab: it will be mounted automatically at startup."
+    fi
+  fi
+}
+
+do_unmount() {  # unmount DIR [--forget]
+  local dir="$1" forget=0 real
+  shift
+  for a in "$@"; do
+    case "$a" in --forget) forget=1 ;; *) die "unknown option $a" ;; esac
+  done
+  real="$(readlink -f "$dir" 2>/dev/null || true)"
+  case "$real" in
+    /mnt/?*|/media/?*|/run/media/?*) ;;
+    *) die "only drives under /mnt, /media or /run/media can be unmounted here" ;;
+  esac
+  mountpoint -q "$real" || die "$real is not mounted"
+  sync
+  if ! umount "$real" 2>&1; then
+    echo "Programs still using it:"; (command -v fuser >/dev/null && fuser -vm "$real" 2>&1 | head -20) || true
+    die "the drive is busy: close files or programs that use it (including console sessions in that folder) and try again"
+  fi
+  echo "Unmounted ${real}. It is now safe to remove the drive."
+  if [[ $forget -eq 1 ]] && fstab_has "$real"; then
+    cp -p /etc/fstab "/etc/fstab.sysadmin-ia.bak"
+    fstab_drop "$real"
+    command -v systemctl >/dev/null && systemctl daemon-reload 2>/dev/null || true
+    echo "Removed from /etc/fstab (it won't be mounted at startup)."
+  fi
+  # Remove the empty folder we created under /mnt.
+  [[ "$real" == /mnt/* && -d "$real" && -z "$(ls -A "$real")" ]] && rmdir "$real" || true
+}
+
 case "${1:-}" in
+  mount)   [[ $# -ge 3 ]] || die "usage: $0 mount DEV NAME [--persist] [--readonly]"; shift; do_mount "$@" ;;
+  unmount) [[ $# -ge 2 ]] || die "usage: $0 unmount DIR [--forget]"; shift; do_unmount "$@" ;;
   set)     [[ $# -eq 2 ]] || die "usage: $0 set NAME"; do_set "$2" ;;
   cert)    do_cert ;;
   mdns)    reannounce ;;
@@ -341,5 +447,5 @@ case "${1:-}" in
   install) do_install ;;
   upgrade) [[ $# -eq 3 ]] || die "usage: $0 upgrade REF VERSION"; do_upgrade "$2" "$3" ;;
   _upgrade-run) [[ $# -eq 3 ]] || die "usage: $0 _upgrade-run REF VERSION"; do_upgrade_run "$2" "$3" ;;
-  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION}" ;;
+  *)       die "usage: $0 {set NAME|cert|mdns|status|reboot|install|upgrade REF VERSION|mount DEV NAME|unmount DIR}" ;;
 esac

@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import re
 import secrets
 import threading
 import time
@@ -76,9 +77,7 @@ class User:
 
 
 def create_user(username: str, password: str, role: str = "admin") -> int:
-    username = username.strip()
-    if not username or len(username) > 64:
-        raise ValueError("Invalid username.")
+    username = validate_username(username)
     if role not in ROLES:
         raise ValueError(f"Role must be one of {ROLES}.")
     validate_password_strength(password)
@@ -96,11 +95,107 @@ def set_password(user_id: int, password: str) -> None:
     db.execute("DELETE FROM sessions WHERE user_id=?", (user_id,))  # log out everywhere
 
 
+_PROFILE_COLS = "id, username, role, created_at, display_name, email, avatar_ver, avatar IS NOT NULL AS has_avatar"
+
+
+def _profile(row) -> dict:
+    d = dict(row)
+    d["has_avatar"] = bool(d["has_avatar"])
+    d["avatar_url"] = f"/api/users/{d['id']}/avatar?v={d['avatar_ver']}" if d["has_avatar"] else None
+    d["display_name"] = d.get("display_name") or ""
+    d["email"] = d.get("email") or ""
+    return d
+
+
 def list_users() -> list[dict]:
-    return [dict(r) for r in db.query("SELECT id, username, role, created_at FROM users ORDER BY id")]
+    return [_profile(r) for r in db.query(f"SELECT {_PROFILE_COLS} FROM users ORDER BY id")]
+
+
+def get_profile(user_id: int) -> dict | None:
+    row = db.query_one(f"SELECT {_PROFILE_COLS} FROM users WHERE id=?", (user_id,))
+    return _profile(row) if row else None
+
+
+USERNAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,63}$")
+EMAIL_RE = re.compile(r"^[^@\s]{1,64}@[^@\s]{1,190}\.[^@\s]{1,24}$")
+
+
+def validate_username(username: str) -> str:
+    username = (username or "").strip()
+    if not USERNAME_RE.fullmatch(username):
+        raise ValueError("Usernames use 1–64 letters, digits, dots, dashes, underscores or @, "
+                         "starting with a letter or digit.")
+    return username
+
+
+def update_profile(user_id: int, username: str | None = None, display_name: str | None = None,
+                   email: str | None = None) -> dict:
+    sets, params = [], []
+    if username is not None:
+        username = validate_username(username)
+        clash = db.query_one("SELECT id FROM users WHERE username=? AND id<>?", (username, user_id))
+        if clash:
+            raise ValueError("That username is already taken.")
+        sets.append("username=?"); params.append(username)
+    if display_name is not None:
+        display_name = " ".join(display_name.split())
+        if len(display_name) > 80:
+            raise ValueError("The display name can be at most 80 characters.")
+        sets.append("display_name=?"); params.append(display_name or None)
+    if email is not None:
+        email = email.strip()
+        if email and not EMAIL_RE.fullmatch(email):
+            raise ValueError("That doesn't look like an email address.")
+        sets.append("email=?"); params.append(email or None)
+    if sets:
+        db.execute(f"UPDATE users SET {', '.join(sets)} WHERE id=?", (*params, user_id))
+    return get_profile(user_id)
+
+
+AVATAR_MAX = 512 * 1024
+_IMAGE_MAGIC = {"image/png": b"\x89PNG\r\n\x1a\n", "image/jpeg": b"\xff\xd8\xff"}
+
+
+def set_avatar(user_id: int, data: bytes | None, mime: str | None = None) -> None:
+    if data is None:
+        db.execute("UPDATE users SET avatar=NULL, avatar_type=NULL, avatar_ver=avatar_ver+1 WHERE id=?", (user_id,))
+        return
+    if len(data) > AVATAR_MAX:
+        raise ValueError("The picture is too large (max 512 KB).")
+    ok = (mime in _IMAGE_MAGIC and data.startswith(_IMAGE_MAGIC[mime])) or \
+         (mime == "image/webp" and data[:4] == b"RIFF" and data[8:12] == b"WEBP")
+    if not ok:
+        raise ValueError("Use a PNG, JPEG or WebP picture.")
+    db.execute("UPDATE users SET avatar=?, avatar_type=?, avatar_ver=avatar_ver+1 WHERE id=?",
+               (data, mime, user_id))
+
+
+def get_avatar(user_id: int) -> tuple[bytes, str] | None:
+    row = db.query_one("SELECT avatar, avatar_type FROM users WHERE id=?", (user_id,))
+    if not row or row["avatar"] is None:
+        return None
+    return bytes(row["avatar"]), row["avatar_type"]
+
+
+def admin_count() -> int:
+    return db.query_one("SELECT COUNT(*) AS c FROM users WHERE role='admin'")["c"]
+
+
+def set_role(user_id: int, role: str) -> None:
+    if role not in ROLES:
+        raise ValueError(f"Role must be one of {ROLES}.")
+    row = db.query_one("SELECT role FROM users WHERE id=?", (user_id,))
+    if not row:
+        raise ValueError("No such user.")
+    if row["role"] == "admin" and role != "admin" and admin_count() <= 1:
+        raise ValueError("There must be at least one admin.")
+    db.execute("UPDATE users SET role=? WHERE id=?", (role, user_id))
 
 
 def delete_user(user_id: int) -> None:
+    row = db.query_one("SELECT role FROM users WHERE id=?", (user_id,))
+    if row and row["role"] == "admin" and admin_count() <= 1:
+        raise ValueError("There must be at least one admin.")
     db.execute("DELETE FROM users WHERE id=?", (user_id,))
 
 

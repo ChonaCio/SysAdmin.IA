@@ -13,14 +13,30 @@
     <nav class="tabs" role="tablist">
       <button data-view="chat" class="tab active" id="tab-chat">Chat</button>
       <button data-view="monitor" class="tab">Monitor</button>
+      <button data-view="drives" class="tab admin-only" id="tab-drives">Drives</button>
       <button data-view="console" class="tab" id="tab-console" hidden>Console</button>
-      <button data-view="admin" class="tab" id="tab-admin">Admin</button>
+      <button data-view="users" class="tab admin-only" id="tab-users">Users</button>
+      <button data-view="admin" class="tab admin-only" id="tab-admin">Admin</button>
     </nav>
     <div class="user">
-      <button id="topbar-update" class="update-btn" hidden title="Check GitHub for a newer version">
-        <span class="update-icon" aria-hidden="true">⟳</span> <span id="topbar-update-text">Check for updates</span>
+      <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Your account">
+        <span class="avatar" id="profile-btn-avatar"></span>
+        <span id="profile-btn-name" class="profile-btn-name"></span>
       </button>
-      <span id="whoami" class="muted small"></span> <button id="logout" class="ghost small">Sign out</button>
+      <div id="profile-menu" class="profile-menu" role="menu" hidden>
+        <div class="profile-menu-head">
+          <span class="avatar xl" id="profile-menu-avatar"></span>
+          <div class="profile-menu-name" id="profile-menu-name"></div>
+          <div class="muted small" id="profile-menu-sub"></div>
+        </div>
+        <div class="profile-menu-actions">
+          <button type="button" class="menu-item" id="menu-edit-profile" role="menuitem"><span aria-hidden="true">✎</span> Edit profile</button>
+          <button type="button" class="menu-item" id="menu-change-password" role="menuitem"><span aria-hidden="true">🔑</span> Change password</button>
+        </div>
+        <div class="profile-menu-foot">
+          <button type="button" class="menu-item" id="logout" role="menuitem"><span aria-hidden="true">⎋</span> Sign out</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -200,34 +216,158 @@
           </div>
         </form>
       </div>
-      <div class="grid2">
-        <div class="card admin-only">
-          <h3>Users</h3>
-          <table class="table"><thead><tr><th>User</th><th>Role</th><th></th></tr></thead><tbody id="users"></tbody></table>
-          <form id="add-user" class="inline-form">
-            <input name="username" placeholder="username" required>
-            <input name="password" type="password" placeholder="password (10+ chars)" required minlength="10" autocomplete="new-password">
-            <select name="role"><option value="admin">admin</option><option value="viewer">viewer (monitor only)</option></select>
-            <button class="primary">Add</button>
-          </form>
-          <p class="error" id="user-error" hidden></p>
-        </div>
-        <div class="card">
-          <h3>Change my password</h3>
-          <form id="pw-form" class="stack-form">
-            <input name="current_password" type="password" placeholder="current password" required autocomplete="current-password">
-            <input name="new_password" type="password" placeholder="new password (10+ chars)" required minlength="10" autocomplete="new-password">
-            <button class="primary">Update password</button>
-            <p class="small" id="pw-msg" hidden></p>
-          </form>
-        </div>
-      </div>
       <div class="card admin-only">
         <h3>Audit log <button id="refresh-audit" class="ghost small">Refresh</button></h3>
         <div class="table-wrap"><table class="table"><thead><tr><th>Time</th><th>User</th><th>IP</th><th>Action</th><th>Detail</th></tr></thead><tbody id="audit"></tbody></table></div>
       </div>
     </div>
   </section>
+
+  <!-- ================= DRIVES ================= -->
+  <section id="view-drives" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Drives</h2>
+          <p class="muted small">Disks connected to this server, how full they are, and their files.</p>
+        </div>
+        <span class="seg" id="drives-seg" role="tablist">
+          <button data-sub="drives" class="seg-btn active">Drives</button>
+          <button data-sub="files" class="seg-btn">Browse files</button>
+        </span>
+      </div>
+
+      <div id="drives-sub-drives">
+        <p class="note warn" id="drives-setup" hidden></p>
+        <div class="tiles" id="drive-tiles"></div>
+        <div id="drive-list" class="drive-list"></div>
+        <div class="row muted small"><button type="button" class="ghost small" id="drives-refresh">Refresh</button><span id="drives-updated"></span></div>
+      </div>
+
+      <div id="drives-sub-files" hidden>
+        <div class="card file-browser">
+          <div class="fb-places" id="fb-places" aria-label="Places"></div>
+          <div class="fb-bar">
+            <button type="button" class="ghost small" id="fb-up" title="Up one folder" aria-label="Up one folder">↑</button>
+            <nav class="crumbs" id="fb-crumbs" aria-label="Current folder"></nav>
+            <span class="spacer"></span>
+            <label class="toggle"><input type="checkbox" id="fb-hidden"> Show hidden</label>
+            <button type="button" class="ghost small" id="fb-sizes" title="Add up the size of every folder here">Analyze sizes</button>
+          </div>
+          <div class="fb-usage" id="fb-usage"></div>
+          <div class="table-wrap fb-wrap">
+            <table class="table fb-table">
+              <thead><tr><th>Name</th><th class="num">Size</th><th class="hide-sm">Modified</th><th></th></tr></thead>
+              <tbody id="fb-rows"></tbody>
+            </table>
+          </div>
+          <p class="small muted" id="fb-msg" hidden></p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= USERS ================= -->
+  <section id="view-users" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Users</h2>
+          <p class="muted small">People who can sign in. <strong>Admins</strong> can use everything; <strong>viewers</strong> can only see the Monitor.</p>
+        </div>
+      </div>
+      <div class="card"><div class="user-list" id="user-list"></div></div>
+      <div class="card">
+        <h3>Add a user</h3>
+        <form id="add-user" class="settings-form" autocomplete="off">
+          <label>Username <input name="username" required maxlength="64" autocomplete="off" spellcheck="false"></label>
+          <label>Password <input name="password" type="password" required minlength="10" autocomplete="new-password">
+            <span class="muted small">At least 10 characters. They can change it later.</span></label>
+          <label>Role
+            <select name="role"><option value="admin">Admin — full access</option><option value="viewer">Viewer — monitor only</option></select>
+          </label>
+          <div class="row"><button class="primary">Add user</button><span class="small error" id="user-error" hidden></span></div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PROFILE (from the profile card) ================= -->
+  <section id="view-profile" class="view">
+    <div class="page narrow">
+      <button type="button" class="ghost back-btn" data-back>← Back</button>
+      <h2>Edit profile</h2>
+      <div class="card">
+        <form id="profile-form" class="settings-form" autocomplete="off">
+          <div class="avatar-edit">
+            <span class="avatar xxl" id="profile-avatar"></span>
+            <div class="avatar-edit-actions">
+              <input type="file" id="avatar-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden>
+              <button type="button" id="avatar-change">Change picture</button>
+              <button type="button" id="avatar-remove" class="ghost danger" hidden>Remove picture</button>
+              <span class="muted small">PNG, JPEG or WebP. It's cropped to a square.</span>
+            </div>
+          </div>
+          <label>Username <input name="username" required maxlength="64" autocomplete="username" spellcheck="false">
+            <span class="muted small">Used to sign in.</span></label>
+          <label>Display name <span class="muted small">(optional)</span><input name="display_name" maxlength="80"></label>
+          <label>Email <span class="muted small">(optional)</span><input name="email" type="email" maxlength="254"></label>
+          <p class="small muted" id="profile-meta"></p>
+          <div class="row"><button class="primary">Save changes</button><span class="small" id="profile-msg" hidden></span></div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-password" class="view">
+    <div class="page narrow">
+      <button type="button" class="ghost back-btn" data-back>← Back</button>
+      <h2>Change password</h2>
+      <div class="card">
+        <form id="pw-form" class="settings-form">
+          <input type="text" name="username" autocomplete="username" hidden>
+          <label>Current password <input name="current_password" type="password" required autocomplete="current-password"></label>
+          <label>New password <input name="new_password" type="password" required minlength="10" autocomplete="new-password">
+            <span class="muted small">At least 10 characters.</span></label>
+          <label>Confirm new password <input name="confirm_password" type="password" required minlength="10" autocomplete="new-password"></label>
+          <p class="small muted">After changing it you're signed out on all devices and sign in again with the new password.</p>
+          <div class="row"><button class="primary">Change password</button><span class="small" id="pw-msg" hidden></span></div>
+        </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= DIALOGS ================= -->
+  <dialog id="mount-dialog" class="dialog">
+    <form method="dialog" id="mount-form">
+      <h3 id="mount-title">Mount drive</h3>
+      <p class="muted small" id="mount-desc"></p>
+      <label>Name
+        <span class="input-prefix"><span class="prefix">/mnt/</span><input name="name" required maxlength="64" spellcheck="false" autocomplete="off"></span>
+        <span class="muted small">Where the drive's files will appear. Letters, digits, dots, dashes and underscores.</span>
+      </label>
+      <label class="check"><input type="checkbox" name="persist"> Mount automatically when the server starts</label>
+      <label class="check"><input type="checkbox" name="readonly"> Read-only (protects the files on it from changes)</label>
+      <p class="small error" id="mount-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="mount-cancel">Cancel</button>
+        <button class="primary" id="mount-ok">Mount</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="unmount-dialog" class="dialog">
+    <form method="dialog" id="unmount-form">
+      <h3 id="unmount-title">Unmount drive</h3>
+      <p class="small" id="unmount-desc"></p>
+      <label class="check"><input type="checkbox" name="forget" checked> Also stop mounting it automatically at startup</label>
+      <p class="small error" id="unmount-error" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="unmount-cancel">Cancel</button>
+        <button class="primary" id="unmount-ok">Unmount</button>
+      </div>
+    </form>
+  </dialog>
 
   <div id="toast" class="toast" hidden></div>
   <script src="/static/vendor/xterm.js"></script>

@@ -55,7 +55,7 @@ function setBar(el, pct) { el.style.width = `${Math.min(100, pct)}%`; el.classNa
 // ------------------------------------------------------------ boot
 async function boot() {
   state.me = await api("/api/me");
-  $("#whoami").textContent = `${state.me.username} (${state.me.role})`;
+  renderProfileCard();
   if (!state.me.api_key_configured) $("#api-warning").hidden = false;
   if (!state.me.allow_auto_approve) $("#auto-approve-wrap").hidden = true;
   if (state.me.role !== "admin") {
@@ -66,9 +66,10 @@ async function boot() {
     connectWs();
     loadConversations();
     if (state.me.console) $("#tab-console").hidden = false;
-    // Top-bar update button + resume showing an update that is still running.
-    renderTopbarUpdate(null);
-    loadUpdate().catch(() => {});
+    // Resume showing an update that is still running.
+    api("/api/update/progress").then((p) => {
+      if (p.state === "running" && !state.updating) followUpgrade(p.version);
+    }).catch(() => {});
   }
   api("/api/host").then((h) => {
     $("#hostname").textContent = h.hostname;
@@ -79,18 +80,248 @@ async function boot() {
 }
 
 $$(".tab").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
+const SUBPAGES = new Set(["profile", "password"]);   // opened from the profile card, not tabs
 function switchView(v) {
+  if (!SUBPAGES.has(v) && v !== state.view) state.lastTab = v;
+  if (SUBPAGES.has(v) && !SUBPAGES.has(state.view)) state.lastTab = state.view;
   state.view = v;
   $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   $$(".view").forEach((s) => s.classList.toggle("active", s.id === `view-${v}`));
+  closeProfileMenu();
+  clearInterval(state.drivesTimer);
   if (v === "admin") loadAdmin();
   if (v === "monitor") { drawCharts(); refreshProcs(); }
   if (v === "console") showConsoleSession(state.consoleSession || "shell");
+  if (v === "users") loadUsers();
+  if (v === "drives") openDrives();
+  if (v === "profile") loadProfilePage();
+  if (v === "password") { $("#pw-form").reset(); setFormMsg("#pw-msg", ""); $("#pw-form").current_password.focus(); }
+}
+$$("[data-back]").forEach((b) => b.addEventListener("click", () =>
+  switchView(state.lastTab || (state.me.role === "admin" ? "chat" : "monitor"))));
+
+function setFormMsg(sel, text, ok = true) {
+  const m = $(sel);
+  m.textContent = text;
+  m.className = `small ${ok ? "ok-text" : "error"}`;
+  m.hidden = !text;
 }
 
+// ------------------------------------------------------------ avatars & profile card
+const AVATAR_COLORS = ["#c2571a", "#2f7fb8", "#2f9e5b", "#8a5cc2", "#c23f72", "#b88a1f", "#3a8f8f", "#6b7280"];
+function initials(p) {
+  const src = (p.display_name || p.username || "?").trim();
+  const parts = src.split(/[\s._@-]+/).filter(Boolean);
+  return ((parts[0] || "?")[0] + (parts.length > 1 ? parts[1][0] : "")).toUpperCase();
+}
+function fillAvatar(el, p) {
+  el.innerHTML = "";
+  el.classList.toggle("has-img", !!p.avatar_url);
+  if (p.avatar_url) {
+    const img = document.createElement("img");
+    img.src = p.avatar_url; img.alt = "";
+    el.append(img);
+  } else {
+    let h = 0;
+    for (const c of p.username || "") h = (h * 31 + c.charCodeAt(0)) >>> 0;
+    el.style.background = AVATAR_COLORS[h % AVATAR_COLORS.length];
+    el.textContent = initials(p);
+  }
+}
+
+function renderProfileCard() {
+  const me = state.me;
+  fillAvatar($("#profile-btn-avatar"), me);
+  $("#profile-btn-name").textContent = me.username;
+  fillAvatar($("#profile-menu-avatar"), me);
+  $("#profile-menu-name").textContent = me.display_name || me.username;
+  $("#profile-menu-sub").textContent = [me.display_name ? `@${me.username}` : "", me.email,
+    me.role === "admin" ? "Administrator" : "Viewer"].filter(Boolean).join(" · ");
+}
+
+function closeProfileMenu() {
+  $("#profile-menu").hidden = true;
+  $("#profile-btn").setAttribute("aria-expanded", "false");
+}
+$("#profile-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const menu = $("#profile-menu");
+  menu.hidden = !menu.hidden;
+  $("#profile-btn").setAttribute("aria-expanded", String(!menu.hidden));
+  if (!menu.hidden) $("#menu-edit-profile").focus();
+});
+document.addEventListener("click", (e) => {
+  if (!$("#profile-menu").hidden && !e.target.closest("#profile-menu")) closeProfileMenu();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#profile-menu").hidden) { closeProfileMenu(); $("#profile-btn").focus(); }
+});
+$("#menu-edit-profile").addEventListener("click", () => switchView("profile"));
+$("#menu-change-password").addEventListener("click", () => switchView("password"));
 $("#logout").addEventListener("click", async () => {
   await api("/api/logout", { method: "POST" }).catch(() => {});
   location.href = "/login";
+});
+
+// ---- Edit profile page
+function loadProfilePage() {
+  const me = state.me, f = $("#profile-form");
+  f.username.value = me.username;
+  f.display_name.value = me.display_name || "";
+  f.email.value = me.email || "";
+  fillAvatar($("#profile-avatar"), me);
+  $("#avatar-remove").hidden = !me.avatar_url;
+  $("#profile-meta").textContent = `Role: ${me.role === "admin" ? "Administrator" : "Viewer"}`;
+  setFormMsg("#profile-msg", "");
+}
+
+function applyProfile(p) {
+  Object.assign(state.me, { username: p.username, display_name: p.display_name, email: p.email, avatar_url: p.avatar_url });
+  renderProfileCard();
+  loadProfilePage();
+}
+
+$("#profile-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  try {
+    const p = await api("/api/me/profile", { method: "PUT", body: JSON.stringify({
+      username: f.username.value.trim(), display_name: f.display_name.value, email: f.email.value.trim() }) });
+    applyProfile(p);
+    setFormMsg("#profile-msg", "Saved.");
+  } catch (ex) { setFormMsg("#profile-msg", ex.message, false); }
+});
+
+$("#avatar-change").addEventListener("click", () => $("#avatar-file").click());
+$("#avatar-file").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  e.target.value = "";
+  if (!file) return;
+  try {
+    const data = await squareImage(file, 256);
+    const p = await api("/api/me/avatar", { method: "PUT", body: JSON.stringify({ data, type: "image/jpeg" }) });
+    applyProfile(p);
+    setFormMsg("#profile-msg", "Picture updated.");
+  } catch (ex) { setFormMsg("#profile-msg", ex.message || "Couldn't use that picture.", false); }
+});
+$("#avatar-remove").addEventListener("click", async () => {
+  try {
+    applyProfile(await api("/api/me/avatar", { method: "PUT", body: JSON.stringify({ data: null }) }));
+    setFormMsg("#profile-msg", "Picture removed.");
+  } catch (ex) { setFormMsg("#profile-msg", ex.message, false); }
+});
+
+// Center-crop an image file to a square and return base64 JPEG (no data: prefix).
+function squareImage(file, size) {
+  return new Promise((resolve, reject) => {
+    if (!file.type.startsWith("image/")) { reject(new Error("Choose an image file.")); return; }
+    if (file.size > 20 * 1024 * 1024) { reject(new Error("That image is too large (max 20 MB).")); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.createElement("canvas");
+      c.width = c.height = size;
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, size, size);
+      ctx.drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, size, size);
+      URL.revokeObjectURL(url);
+      resolve(c.toDataURL("image/jpeg", 0.88).split(",")[1]);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Couldn't read that image.")); };
+    img.src = url;
+  });
+}
+
+// ---- Change password page
+$("#pw-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target;
+  if (f.new_password.value !== f.confirm_password.value) {
+    setFormMsg("#pw-msg", "The new passwords don't match.", false);
+    f.confirm_password.focus();
+    return;
+  }
+  try {
+    await api("/api/me/password", { method: "POST", body: JSON.stringify({
+      current_password: f.current_password.value, new_password: f.new_password.value }) });
+    setFormMsg("#pw-msg", "Password changed. Signing you out…");
+    setTimeout(() => (location.href = "/login"), 1500);
+  } catch (ex) { setFormMsg("#pw-msg", ex.message, false); }
+});
+
+// ------------------------------------------------------------ users
+async function loadUsers() {
+  const list = $("#user-list");
+  let users;
+  try { users = await api("/api/users"); }
+  catch (ex) { list.textContent = ex.message; return; }
+  list.innerHTML = "";
+  for (const u of users) {
+    const me = u.id === state.me.id;
+    const row = document.createElement("div");
+    row.className = "user-row";
+    const av = document.createElement("span");
+    av.className = "avatar lg";
+    fillAvatar(av, u);
+    const who = document.createElement("div");
+    who.className = "user-who";
+    const name = document.createElement("strong");
+    name.textContent = u.display_name || u.username;
+    const sub = document.createElement("div");
+    sub.className = "muted small";
+    sub.textContent = [u.display_name ? `@${u.username}` : "", u.email, me ? "you" : ""].filter(Boolean).join(" · ");
+    who.append(name, sub);
+
+    const role = document.createElement("select");
+    role.innerHTML = '<option value="admin">Admin</option><option value="viewer">Viewer</option>';
+    role.value = u.role;
+    role.disabled = me;
+    role.title = me ? "You can't change your own role" : "Role";
+    role.setAttribute("aria-label", `Role of ${u.username}`);
+    role.addEventListener("change", async () => {
+      try { await api(`/api/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ role: role.value }) }); toast(`${u.username} is now ${role.value === "admin" ? "an admin" : "a viewer"}.`); }
+      catch (ex) { toast(ex.message); role.value = u.role; }
+    });
+
+    const actions = document.createElement("div");
+    actions.className = "user-actions";
+    const pw = document.createElement("button");
+    pw.type = "button"; pw.className = "ghost small"; pw.textContent = "Set password";
+    pw.addEventListener("click", async () => {
+      if (me) { switchView("password"); return; }
+      const value = prompt(`New password for ${u.username} (at least 10 characters).\nThey'll be signed out everywhere.`);
+      if (!value) return;
+      try { await api(`/api/users/${u.id}`, { method: "PATCH", body: JSON.stringify({ password: value }) }); toast(`Password for ${u.username} changed.`); }
+      catch (ex) { toast(ex.message); }
+    });
+    actions.append(pw);
+    if (!me) {
+      const del = document.createElement("button");
+      del.type = "button"; del.className = "ghost small danger"; del.textContent = "Delete";
+      del.addEventListener("click", async () => {
+        if (!confirm(`Delete user ${u.username}? Their conversations are deleted too.`)) return;
+        try { await api(`/api/users/${u.id}`, { method: "DELETE" }); loadUsers(); }
+        catch (ex) { toast(ex.message); }
+      });
+      actions.append(del);
+    }
+    row.append(av, who, role, actions);
+    list.append(row);
+  }
+}
+
+$("#add-user").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = $("#user-error");
+  err.hidden = true;
+  try {
+    await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
+    toast(`User ${e.target.username.value} added.`);
+    e.target.reset();
+    loadUsers();
+  } catch (ex) { err.textContent = ex.message; err.hidden = false; }
 });
 
 // ------------------------------------------------------------ websocket
@@ -719,7 +950,6 @@ function renderUpdate(s) {
   apply.hidden = !s.update_available || !s.can_apply;
   if (latest) apply.textContent = `Update to ${latest.version}`;
   $("#update-check").className = s.update_available ? "ghost big" : "primary big";
-  renderTopbarUpdate(s);
   if (state.updating) { /* keep the progress message */ }
   else if (s.error) setUpdateMsg(s.error, false);
   else if (s.update_available && !s.can_apply) setUpdateMsg("This app runs from a git clone: update it with `git pull`.", false);
@@ -736,24 +966,6 @@ function renderUpdate(s) {
   }
   state.update = s;
 }
-
-// Top-bar button: always visible to admins, so checking for updates is one click away.
-function renderTopbarUpdate(s) {
-  const b = $("#topbar-update");
-  if (!state.me || state.me.role !== "admin") { b.hidden = true; return; }
-  b.hidden = !!state.updating;
-  const available = s && s.update_available && s.latest;
-  b.classList.toggle("available", !!available);
-  $("#topbar-update-text").textContent = available ? `Update to ${s.latest.version}` : "Check for updates";
-  b.title = available ? `Version ${s.latest.version} is available (installed: ${s.current})`
-                      : "Check GitHub for a newer version";
-}
-
-$("#topbar-update").addEventListener("click", async () => {
-  switchView("admin");
-  $("#update-card").scrollIntoView({ behavior: "smooth", block: "start" });
-  if (!(state.update && state.update.update_available)) $("#update-check").click();
-});
 
 async function loadUpdate() {
   const s = await api("/api/update");
@@ -785,7 +997,6 @@ function showUpdating(text) {
   state.updating = true;
   $("#updating-bar").hidden = false;
   $("#updating-text").textContent = text;
-  $("#topbar-update").hidden = true;
   $("#update-apply").disabled = $("#update-check").disabled = true;
   setUpdateBusy(text);
 }
@@ -794,7 +1005,6 @@ function hideUpdating() {
   state.updating = false;
   $("#updating-bar").hidden = true;
   $("#update-apply").disabled = $("#update-check").disabled = false;
-  renderTopbarUpdate(state.update);
 }
 
 $("#updating-details").addEventListener("click", () => openConsole("update"));
@@ -997,25 +1207,6 @@ async function loadAdmin() {
   loadClaudeSettings().catch((e) => setClaudeMsg(e.message, false));
   loadUpdate().catch((e) => setUpdateMsg(e.message, false));
   loadServerName().catch((e) => setSnMsg(e.message, false));
-  const users = await api("/api/users");
-  $("#users").innerHTML = "";
-  for (const u of users) {
-    const tr = document.createElement("tr");
-    tr.innerHTML = `<td></td><td class="muted"></td><td class="num"></td>`;
-    tr.children[0].textContent = u.username;
-    tr.children[1].textContent = u.role;
-    if (u.username !== state.me.username) {
-      const b = document.createElement("button");
-      b.className = "ghost small"; b.textContent = "Delete";
-      b.addEventListener("click", async () => {
-        if (!confirm(`Delete user ${u.username}?`)) return;
-        await api(`/api/users/${u.id}`, { method: "DELETE" }).catch((e) => toast(e.message));
-        loadAdmin();
-      });
-      tr.children[2].appendChild(b);
-    }
-    $("#users").appendChild(tr);
-  }
   loadAudit();
 }
 async function loadAudit() {
@@ -1026,25 +1217,325 @@ async function loadAudit() {
 }
 $("#refresh-audit").addEventListener("click", loadAudit);
 
-$("#add-user").addEventListener("submit", async (e) => {
+// ------------------------------------------------------------ drives
+const ICONS = {
+  internal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="16.5" cy="12" r="1.3"/><path d="M6 12h6"/></svg>',
+  external: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="13" rx="2"/><path d="M9 15v4a3 3 0 0 0 6 0v-4"/><path d="M10 6h1M13 6h1"/></svg>',
+  optical: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
+  file: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>',
+};
+const TRANSPORT = { nvme: "NVMe", sata: "SATA", ata: "ATA", usb: "USB", mmc: "SD card", sdio: "SD card", scsi: "SCSI",
+                    sas: "SAS", virtio: "Virtual", optical: "Optical", ieee1394: "FireWire" };
+
+function el(tag, attrs = {}, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs)) {
+    if (k === "class") e.className = v;
+    else if (k === "html") e.innerHTML = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const k of kids.flat()) if (k != null && k !== false) e.append(k);
+  return e;
+}
+function usageBar(pct) {
+  const bar = el("div", { class: "bar" }, el("i"));
+  setBar(bar.firstChild, pct);
+  return bar;
+}
+
+function openDrives() {
+  showDrivesSub(state.drivesSub || "drives");
+}
+
+function showDrivesSub(sub) {
+  state.drivesSub = sub;
+  $$("#drives-seg .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.sub === sub));
+  $("#drives-sub-drives").hidden = sub !== "drives";
+  $("#drives-sub-files").hidden = sub !== "files";
+  clearInterval(state.drivesTimer);
+  if (sub === "drives") {
+    loadDrives();
+    state.drivesTimer = setInterval(() => { if (state.view === "drives" && !document.hidden) loadDrives(true); }, 5000);
+  } else {
+    if (!state.drives) loadDrives(true);
+    browse(state.fb?.path || "/");
+  }
+}
+$$("#drives-seg .seg-btn").forEach((b) => b.addEventListener("click", () => showDrivesSub(b.dataset.sub)));
+$("#drives-refresh").addEventListener("click", () => loadDrives());
+
+async function loadDrives(quiet = false) {
+  try {
+    const d = await api("/api/drives");
+    state.drives = d;
+    renderDrives(d);
+    renderPlaces();
+  } catch (ex) {
+    if (!quiet) { $("#drive-list").innerHTML = ""; $("#drive-list").append(el("p", { class: "error" }, ex.message)); }
+  }
+}
+
+function renderDrives(d) {
+  const list = $("#drive-list"), tiles = $("#drive-tiles");
+  const setup = $("#drives-setup");
+  if (!d.available) {
+    tiles.innerHTML = ""; list.innerHTML = "";
+    list.append(el("p", { class: "muted" }, d.message));
+    setup.hidden = true;
+    return;
+  }
+  setup.hidden = d.can_manage;
+  if (!d.can_manage) {
+    setup.innerHTML = "";
+    setup.append("Mounting and unmounting need a one-time setup on the server. Run this as root, then click Refresh: ",
+                 el("code", {}, d.setup_command || ""));
+  }
+  const s = d.summary;
+  const usedPct = s.mounted_total ? (100 * s.mounted_used / s.mounted_total) : 0;
+  tiles.innerHTML = "";
+  tiles.append(
+    el("div", { class: "tile" }, el("div", { class: "label" }, "Drives"),
+       el("div", { class: "value" }, String(s.disks)),
+       el("div", { class: "sub" }, `${s.internal} internal · ${s.external} external`)),
+    el("div", { class: "tile" }, el("div", { class: "label" }, "Total capacity"),
+       el("div", { class: "value" }, fmtBytes(s.capacity)), el("div", { class: "sub" }, "all drives")),
+    el("div", { class: "tile" }, el("div", { class: "label" }, "Used (mounted)"),
+       el("div", { class: "value" }, `${usedPct.toFixed(0)}%`),
+       el("div", { class: "sub" }, `${fmtBytes(s.mounted_used)} of ${fmtBytes(s.mounted_total)}`), usageBar(usedPct)),
+    el("div", { class: "tile" }, el("div", { class: "label" }, "Free (mounted)"),
+       el("div", { class: "value" }, fmtBytes(s.mounted_free)), el("div", { class: "sub" }, "available space")),
+  );
+
+  list.innerHTML = "";
+  if (!d.disks.length) list.append(el("p", { class: "muted" }, "No drives found."));
+  for (const disk of d.disks) list.append(driveCard(disk, d));
+  $("#drives-updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
+
+function driveCard(disk, d) {
+  const kind = disk.media === "optical" ? "optical" : disk.external ? "external" : "internal";
+  const badges = [
+    el("span", { class: `tag ${disk.external ? "tag-accent" : ""}` }, disk.external ? "External" : "Internal"),
+    disk.transport ? el("span", { class: "tag" }, TRANSPORT[disk.transport] || disk.transport.toUpperCase()) : null,
+    disk.media !== "optical" ? el("span", { class: "tag" }, disk.media.toUpperCase()) : null,
+    disk.system ? el("span", { class: "tag" }, "System drive") : null,
+    disk.readonly ? el("span", { class: "tag" }, "Read-only") : null,
+  ];
+  const io = disk.io;
+  const ioLine = io ? el("div", { class: "drive-io small muted" },
+    el("span", { title: "Read speed now" }, `↓ ${fmtBytes(io.read_rate, true)}`),
+    el("span", { title: "Write speed now" }, `↑ ${fmtBytes(io.write_rate, true)}`),
+    el("span", { title: "Since boot" }, `${fmtBytes(io.read_total)} read · ${fmtBytes(io.write_total)} written since boot`)) : null;
+
+  const vols = el("div", { class: "volumes" });
+  if (!disk.volumes.length) vols.append(el("div", { class: "volume muted small" }, "No partitions or filesystems on this drive."));
+  for (const v of disk.volumes) vols.append(volumeRow(v, d));
+
+  return el("div", { class: "card drive-card" },
+    el("div", { class: "drive-head" },
+      el("span", { class: `drive-icon ${kind}`, html: ICONS[kind] }),
+      el("div", { class: "drive-title" },
+        el("div", {}, el("strong", {}, disk.model), " ", el("span", { class: "muted" }, fmtBytes(disk.size))),
+        el("div", { class: "drive-badges" }, badges, el("span", { class: "muted small mono" }, disk.path))),
+      ioLine),
+    vols);
+}
+
+function volumeRow(v, d) {
+  const title = v.label || (v.mountpoint && v.mountpoint !== "/" ? v.mountpoint.split("/").pop() : "") || v.name;
+  const meta = [v.fstype ? v.fstype.toUpperCase() : "no filesystem", fmtBytes(v.size), v.path].join(" · ");
+  const left = el("div", { class: "vol-name" }, el("strong", {}, title), el("div", { class: "muted small" }, meta));
+
+  let middle;
+  if (v.usage) {
+    const free = el("div", { class: "small" }, `${fmtBytes(v.usage.free)} free of ${fmtBytes(v.usage.total)}`);
+    middle = el("div", { class: "vol-usage" }, usageBar(v.usage.percent), free);
+  } else {
+    middle = el("div", { class: "vol-usage muted small" }, v.note || (v.can_mount ? "Mount it to see how full it is." : ""));
+  }
+
+  const status = v.mountpoints.length
+    ? el("div", { class: "vol-status small" }, el("span", { class: "dot on" }), " ", v.swap ? "In use (swap)" : el("span", { class: "mono" }, v.mountpoint))
+    : el("div", { class: "vol-status small muted" }, el("span", { class: "dot" }), " Not mounted");
+
+  const actions = el("div", { class: "vol-actions" });
+  const noManage = !d.can_manage ? "Needs the one-time setup shown above" : null;
+  if (v.mountpoint && !v.swap) {
+    actions.append(el("button", { type: "button", class: "small", onclick: () => { showDrivesSub("files"); browse(v.mountpoint); } }, "Open"));
+  }
+  if (v.can_unmount) {
+    actions.append(el("button", { type: "button", class: "small", disabled: !!noManage, title: noManage,
+                                  onclick: () => openUnmount(v) }, "Unmount"));
+  } else if (v.mountpoints.length && v.system) {
+    actions.append(el("span", { class: "tag", title: "Used by the operating system; can't be unmounted here" }, "System"));
+  }
+  if (v.can_mount) {
+    actions.append(el("button", { type: "button", class: "small primary", disabled: !!noManage, title: noManage,
+                                  onclick: () => openMount(v) }, "Mount…"));
+  }
+  return el("div", { class: "volume" }, left, middle, status, actions);
+}
+
+// ---- mount / unmount dialogs
+function openMount(v) {
+  const dlg = $("#mount-dialog"), f = $("#mount-form");
+  state.mountVol = v;
+  $("#mount-title").textContent = `Mount ${v.label || v.name}`;
+  $("#mount-desc").textContent = `${fmtBytes(v.size)} ${v.fstype.toUpperCase()} volume (${v.path}). Pick a name — its files will be at /mnt/<name>.`;
+  f.name.value = v.default_name;
+  f.persist.checked = false;
+  f.readonly.checked = false;
+  $("#mount-error").hidden = true;
+  $("#mount-ok").disabled = false;
+  dlg.showModal();
+  f.name.select();
+}
+$("#mount-cancel").addEventListener("click", () => $("#mount-dialog").close());
+$("#mount-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const err = $("#user-error");
+  const f = e.target, v = state.mountVol, err = $("#mount-error");
+  const name = f.name.value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(name)) {
+    err.textContent = "Use letters, digits, dots, dashes or underscores (no spaces), starting with a letter or digit.";
+    err.hidden = false; return;
+  }
+  $("#mount-ok").disabled = true;
   err.hidden = true;
   try {
-    await api("/api/users", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
-    e.target.reset();
-    loadAdmin();
-  } catch (ex) { err.textContent = ex.message; err.hidden = false; }
+    const r = await api("/api/drives/mount", { method: "POST", body: JSON.stringify({
+      device: v.path, name, persist: f.persist.checked, readonly: f.readonly.checked }) });
+    $("#mount-dialog").close();
+    toast(`Mounted at ${r.mountpoint}`);
+    loadDrives();
+  } catch (ex) { err.textContent = ex.message; err.hidden = false; $("#mount-ok").disabled = false; }
 });
-$("#pw-form").addEventListener("submit", async (e) => {
+
+function openUnmount(v) {
+  state.unmountVol = v;
+  $("#unmount-title").textContent = `Unmount ${v.label || v.mountpoint}`;
+  $("#unmount-desc").textContent = `Its files at ${v.mountpoint} will no longer be available until it's mounted again. ` +
+    "Close any files or console sessions using it first.";
+  $("#unmount-form").forget.checked = true;
+  $("#unmount-error").hidden = true;
+  $("#unmount-ok").disabled = false;
+  $("#unmount-dialog").showModal();
+}
+$("#unmount-cancel").addEventListener("click", () => $("#unmount-dialog").close());
+$("#unmount-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const msg = $("#pw-msg");
+  const v = state.unmountVol, err = $("#unmount-error");
+  $("#unmount-ok").disabled = true;
   try {
-    await api("/api/me/password", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(e.target))) });
-    msg.textContent = "Password updated. Please sign in again.";
-    msg.className = "small ok-text"; msg.hidden = false;
-    setTimeout(() => (location.href = "/login"), 1500);
-  } catch (ex) { msg.textContent = ex.message; msg.className = "small error"; msg.hidden = false; }
+    const r = await api("/api/drives/unmount", { method: "POST", body: JSON.stringify({
+      mountpoint: v.mountpoint, forget: e.target.forget.checked }) });
+    $("#unmount-dialog").close();
+    toast(r.output.includes("safe to remove") ? "Unmounted. It's now safe to remove the drive." : "Unmounted.");
+    if (state.fb && state.fb.path.startsWith(v.mountpoint)) state.fb.path = "/";
+    loadDrives();
+  } catch (ex) { err.textContent = ex.message; err.hidden = false; $("#unmount-ok").disabled = false; }
+});
+
+// ---- file browser
+function renderPlaces() {
+  const box = $("#fb-places");
+  if (!state.drives || !state.drives.available) { box.innerHTML = ""; return; }
+  box.innerHTML = "";
+  const seen = new Set();
+  const add = (label, path, kind, sub) => {
+    if (seen.has(path)) return;
+    seen.add(path);
+    box.append(el("button", { type: "button", class: `place ${state.fb && state.fb.path.startsWith(path) && (path !== "/" || state.fb.path === "/") ? "active" : ""}`,
+                              onclick: () => browse(path), title: path },
+      el("span", { class: "place-icon", html: ICONS[kind] }),
+      el("span", { class: "place-text" }, el("strong", {}, label), el("span", { class: "muted small" }, sub))));
+  };
+  add("System", "/", "internal", "/");
+  for (const disk of state.drives.disks) {
+    for (const v of disk.volumes) {
+      if (!v.mountpoint || v.swap || v.mountpoint === "/") continue;
+      const kind = disk.external ? "external" : "internal";
+      add(v.label || v.mountpoint.split("/").pop() || v.mountpoint, v.mountpoint, kind,
+          v.usage ? `${fmtBytes(v.usage.free)} free` : v.mountpoint);
+    }
+  }
+}
+
+async function browse(path, opts = {}) {
+  state.fb = state.fb || { hidden: false };
+  const msg = $("#fb-msg");
+  msg.hidden = true;
+  let r;
+  try { r = await api(`/api/files?path=${encodeURIComponent(path)}&hidden=${state.fb.hidden ? "true" : "false"}`); }
+  catch (ex) { msg.textContent = ex.message; msg.className = "small error"; msg.hidden = false; return; }
+  state.fb.path = r.path;
+  state.fb.listing = r;
+  if (!opts.keepSizes) state.fb.sizes = null;
+  renderBrowser();
+  renderPlaces();
+}
+
+function renderBrowser() {
+  const r = state.fb.listing, sizes = state.fb.sizes;
+  // breadcrumbs
+  const crumbs = $("#fb-crumbs");
+  crumbs.innerHTML = "";
+  const parts = r.path.split("/").filter(Boolean);
+  crumbs.append(el("button", { type: "button", class: "crumb", onclick: () => browse("/") }, "/"));
+  parts.forEach((p, i) => {
+    const to = "/" + parts.slice(0, i + 1).join("/");
+    if (i) crumbs.append(el("span", { class: "crumb-sep" }, "/"));
+    crumbs.append(el("button", { type: "button", class: "crumb", onclick: () => browse(to) }, p));
+  });
+  $("#fb-up").disabled = !r.parent;
+  // usage of the filesystem this folder is on
+  const u = r.usage, ub = $("#fb-usage");
+  ub.innerHTML = "";
+  if (u) ub.append(el("div", { class: "small" }, `This drive: ${fmtBytes(u.free)} free of ${fmtBytes(u.total)} (${u.percent.toFixed(0)}% used)`), usageBar(u.percent));
+  // rows
+  const tbody = $("#fb-rows");
+  tbody.innerHTML = "";
+  let entries = r.entries.slice();
+  const sizeOf = (e) => (sizes && e.name in sizes.sizes ? sizes.sizes[e.name] : e.size);
+  if (sizes) entries.sort((a, b) => (sizeOf(b) || 0) - (sizeOf(a) || 0));
+  const max = sizes ? Math.max(1, ...entries.map((e) => sizeOf(e) || 0)) : 1;
+  if (!entries.length) tbody.append(el("tr", {}, el("td", { colspan: "4", class: "muted small" }, "This folder is empty.")));
+  for (const e of entries) {
+    const full = (r.path === "/" ? "" : r.path) + "/" + e.name;
+    const name = e.dir
+      ? el("button", { type: "button", class: "fb-name link", onclick: () => browse(full) }, el("span", { class: "fb-icon dir", html: ICONS.folder }), e.name)
+      : el("span", { class: "fb-name" }, el("span", { class: "fb-icon", html: ICONS.file }), e.name);
+    if (e.link) name.append(el("span", { class: "muted small" }, " ↪"));
+    const sz = sizeOf(e);
+    const sizeCell = el("td", { class: "num nowrap" }, sz == null ? (e.dir ? "—" : "") : fmtBytes(sz));
+    if (sizes && sz) sizeCell.prepend(el("span", { class: "size-bar", style: `width:${Math.max(2, 60 * sz / max)}px` }));
+    const actions = el("td", { class: "num" });
+    if (!e.dir) actions.append(el("a", { class: "small", href: `/api/files/download?path=${encodeURIComponent(full)}`, download: e.name }, "Download"));
+    tbody.append(el("tr", {}, el("td", {}, name), sizeCell,
+      el("td", { class: "small muted nowrap hide-sm" }, e.mtime ? new Date(e.mtime * 1000).toLocaleString() : ""), actions));
+  }
+  const msg = $("#fb-msg");
+  const notes = [];
+  if (r.truncated) notes.push(`Showing the first ${r.entries.length} items.`);
+  if (sizes && !sizes.complete) notes.push("Size analysis stopped early (too many files); sizes are partial.");
+  msg.textContent = notes.join(" ");
+  msg.className = "small muted";
+  msg.hidden = !notes.length;
+}
+
+$("#fb-up").addEventListener("click", () => { if (state.fb?.listing?.parent) browse(state.fb.listing.parent); });
+$("#fb-hidden").addEventListener("change", (e) => { state.fb.hidden = e.target.checked; browse(state.fb.path); });
+$("#fb-sizes").addEventListener("click", async () => {
+  const btn = $("#fb-sizes");
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = "Analyzing…";
+  try {
+    state.fb.sizes = await api(`/api/files/sizes?path=${encodeURIComponent(state.fb.path)}`, { method: "POST" });
+    renderBrowser();
+  } catch (ex) { toast(ex.message); }
+  finally { btn.disabled = false; btn.textContent = old; }
 });
 
 boot().catch((e) => console.error(e));

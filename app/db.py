@@ -59,11 +59,29 @@ def conn() -> sqlite3.Connection:
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA foreign_keys=ON")
         _conn.executescript(SCHEMA)
+        _migrate(_conn)
         try:
             settings.db_path.chmod(0o600)
         except OSError:
             pass
     return _conn
+
+
+# Columns added after the first release; existing databases get them on startup.
+_USER_COLUMNS = {
+    "display_name": "TEXT",
+    "email": "TEXT",
+    "avatar": "BLOB",           # profile picture (PNG/JPEG/WebP, small)
+    "avatar_type": "TEXT",
+    "avatar_ver": "INTEGER NOT NULL DEFAULT 0",   # bumps on change (cache busting)
+}
+
+
+def _migrate(c: sqlite3.Connection) -> None:
+    have = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
+    for name, decl in _USER_COLUMNS.items():
+        if name not in have:
+            c.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
 
 
 @contextmanager

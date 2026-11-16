@@ -93,7 +93,7 @@ To upgrade, run `install.sh` again from a newer copy. Your config, data and user
 
 The app can update itself from [github.com/ChonaCio/SysAdmin.IA](https://github.com/ChonaCio/SysAdmin.IA):
 
-- **Web UI:** the **Check for updates** button in the top bar (every page, admins only) turns into **Update to X.Y.Z** when a newer version exists. It leads to **Admin → Updates**, which lists every version the update includes with its release notes. While an update runs, a bar with a spinner shows its progress on every page; **See details** opens the installer's output in the **Console**. The page reloads when the new version is running.
+- **Web UI:** **Admin → Updates** (the first card) has the **Check for updates** button and turns it into **Update to X.Y.Z** when a newer version exists, listing every version the update includes with its release notes. While an update runs, a bar with a spinner shows its progress on every page; **See details** opens the installer's output in the **Console**. The page reloads when the new version is running.
 - **Command line:** `sudo sysadmin-ia check-update`, then `sudo sysadmin-ia update` (it prints the installer's output until it's done).
 
 Updates are cumulative: the latest version is the **highest version number** among the repository's GitHub releases and version tags (`v1.3.3`), and an update installs it directly, whatever the installed version. Only if the repository has neither, the `VERSION` file on the `main` branch is used. To publish a new version, push a tag (or create a release) such as `v1.3.3`.
@@ -113,6 +113,21 @@ sudo bash /opt/sysadmin-ia/scripts/sysadmin-ia-hostname install
 Until then, updates fall back to replacing only the app code and Python packages: the current code is backed up to `/var/lib/sysadmin-ia/backups/app-<version>-<time>.tar.gz`, the new files are copied over `/opt/sysadmin-ia`, and the backup is restored if the new code fails to load.
 
 If the repository is private, save a GitHub token (a fine-grained token with read-only **Contents** access is enough) in **Admin → Updates** or with `sudo sysadmin-ia set-github-token`.
+
+### Drives
+
+The **Drives** tab (admins only) shows every disk connected to the server, internal and external (USB, SD cards), with its model, connection type, SSD/HDD, live read/write speed and each volume's used and free space.
+
+- **Mount…** on an unmounted volume opens a dialog with a ready-made name (the drive's label, or one based on its model) that you can change. The files then appear at `/mnt/<name>`. Optionally tick **Mount automatically when the server starts** (adds an `/etc/fstab` entry by UUID, with `nofail`, so a missing drive never blocks booting) or **Read-only**.
+- **Unmount** makes a drive safe to remove, and can also remove its start-up entry. Only drives under `/mnt`, `/media` or `/run/media` can be unmounted here; the operating system's own volumes are marked **System**.
+- **Open** / **Browse files** is a file browser with a breadcrumb path, shortcuts to every mounted drive, downloads, and **Analyze sizes**, which adds up how much space each folder uses.
+
+Supported filesystems: ext2/3/4, XFS, Btrfs, FAT32, exFAT, NTFS, F2FS, ISO 9660/UDF, HFS+. Drives are always mounted with `nosuid,nodev`. FAT, exFAT and NTFS drives are owned by the `sysadmin-ia` user so the app can read and write them. Mounting uses the same root helper as renaming and updates (no full access needed). Browsing runs as the `sysadmin-ia` user, so it shows what that user can read. Mounts, unmounts and downloads are recorded in the audit log.
+
+### Users and your profile
+
+- **Users** tab (admins only): everyone who can sign in, with their picture. Change roles (admin or viewer), set a new password for someone, delete users, and add new ones. There's always at least one admin.
+- **Your profile card** (top right) shows your picture and username. Click it for **Edit profile** (picture, username, display name, email), **Change password**, and **Sign out**. Pictures are cropped to a square in the browser and stored in the app database.
 
 ### Console
 

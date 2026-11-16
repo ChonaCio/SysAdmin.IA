@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import os
 import signal
@@ -14,7 +16,7 @@ from pydantic import BaseModel
 
 import anthropic
 
-from . import agent, auth, claude_settings, console, db, monitor, server_name, updater
+from . import agent, auth, claude_settings, console, db, drives, monitor, server_name, updater
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -125,7 +127,10 @@ async def setup_status():
 
 @app.get("/api/me")
 async def me(user: User = Depends(current_user)):
-    return {"username": user.username, "role": user.role, "model": claude_settings.model(),
+    p = auth.get_profile(user.id) or {}
+    return {"id": user.id, "username": user.username, "role": user.role,
+            "display_name": p.get("display_name", ""), "email": p.get("email", ""),
+            "avatar_url": p.get("avatar_url"), "model": claude_settings.model(),
             "allow_auto_approve": settings.allow_auto_approve,
             "console": settings.allow_console and user.is_admin,
             "api_key_configured": bool(claude_settings.api_key()[0])}
@@ -148,6 +153,50 @@ async def change_password(body: PasswordBody, request: Request, user: User = Dep
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- profile (any signed-in user)
+
+class ProfileBody(BaseModel):
+    username: str | None = None
+    display_name: str | None = None
+    email: str | None = None
+
+
+class AvatarBody(BaseModel):
+    data: str | None = None      # base64 image; None removes the picture
+    type: str | None = None      # image/png, image/jpeg or image/webp
+
+
+@app.put("/api/me/profile")
+async def update_my_profile(body: ProfileBody, request: Request, user: User = Depends(current_user)):
+    try:
+        p = auth.update_profile(user.id, body.username, body.display_name, body.email)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    changed = {k: getattr(body, k) for k in ("username", "display_name", "email") if getattr(body, k) is not None}
+    db.audit("profile_updated", p["username"], auth.client_ip(request), changed)
+    return p
+
+
+@app.put("/api/me/avatar")
+async def update_my_avatar(body: AvatarBody, request: Request, user: User = Depends(current_user)):
+    try:
+        raw = None if body.data is None else base64.b64decode(body.data, validate=True)
+        auth.set_avatar(user.id, raw, body.type)
+    except (ValueError, binascii.Error) as e:
+        raise HTTPException(400, str(e) or "Invalid picture.")
+    db.audit("avatar_" + ("removed" if raw is None else "updated"), user.username, auth.client_ip(request))
+    return auth.get_profile(user.id)
+
+
+@app.get("/api/users/{uid}/avatar")
+async def user_avatar(uid: int, user: User = Depends(current_user)):
+    found = auth.get_avatar(uid)
+    if not found:
+        raise HTTPException(404)
+    data, mime = found
+    return Response(data, media_type=mime, headers={"Content-Disposition": "inline"})
+
+
 # ---------------------------------------------------------------- users (admin)
 
 class NewUser(BaseModel):
@@ -156,9 +205,33 @@ class NewUser(BaseModel):
     role: str = "admin"
 
 
+class UserPatch(BaseModel):
+    role: str | None = None
+    password: str | None = None   # set a new password for this user
+
+
 @app.get("/api/users")
 async def users(user: User = Depends(admin_user)):
     return auth.list_users()
+
+
+@app.patch("/api/users/{uid}")
+async def patch_user(uid: int, body: UserPatch, request: Request, user: User = Depends(admin_user)):
+    target = auth.get_profile(uid)
+    if not target:
+        raise HTTPException(404)
+    try:
+        if body.role is not None:
+            if uid == user.id and body.role != "admin":
+                raise ValueError("You cannot remove your own admin role.")
+            auth.set_role(uid, body.role)
+            db.audit("user_role", user.username, auth.client_ip(request), {"username": target["username"], "role": body.role})
+        if body.password:
+            auth.set_password(uid, body.password)
+            db.audit("user_password_set", user.username, auth.client_ip(request), {"username": target["username"]})
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return auth.get_profile(uid)
 
 
 @app.post("/api/users")
@@ -175,7 +248,10 @@ async def add_user(body: NewUser, request: Request, user: User = Depends(admin_u
 async def remove_user(uid: int, request: Request, user: User = Depends(admin_user)):
     if uid == user.id:
         raise HTTPException(400, "You cannot delete yourself.")
-    auth.delete_user(uid)
+    try:
+        auth.delete_user(uid)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     db.audit("user_deleted", user.username, auth.client_ip(request), {"id": uid})
     return {"ok": True}
 
@@ -241,6 +317,76 @@ async def test_claude_settings(body: TestKeyBody, user: User = Depends(admin_use
         return {"ok": False, "message": f"API error {e.status_code}: {e.message}"}
     except anthropic.APIConnectionError:
         return {"ok": False, "message": "Could not reach api.anthropic.com from this server."}
+
+
+# ---------------------------------------------------------------- drives (admin)
+
+class MountBody(BaseModel):
+    device: str
+    name: str
+    persist: bool = False
+    readonly: bool = False
+
+
+class UnmountBody(BaseModel):
+    mountpoint: str
+    forget: bool = True
+
+
+@app.get("/api/drives")
+async def get_drives(user: User = Depends(admin_user)):
+    try:
+        return await asyncio.to_thread(drives.list_drives)
+    except drives.DriveError as e:
+        raise HTTPException(500, str(e))
+
+
+@app.post("/api/drives/mount")
+async def mount_drive(body: MountBody, request: Request, user: User = Depends(admin_user)):
+    try:
+        r = await asyncio.to_thread(drives.mount, body.device, body.name, body.persist, body.readonly)
+    except (ValueError, RuntimeError) as e:
+        db.audit("drive_mount_failed", user.username, auth.client_ip(request), {"device": body.device, "error": str(e)})
+        raise HTTPException(400, str(e))
+    db.audit("drive_mount", user.username, auth.client_ip(request),
+             {"device": body.device, "mountpoint": r["mountpoint"], "persist": body.persist, "readonly": body.readonly})
+    return r
+
+
+@app.post("/api/drives/unmount")
+async def unmount_drive(body: UnmountBody, request: Request, user: User = Depends(admin_user)):
+    try:
+        r = await asyncio.to_thread(drives.unmount, body.mountpoint, body.forget)
+    except (ValueError, RuntimeError) as e:
+        raise HTTPException(400, str(e))
+    db.audit("drive_unmount", user.username, auth.client_ip(request), {"mountpoint": r["mountpoint"], "forget": body.forget})
+    return r
+
+
+@app.get("/api/files")
+async def list_files(path: str = "/", hidden: bool = False, user: User = Depends(admin_user)):
+    try:
+        return await asyncio.to_thread(drives.list_dir, path, hidden)
+    except drives.DriveError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/files/sizes")
+async def file_sizes(path: str, user: User = Depends(admin_user)):
+    try:
+        return await asyncio.to_thread(drives.folder_sizes, path)
+    except drives.DriveError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/files/download")
+async def download_file(path: str, request: Request, user: User = Depends(admin_user)):
+    try:
+        p = drives.file_for_download(path)
+    except drives.DriveError as e:
+        raise HTTPException(400, str(e))
+    db.audit("file_download", user.username, auth.client_ip(request), str(p))
+    return FileResponse(p, filename=p.name, media_type="application/octet-stream")
 
 
 # ---------------------------------------------------------------- server name (admin)
