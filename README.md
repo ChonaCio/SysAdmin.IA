@@ -77,15 +77,29 @@ Copy the new version to the server and run `sudo ./install.sh` again. The instal
 
 The command-line tool `lscctl` is now called `sysadmin-ia`.
 
-### Adding the API key later
+### AI connections (Claude, ChatGPT, Grok, Copilot, Gemini, …)
 
-You don't need to restart for any of these:
+The **AI connections** module (left sidebar → Settings) manages which AI services the chat can use. You can add as many connections as you like, and edit, test, disable or delete them. One of them is the **default**; each chat can switch to another with the picker next to the message box (the chat remembers its choice).
 
-- **Web UI:** sign in as an admin, open **Admin → Claude API**, paste the key, click **Test**, then **Save**. You can also change the model and effort there.
-- **Command line:** `sudo sysadmin-ia set-api-key` (it prompts for the key), then `sudo sysadmin-ia claude-status` to check.
-- **Config file:** set `ANTHROPIC_API_KEY=` in `/etc/sysadmin-ia/sysadmin-ia.env` and run `sudo systemctl restart sysadmin-ia`.
+| Provider | How it connects |
+|---|---|
+| **Anthropic Claude** | Anthropic API key · **Google Cloud (Vertex AI)** with a service-account key or the server's Google login · **Amazon Bedrock** with AWS keys or the server's AWS credentials |
+| **OpenAI (ChatGPT)** | OpenAI API key (a ChatGPT Plus/Pro subscription is separate from API access) |
+| **Microsoft Azure OpenAI** | Azure endpoint + key + deployment (the platform Microsoft Copilot is built on) |
+| **GitHub Models (Copilot)** | GitHub token with "Models: read" (OpenAI, xAI, Meta and other models through GitHub) |
+| **xAI Grok** · **Groq** · **Google Gemini** · **Mistral** · **DeepSeek** · **OpenRouter** | API key |
+| **Ollama** | Local models, no sign-in |
+| **Other (OpenAI-compatible)** | Base URL + optional key (vLLM, LM Studio, Together, Fireworks, LiteLLM, …) |
 
-A key saved in the web UI or with the `sysadmin-ia` command takes precedence over the config file. It's stored in the app database (`/var/lib/sysadmin-ia/sysadmin-ia.sqlite3`, readable only by the `sysadmin-ia` user), and the UI only ever shows a masked hint of it. Until a key is set, the chat shows a banner linking to the settings.
+**Load models** asks the service which models your key can use, and **Test connection** checks the settings before you save. The assistant needs a model that supports tool (function) calling, which all the suggested models do. Claude gets the most capable tools: Anthropic's built-in shell and editor tools, adaptive thinking, and the effort setting. Other models get the same three tools as plain functions. A chat can change provider partway through.
+
+**Signing in with Google.** Claude.ai and Claude Code subscription logins, including "Sign in with Google", can't be used by other applications under Anthropic's terms, so they aren't offered. To use Claude with your Google account, add **Anthropic Claude → Google Cloud (Vertex AI)**. Either paste a service-account key, or leave it empty and sign the server in once from the **Console**: `gcloud auth application-default login` (needs the Google Cloud CLI).
+
+Keys and credentials are stored in the app database (`/var/lib/sysadmin-ia/sysadmin-ia.sqlite3`, readable only by the `sysadmin-ia` user), are never sent back to the browser, and every change is recorded in the audit log. A provider's key can also come from the config file instead (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `GITHUB_TOKEN`): leave the key empty in the connection.
+
+From the command line: `sudo sysadmin-ia set-api-key` saves the key of the Claude connection (creating it if needed), and `sudo sysadmin-ia ai-status` lists the connections.
+
+Upgrading from an older version turns the key, model and effort from the old **Admin → Claude API** card into a connection called "Claude", automatically.
 
 To upgrade, run `install.sh` again from a newer copy. Your config, data and users are kept, and the current app state (including Claude's edits) is committed to git first.
 
@@ -142,8 +156,9 @@ The **Console** tab (admins only) is a terminal on the server in the browser: a 
 | Add user | `sudo sysadmin-ia create-user bob --role admin` (or `viewer`) |
 | Reset password | `sudo sysadmin-ia reset-password alice` |
 | Audit log | `sudo sysadmin-ia audit -n 100` |
-| Set / remove API key | `sudo sysadmin-ia set-api-key` / `sudo sysadmin-ia clear-api-key` |
-| Change model | `sudo sysadmin-ia set-model claude-sonnet-5-5` (or use Admin → Claude API) |
+| List AI connections | `sudo sysadmin-ia ai-status` (manage them in the AI connections module) |
+| Set / remove the Claude API key | `sudo sysadmin-ia set-api-key` / `sudo sysadmin-ia clear-api-key` |
+| Change the default connection's model | `sudo sysadmin-ia set-model claude-sonnet-5-5` |
 | Show / change the server name | `sudo sysadmin-ia server-name` / `sudo sysadmin-ia set-server-name NAME` (or Admin → Server name) |
 | Reboot the server | `sudo sysadmin-ia reboot` (or Admin → Server name → Reboot server) |
 | Check for / install updates | `sudo sysadmin-ia check-update` / `sudo sysadmin-ia update` (or Admin → Updates) |
@@ -155,9 +170,8 @@ The **Console** tab (admins only) is a terminal on the server in the browser: a 
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | – | Your API key. Optional; a key saved in the web UI overrides it |
-| `SAI_MODEL` | `claude-opus-5-5` | Default Claude model; the web UI can override it |
-| `SAI_EFFORT` | `high` | Default effort: `low` / `medium` / `high` / `xhigh` / `max`. Higher is more thorough, slower and more expensive. The web UI can override it |
+| `ANTHROPIC_API_KEY` (and `OPENAI_API_KEY`, `XAI_API_KEY`, …) | – | Optional API keys used by AI connections whose key field is left empty |
+| `SAI_MODEL` / `SAI_EFFORT` | `claude-opus-5-5` / `high` | Only used once, when an older install's Claude key is turned into the first AI connection |
 | `SAI_MAX_TOKENS` | `64000` | Max output tokens per response |
 | `SAI_FALLBACKS` | `default` | Server-side refusal fallback (another model answers if one declines). Empty disables it |
 | `SAI_HOST` | `0.0.0.0` | Listen address |
@@ -188,7 +202,7 @@ This app gives a web page root-level control of the server if you grant full acc
 ## How it works
 
 ```
-browser ─HTTP(S)/WebSocket─► FastAPI (app/main.py) ──► Claude API (streaming, tool use)
+browser ─HTTP(S)/WebSocket─► FastAPI (app/main.py) ──► AI connection (app/providers.py: Claude API / Vertex / Bedrock, or an OpenAI-compatible API) — streaming, tool use
                                  │                        │
                                  │      tool_use ◄────────┘
                                  ▼
@@ -207,7 +221,7 @@ browser ─HTTP(S)/WebSocket─► FastAPI (app/main.py) ──► Claude API (s
 ```bash
 python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # API key optional here; you can add it in Admin → Claude API
+cp .env.example .env   # API keys optional here; add connections in the AI connections module
 python -m app.cli create-user admin
 python -m app          # http://127.0.0.1:8765
 ```

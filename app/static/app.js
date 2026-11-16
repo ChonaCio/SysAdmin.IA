@@ -56,7 +56,7 @@ function setBar(el, pct) { el.style.width = `${Math.min(100, pct)}%`; el.classNa
 async function boot() {
   state.me = await api("/api/me");
   renderProfileCard();
-  if (!state.me.api_key_configured) $("#api-warning").hidden = false;
+  if (!state.me.ai_ready && state.me.role === "admin") $("#api-warning").hidden = false;
   if (!state.me.allow_auto_approve) $("#auto-approve-wrap").hidden = true;
   if (state.me.role !== "admin") {
     $("#tab-chat").hidden = true;
@@ -65,6 +65,7 @@ async function boot() {
   } else {
     connectWs();
     loadConversations();
+    loadChatConnections();
     if (state.me.console) $("#tab-console").hidden = false;
     // Resume showing an update that is still running.
     api("/api/update/progress").then((p) => {
@@ -88,7 +89,9 @@ function switchView(v) {
   $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === v));
   $$(".view").forEach((s) => s.classList.toggle("active", s.id === `view-${v}`));
   closeProfileMenu();
+  closeNav();
   clearInterval(state.drivesTimer);
+  if (v === "ai") loadAi();
   if (v === "admin") loadAdmin();
   if (v === "monitor") { drawCharts(); refreshProcs(); }
   if (v === "console") showConsoleSession(state.consoleSession || "shell");
@@ -97,6 +100,31 @@ function switchView(v) {
   if (v === "profile") loadProfilePage();
   if (v === "password") { $("#pw-form").reset(); setFormMsg("#pw-msg", ""); $("#pw-form").current_password.focus(); }
 }
+// ---- left sidebar: off-canvas on phones (menu button), collapsible to icons on wider screens
+function closeNav() {
+  document.body.classList.remove("nav-open");
+  $("#nav-scrim").hidden = true;
+  $("#nav-toggle").setAttribute("aria-expanded", "false");
+}
+$("#nav-toggle").addEventListener("click", () => {
+  const open = !document.body.classList.contains("nav-open");
+  document.body.classList.toggle("nav-open", open);
+  $("#nav-scrim").hidden = !open;
+  $("#nav-toggle").setAttribute("aria-expanded", String(open));
+});
+$("#nav-scrim").addEventListener("click", closeNav);
+function setNavCollapsed(collapsed) {
+  document.body.classList.toggle("nav-collapsed", collapsed);
+  const b = $("#nav-collapse");
+  b.title = collapsed ? "Expand the sidebar" : "Collapse the sidebar";
+  b.querySelector("span").textContent = collapsed ? "Expand" : "Collapse";
+  try { localStorage.setItem("sai.navCollapsed", collapsed ? "1" : ""); } catch { /* private mode */ }
+  // terminals and charts depend on the width
+  if (state.view === "console" && consoles[state.consoleSession]) setTimeout(() => consoles[state.consoleSession].fit.fit(), 250);
+}
+$("#nav-collapse").addEventListener("click", () => setNavCollapsed(!document.body.classList.contains("nav-collapsed")));
+try { if (localStorage.getItem("sai.navCollapsed")) setNavCollapsed(true); } catch { /* private mode */ }
+
 $$("[data-back]").forEach((b) => b.addEventListener("click", () =>
   switchView(state.lastTab || (state.me.role === "admin" ? "chat" : "monitor"))));
 
@@ -355,6 +383,9 @@ function handleEvent(ev) {
       state.convId = ev.id;
       loadConversations();
       break;
+    case "connection":   // which AI connection is answering this chat
+      if (ev.conversation_id === state.convId) { state.convConnection = ev.id; selectChatConnection(ev.id); }
+      break;
     case "assistant_start":
       state.currentAssistant = null;
       state.currentThinking = null;
@@ -555,7 +586,8 @@ $$(".chip").forEach((c) => c.addEventListener("click", () => { input.value = c.t
 function sendMessage() {
   const text = input.value.trim();
   if (!text || state.busy) return;
-  if (!wsSend({ type: "chat", conversation_id: state.convId, text })) return;
+  const connection_id = Number($("#chat-connection").value) || null;
+  if (!wsSend({ type: "chat", conversation_id: state.convId, text, connection_id })) return;
   addMessage("user", text);
   input.value = "";
   input.style.height = "auto";
@@ -593,6 +625,8 @@ function clearMessages() {
 function newChat() {
   if (state.busy) { toast("Stop the current task first."); return; }
   state.convId = null;
+  state.convConnection = null;
+  selectChatConnection(null);   // new chats start on the default connection
   clearMessages();
   emptyState.hidden = false;
   messagesEl.appendChild(emptyState);
@@ -605,6 +639,8 @@ async function openConversation(id) {
   if (state.busy) { toast("Stop the current task first."); return; }
   const conv = await api(`/api/conversations/${id}`);
   state.convId = id;
+  state.convConnection = conv.connection_id || null;
+  selectChatConnection(state.convConnection);
   clearMessages();
   for (const it of conv.items) {
     if (it.kind === "text" && it.role === "user") addMessage("user", it.text);
@@ -725,74 +761,229 @@ function startMonitor() {
   setInterval(() => state.view === "monitor" && refreshProcs(), 5000);
 }
 
-// ------------------------------------------------------------ admin
-// ------------------------------------------------------------ Claude API settings
-function setClaudeMsg(text, ok) {
-  const m = $("#claude-msg");
-  m.textContent = text;
-  m.className = `small ${ok ? "ok-text" : "error"}`;
-  m.hidden = !text;
+// ------------------------------------------------------------ AI connections module
+function providerBadge(color, text) {
+  const b = document.createElement("span");
+  b.className = "prov-badge";
+  b.style.background = color;
+  b.textContent = (text || "?").slice(0, 2);
+  return b;
 }
 
-function renderClaudeSettings(s) {
-  const form = $("#claude-form");
-  const pill = $("#key-status");
-  pill.textContent = s.api_key_set ? "connected" : "not configured";
-  pill.className = `status-pill ${s.api_key_set ? "ok" : "warn"}`;
-  form.api_key.value = "";
-  form.api_key.placeholder = s.api_key_set
-    ? `${s.api_key_hint} (saved${s.api_key_source === "config" ? " in config file" : ""}) — type to replace`
-    : "sk-ant-…";
-  $("#clear-key").hidden = s.api_key_source !== "web";
-  $("#key-help").textContent = s.api_key_source === "config"
-    ? "Currently using the key from the server config file. A key saved here takes precedence."
-    : "Get a key at console.anthropic.com. It is stored on this server and never shown again.";
-  form.model.value = s.model;
-  $("#model-options").innerHTML = s.suggested_models.map((m) => `<option value="${esc(m)}">`).join("");
-  form.effort.innerHTML = s.effort_levels.map((e) => `<option value="${e}">${e}</option>`).join("");
-  form.effort.value = s.effort;
-  state.me.api_key_configured = s.api_key_set;
-  $("#api-warning").hidden = s.api_key_set;
+async function loadAiCatalog() {
+  if (!state.aiCatalog) state.aiCatalog = await api("/api/ai/providers");
+  return state.aiCatalog;
 }
 
-async function loadClaudeSettings() {
-  renderClaudeSettings(await api("/api/claude-settings"));
+async function loadAi() {
+  const list = $("#ai-list");
+  let conns;
+  try { [conns] = await Promise.all([api("/api/ai/connections"), loadAiCatalog()]); }
+  catch (ex) { list.textContent = ex.message; return; }
+  state.aiConnections = conns;
+  list.innerHTML = "";
+  if (!conns.length) {
+    list.append(el("div", { class: "card empty-card" },
+      el("strong", {}, "No AI connections yet"),
+      el("p", { class: "muted small" }, "Add one to start chatting: Claude, ChatGPT, Grok, Gemini, Copilot (Azure / GitHub Models), Groq, Mistral, local models with Ollama, and more."),
+      el("button", { type: "button", class: "primary", onclick: () => openAiEditor() }, "+ Add connection")));
+  }
+  for (const c of conns) {
+    const status = [];
+    if (c.is_default) status.push(el("span", { class: "tag tag-accent" }, "Default"));
+    if (!c.enabled) status.push(el("span", { class: "tag" }, "Disabled"));
+    const cred = c.uses_env_key ? "key from the server config file"
+      : Object.keys(c.secrets_set).length === 0 ? "no sign-in needed"
+      : Object.values(c.secrets_set).some(Boolean) ? "credentials saved" : (c.method === "vertex" || c.method === "bedrock" ? "server's own login" : "no key saved");
+    const result = el("p", { class: "small", hidden: true });
+    const actions = el("div", { class: "ai-actions" },
+      el("button", { type: "button", class: "small", onclick: async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        result.hidden = false; result.className = "small muted"; result.textContent = "Testing…";
+        try {
+          const r = await api("/api/ai/test", { method: "POST", body: JSON.stringify({ id: c.id }) });
+          result.className = `small ${r.ok ? "ok-text" : "error"}`; result.textContent = r.message;
+        } catch (ex) { result.className = "small error"; result.textContent = ex.message; }
+        b.disabled = false;
+      } }, "Test"),
+      el("button", { type: "button", class: "small", onclick: () => openAiEditor(c) }, "Edit"),
+      !c.is_default && c.enabled ? el("button", { type: "button", class: "small ghost", onclick: async () => {
+        try { await api(`/api/ai/connections/${c.id}/default`, { method: "POST" }); loadAi(); loadChatConnections(); }
+        catch (ex) { toast(ex.message); }
+      } }, "Make default") : null,
+      el("button", { type: "button", class: "small ghost danger", onclick: async () => {
+        if (!confirm(`Delete the AI connection “${c.name}”? Its saved key or credentials are deleted too. Chats that used it switch to the default connection.`)) return;
+        try { await api(`/api/ai/connections/${c.id}`, { method: "DELETE" }); toast(`Deleted “${c.name}”.`); loadAi(); loadChatConnections(); }
+        catch (ex) { toast(ex.message); }
+      } }, "Delete"));
+    list.append(el("div", { class: `card ai-card ${c.enabled ? "" : "disabled"}` },
+      el("div", { class: "ai-card-head" },
+        providerBadge(c.color, c.short),
+        el("div", { class: "ai-card-title" },
+          el("div", {}, el("strong", {}, c.name), " ", status),
+          el("div", { class: "muted small" }, `${c.provider_label} · ${c.method_label}`),
+          el("div", { class: "small" }, el("span", { class: "muted" }, "Model "), el("span", { class: "mono" }, c.model),
+             el("span", { class: "muted" }, ` · ${cred}`))),
+        actions),
+      result));
+  }
+  state.me.ai_ready = conns.some((c) => c.enabled);
+  $("#api-warning").hidden = state.me.ai_ready;
 }
 
-$("#claude-form").addEventListener("submit", async (e) => {
+$("#ai-add").addEventListener("click", () => openAiEditor());
+$("#goto-ai").addEventListener("click", (e) => { e.preventDefault(); switchView("ai"); });
+
+// ---- editor dialog
+async function openAiEditor(conn = null) {
+  const cat = await loadAiCatalog();
+  const f = $("#ai-form");
+  state.aiEditing = conn;
+  $("#ai-dialog-title").textContent = conn ? `Edit “${conn.name}”` : "Add AI connection";
+  const sel = $("#ai-provider");
+  sel.innerHTML = "";
+  for (const [id, p] of Object.entries(cat.providers)) sel.append(el("option", { value: id }, p.label));
+  sel.value = conn ? conn.provider : "anthropic";
+  f.effort.innerHTML = cat.effort_levels.map((e) => `<option value="${e}">${e}</option>`).join("");
+  f.name.value = conn ? conn.name : "";
+  f.enabled.checked = conn ? conn.enabled : true;
+  f.is_default.checked = conn ? conn.is_default : !(state.aiConnections || []).length;
+  state.aiMethod = conn ? conn.method : null;
+  renderAiProvider(conn);
+  setFormMsg("#ai-msg", "");
+  $("#ai-save").disabled = false;
+  $("#ai-dialog").showModal();
+}
+
+function renderAiProvider(conn = null) {
+  const cat = state.aiCatalog, f = $("#ai-form");
+  const pid = $("#ai-provider").value, p = cat.providers[pid];
+  $("#ai-provider-desc").textContent = p.description;
+  const methods = Object.entries(p.methods);
+  if (!state.aiMethod || !p.methods[state.aiMethod]) state.aiMethod = methods[0][0];
+  const box = $("#ai-methods");
+  box.innerHTML = "";
+  for (const [mid, m] of methods) {
+    const input = el("input", { type: "radio", name: "method", value: mid });
+    input.checked = mid === state.aiMethod;
+    input.addEventListener("change", () => { state.aiMethod = mid; renderAiFields(conn); });
+    box.append(el("label", { class: "method-option" }, input, el("span", {}, m.label)));
+  }
+  $("#ai-methods-wrap").hidden = methods.length < 2;
+  if (!f.name.value || (state.aiPrevShort && f.name.value === state.aiPrevShort)) f.name.value = p.short;
+  state.aiPrevShort = p.short;
+  const sameProvider = conn && conn.provider === pid;
+  f.model.value = sameProvider ? conn.model : (p.default_model || "");
+  $("#ai-model-options").innerHTML = (p.models || []).map((m) => `<option value="${esc(m)}">`).join("");
+  $("#ai-effort-wrap").hidden = !p.supports_effort;
+  f.effort.value = (sameProvider && conn.config.effort) || "high";
+  renderAiFields(conn);
+}
+
+function renderAiFields(conn) {
+  const cat = state.aiCatalog, pid = $("#ai-provider").value, p = cat.providers[pid];
+  const m = p.methods[state.aiMethod];
+  const same = conn && conn.provider === pid && conn.method === state.aiMethod;
+  $("#ai-method-help").textContent = m.help || "";
+  $("#ai-model-label").textContent = m.model_label || "Model";
+  $("#ai-model-help").textContent = m.model_help || (p.models && p.models.length ? "Pick a suggestion, type any model ID, or use Load models." : "");
+  const box = $("#ai-fields");
+  box.innerHTML = "";
+  for (const fd of m.fields) {
+    const id = `ai-f-${fd.key}`;
+    let input;
+    if (fd.type === "textarea") input = el("textarea", { id, rows: "4", spellcheck: "false" });
+    else input = el("input", { id, type: fd.type === "password" ? "password" : (fd.type === "url" ? "url" : "text"), spellcheck: "false", autocomplete: "off" });
+    input.dataset.key = fd.key;
+    input.dataset.secret = fd.secret ? "1" : "";
+    if (fd.secret) {
+      const isSet = same && conn.secrets_set[fd.key];
+      input.placeholder = isSet ? "saved — leave empty to keep it, or type a new one" : (fd.placeholder || "");
+      if (fd.key === "api_key" && !isSet && p.env_key_available) input.placeholder = `optional — ${p.env_key} from the server config file is used`;
+    } else {
+      input.value = same ? (conn.config[fd.key] ?? "") : (fd.default || "");
+      input.placeholder = fd.placeholder || "";
+    }
+    const label = el("label", { for: id }, fd.label, fd.required ? "" : el("span", { class: "muted small" }, " (optional)"), input);
+    if (fd.help) label.append(el("span", { class: "muted small" }, fd.help));
+    if (fd.secret && same && conn.secrets_set[fd.key]) {
+      const clear = el("label", { class: "check small" }, el("input", { type: "checkbox", "data-clear": fd.key }), "Remove the saved value");
+      label.append(clear);
+    }
+    box.append(label);
+  }
+}
+$("#ai-provider").addEventListener("change", () => { state.aiMethod = null; renderAiProvider(state.aiEditing); });
+
+function aiFormBody() {
+  const f = $("#ai-form");
+  const body = { name: f.name.value.trim(), provider: $("#ai-provider").value, method: state.aiMethod,
+                 config: { model: f.model.value.trim(), effort: f.effort.value }, secrets: {}, clear_secrets: [],
+                 enabled: f.enabled.checked, is_default: f.is_default.checked };
+  $$("#ai-fields [data-key]").forEach((i) => {
+    if (i.dataset.secret) { if (i.value.trim()) body.secrets[i.dataset.key] = i.value.trim(); }
+    else body.config[i.dataset.key] = i.value.trim();
+  });
+  $$("#ai-fields [data-clear]").forEach((c) => { if (c.checked) body.clear_secrets.push(c.dataset.clear); });
+  return body;
+}
+
+$("#ai-cancel").addEventListener("click", () => $("#ai-dialog").close());
+$("#ai-form").addEventListener("submit", async (e) => {
   e.preventDefault();
-  const f = e.target;
-  const body = { model: f.model.value.trim(), effort: f.effort.value };
-  if (f.api_key.value.trim()) body.api_key = f.api_key.value.trim();
+  const body = aiFormBody(), editing = state.aiEditing;
+  $("#ai-save").disabled = true;
   try {
-    renderClaudeSettings(await api("/api/claude-settings", { method: "PUT", body: JSON.stringify(body) }));
-    setClaudeMsg("Saved.", true);
-  } catch (ex) { setClaudeMsg(ex.message, false); }
+    await api(editing ? `/api/ai/connections/${editing.id}` : "/api/ai/connections",
+              { method: editing ? "PUT" : "POST", body: JSON.stringify(body) });
+    $("#ai-dialog").close();
+    toast(editing ? "Connection saved." : `Added “${body.name}”.`);
+    loadAi(); loadChatConnections();
+  } catch (ex) { setFormMsg("#ai-msg", ex.message, false); }
+  $("#ai-save").disabled = false;
+});
+$("#ai-test").addEventListener("click", async () => {
+  const b = $("#ai-test");
+  b.disabled = true;
+  setFormMsg("#ai-msg", "Testing…");
+  try {
+    const r = await api("/api/ai/test", { method: "POST", body: JSON.stringify({ id: state.aiEditing?.id || null, draft: aiFormBody() }) });
+    setFormMsg("#ai-msg", r.message, r.ok);
+  } catch (ex) { setFormMsg("#ai-msg", ex.message, false); }
+  b.disabled = false;
+});
+$("#ai-load-models").addEventListener("click", async () => {
+  const b = $("#ai-load-models");
+  b.disabled = true; b.textContent = "Loading…";
+  try {
+    const r = await api("/api/ai/models", { method: "POST", body: JSON.stringify({ id: state.aiEditing?.id || null, draft: aiFormBody() }) });
+    $("#ai-model-options").innerHTML = r.models.map((m) => `<option value="${esc(m)}">`).join("");
+    setFormMsg("#ai-msg", `${r.models.length} models available. Click the Model box to pick one.`);
+  } catch (ex) { setFormMsg("#ai-msg", ex.message, false); }
+  b.disabled = false; b.textContent = "Load models";
 });
 
-$("#test-key").addEventListener("click", async () => {
-  const typed = $("#claude-form").api_key.value.trim();
-  setClaudeMsg("Testing…", true);
-  try {
-    const r = await api("/api/claude-settings/test", { method: "POST", body: JSON.stringify({ api_key: typed || null }) });
-    setClaudeMsg(r.message + (r.ok && typed ? " Click Save to keep it." : ""), r.ok);
-  } catch (ex) { setClaudeMsg(ex.message, false); }
-});
-
-$("#clear-key").addEventListener("click", async () => {
-  if (!confirm("Remove the API key saved in the web UI?")) return;
-  try {
-    renderClaudeSettings(await api("/api/claude-settings", { method: "PUT", body: JSON.stringify({ clear_api_key: true }) }));
-    setClaudeMsg("Key removed.", true);
-  } catch (ex) { setClaudeMsg(ex.message, false); }
-});
-
-$("#goto-claude-settings").addEventListener("click", (e) => {
-  e.preventDefault();
-  switchView("admin");
-  $("#claude-card").scrollIntoView({ behavior: "smooth" });
-  $("#claude-form").api_key.focus();
-});
+// ---- chat: which connection answers
+async function loadChatConnections() {
+  if (!state.me || state.me.role !== "admin") return;
+  let conns = [];
+  try { conns = await api("/api/chat/connections"); } catch { /* ignore */ }
+  state.chatConnections = conns;
+  const sel = $("#chat-connection");
+  sel.innerHTML = "";
+  for (const c of conns) sel.append(el("option", { value: String(c.id) }, `${c.name}${c.is_default ? " (default)" : ""} · ${c.model}`));
+  if (!conns.length) sel.append(el("option", { value: "" }, "No AI connection"));
+  sel.disabled = !conns.length;
+  selectChatConnection(state.convConnection);
+  state.me.ai_ready = conns.length > 0;
+  $("#api-warning").hidden = state.me.ai_ready;
+}
+function selectChatConnection(id) {
+  const sel = $("#chat-connection"), conns = state.chatConnections || [];
+  const pick = conns.find((c) => c.id === id) || conns.find((c) => c.is_default) || conns[0];
+  if (pick) sel.value = String(pick.id);
+}
+$("#chat-connection").addEventListener("change", (e) => { state.convConnection = Number(e.target.value) || null; });
 
 // ------------------------------------------------------------ server name
 function setSnMsg(text, ok) {
@@ -1204,7 +1395,6 @@ $("#update-clear-token").addEventListener("click", async () => {
 
 async function loadAdmin() {
   if (state.me.role !== "admin") return;
-  loadClaudeSettings().catch((e) => setClaudeMsg(e.message, false));
   loadUpdate().catch((e) => setUpdateMsg(e.message, false));
   loadServerName().catch((e) => setSnMsg(e.message, false));
   loadAudit();

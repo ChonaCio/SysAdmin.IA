@@ -9,15 +9,11 @@
 </head>
 <body>
   <header class="topbar">
+    <button type="button" class="ghost nav-toggle" id="nav-toggle" aria-controls="sidenav" aria-expanded="false" title="Menu">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><span class="sr-only">Menu</span>
+    </button>
     <div class="brand"><span class="dot" id="conn-dot" title="Connection"></span> <strong id="hostname">SysAdmin.IA</strong> <span class="muted small" id="host-os"></span></div>
-    <nav class="tabs" role="tablist">
-      <button data-view="chat" class="tab active" id="tab-chat">Chat</button>
-      <button data-view="monitor" class="tab">Monitor</button>
-      <button data-view="drives" class="tab admin-only" id="tab-drives">Drives</button>
-      <button data-view="console" class="tab" id="tab-console" hidden>Console</button>
-      <button data-view="users" class="tab admin-only" id="tab-users">Users</button>
-      <button data-view="admin" class="tab admin-only" id="tab-admin">Admin</button>
-    </nav>
+    <span class="spacer"></span>
     <div class="user">
       <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Your account">
         <span class="avatar" id="profile-btn-avatar"></span>
@@ -46,6 +42,33 @@
     <button type="button" id="updating-details" class="small">See details</button>
   </div>
 
+  <div class="shell">
+  <!-- ================= MODULES (left sidebar) ================= -->
+  <nav class="sidenav" id="sidenav" aria-label="Modules">
+    <div class="nav-group admin-only">Workspace</div>
+    <button data-view="chat" class="tab nav-item active" id="tab-chat" title="Chat">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Chat</span></button>
+    <button data-view="console" class="tab nav-item" id="tab-console" title="Console" hidden>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span>Console</span></button>
+    <div class="nav-group">Server</div>
+    <button data-view="monitor" class="tab nav-item" id="tab-monitor" title="Monitor">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg><span>Monitor</span></button>
+    <button data-view="drives" class="tab nav-item admin-only" id="tab-drives" title="Drives">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="16.5" cy="12" r="1.2"/><path d="M6 12h6"/></svg><span>Drives</span></button>
+    <div class="nav-group admin-only">Settings</div>
+    <button data-view="ai" class="tab nav-item admin-only" id="tab-ai" title="AI connections">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></svg><span>AI connections</span></button>
+    <button data-view="users" class="tab nav-item admin-only" id="tab-users" title="Users">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/></svg><span>Users</span></button>
+    <button data-view="admin" class="tab nav-item admin-only" id="tab-admin" title="Admin">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg><span>Admin</span></button>
+    <span class="spacer"></span>
+    <button type="button" class="nav-item nav-collapse" id="nav-collapse" title="Collapse the sidebar">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg><span>Collapse</span></button>
+  </nav>
+  <div class="nav-scrim" id="nav-scrim" hidden></div>
+
+  <main class="main">
   <!-- ================= CHAT ================= -->
   <section id="view-chat" class="view active">
     <aside class="sidebar">
@@ -53,11 +76,11 @@
       <ul id="conv-list" class="conv-list"></ul>
     </aside>
     <div class="chat-main">
-      <div id="api-warning" class="banner warn" hidden>Claude isn't connected yet: no Anthropic API key is configured. <a href="#" id="goto-claude-settings">Add one in Admin → Claude API</a>. The monitor works without it.</div>
+      <div id="api-warning" class="banner warn" hidden>No AI is connected yet. <a href="#" id="goto-ai">Add an AI connection</a> (Claude, ChatGPT, Grok, Gemini and more). The monitor works without it.</div>
       <div id="messages" class="messages">
         <div class="empty" id="empty-state">
-          <h2>Ask Claude about this server</h2>
-          <p class="muted">Claude can run commands and edit files here, including this app's own code. Every change waits for your approval.</p>
+          <h2>Ask the AI about this server</h2>
+          <p class="muted">The assistant can run commands and edit files here, including this app's own code. Every change waits for your approval.</p>
           <div class="suggestions">
             <button class="chip">Give me a health check of this server</button>
             <button class="chip">What is using the most disk space?</button>
@@ -67,8 +90,12 @@
         </div>
       </div>
       <form id="composer" class="composer">
-        <textarea id="input" rows="2" placeholder="Message Claude… (Enter to send, Shift+Enter for newline)"></textarea>
+        <textarea id="input" rows="2" placeholder="Message the assistant… (Enter to send, Shift+Enter for newline)"></textarea>
         <div class="composer-bar">
+          <label class="conn-pick" title="Which AI answers in this chat">
+            <span class="sr-only">AI connection</span>
+            <select id="chat-connection"></select>
+          </label>
           <label class="toggle" id="auto-approve-wrap" title="Run actions without asking. Use with care.">
             <input type="checkbox" id="auto-approve"> Auto-approve actions
           </label>
@@ -172,28 +199,6 @@
             <span class="muted small" id="update-token-help">A fine-grained token with read-only “Contents” access to the repository is enough.</span>
           </form>
         </details>
-      </div>
-      <div class="card admin-only" id="claude-card">
-        <h3>Claude API <span class="status-pill" id="key-status"></span></h3>
-        <form id="claude-form" class="settings-form" autocomplete="off">
-          <label>API key
-            <span class="row">
-              <input name="api_key" type="password" placeholder="sk-ant-…" autocomplete="off" spellcheck="false">
-              <button type="button" id="test-key" class="ghost">Test</button>
-              <button type="button" id="clear-key" class="ghost danger" hidden>Remove saved key</button>
-            </span>
-            <span class="muted small" id="key-help">Get a key at console.anthropic.com. It is stored on this server and never shown again.</span>
-          </label>
-          <label>Model
-            <input name="model" list="model-options" spellcheck="false">
-            <datalist id="model-options"></datalist>
-          </label>
-          <label>Effort
-            <select name="effort"></select>
-            <span class="muted small">Higher effort is more thorough, but slower and more expensive.</span>
-          </label>
-          <div class="row"><button class="primary">Save</button><span class="small" id="claude-msg" hidden></span></div>
-        </form>
       </div>
       <div class="card admin-only" id="server-name-card">
         <h3>Server name <span class="status-pill" id="sn-status"></span></h3>
@@ -336,6 +341,63 @@
       </div>
     </div>
   </section>
+
+  <!-- ================= AI CONNECTIONS ================= -->
+  <section id="view-ai" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>AI connections</h2>
+          <p class="muted small">The AI services the chat can use. Each chat can pick one; the <strong>default</strong> is used otherwise.</p>
+        </div>
+        <button type="button" class="primary" id="ai-add">+ Add connection</button>
+      </div>
+      <div id="ai-list" class="ai-list"></div>
+      <p class="small muted">API keys and credentials are stored on this server and are never shown again after saving.
+        <strong>Claude.ai / Claude Code subscription logins</strong> (including “Sign in with Google”) can't be used by other apps
+        under Anthropic's terms: to use Claude with your Google account, add Claude through <strong>Google Cloud (Vertex AI)</strong>.</p>
+    </div>
+  </section>
+  </main>
+  </div>
+
+  <dialog id="ai-dialog" class="dialog wide">
+    <form id="ai-form" autocomplete="off">
+      <h3 id="ai-dialog-title">Add AI connection</h3>
+      <label>Provider
+        <select name="provider" id="ai-provider" required></select>
+        <span class="muted small" id="ai-provider-desc"></span>
+      </label>
+      <fieldset class="methods" id="ai-methods-wrap">
+        <legend>How to connect</legend>
+        <div class="method-list" id="ai-methods"></div>
+        <p class="muted small" id="ai-method-help"></p>
+      </fieldset>
+      <label>Name <input name="name" maxlength="60" required placeholder="e.g. Claude (work)"></label>
+      <div id="ai-fields" class="ai-fields"></div>
+      <label><span id="ai-model-label">Model</span>
+        <span class="row">
+          <input name="model" list="ai-model-options" spellcheck="false" required>
+          <button type="button" class="ghost small" id="ai-load-models" title="Ask the service which models you can use">Load models</button>
+        </span>
+        <datalist id="ai-model-options"></datalist>
+        <span class="muted small" id="ai-model-help"></span>
+      </label>
+      <label id="ai-effort-wrap">Effort
+        <select name="effort"></select>
+        <span class="muted small">Higher effort is more thorough, but slower and more expensive.</span>
+      </label>
+      <label class="check"><input type="checkbox" name="enabled" checked> Enabled (can be used in chats)</label>
+      <label class="check"><input type="checkbox" name="is_default"> Use by default for new chats</label>
+      <p class="small" id="ai-msg" hidden></p>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="ai-test">Test connection</button>
+        <span class="spacer"></span>
+        <button type="button" class="ghost" id="ai-cancel">Cancel</button>
+        <button class="primary" id="ai-save">Save</button>
+      </div>
+    </form>
+  </dialog>
 
   <!-- ================= DIALOGS ================= -->
   <dialog id="mount-dialog" class="dialog">

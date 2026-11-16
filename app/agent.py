@@ -1,9 +1,10 @@
-"""Claude chat + tool-use loop.
+"""AI chat + tool-use loop.
 
-Claude gets three tools:
-  * bash                         (Anthropic-defined) – persistent shell on this server
-  * str_replace_based_edit_tool  (Anthropic-defined) – view/create/edit files
-  * restart_app                  (custom)            – restart this web app after self-modification
+The AI (whichever AI connection the chat uses: Claude, ChatGPT, Grok, Gemini, ...) gets
+three tools:
+  * bash                         – persistent shell on this server
+  * str_replace_based_edit_tool  – view/create/edit files
+  * restart_app                  – restart this web app after self-modification
 
 Every state-changing tool call is sent to the browser for approval first (unless the
 user switched the chat to auto-approve). Everything is written to the audit log.
@@ -16,61 +17,16 @@ import shutil
 import subprocess
 from typing import Any, Awaitable, Callable
 
-import anthropic
-
-from . import claude_settings, db, monitor
+from . import ai_connections as ai
+from . import db, monitor, providers
 from .auth import User
 from .config import settings
 from .tools import BashSession, EditorError, check_app_importable, is_read_only, text_editor
 
 Send = Callable[[dict], Awaitable[None]]
 
-NO_KEY_MESSAGE = ("No Anthropic API key is configured yet. An admin can add one under "
-                  "Admin → Claude API (or run `sudo sysadmin-ia set-api-key` on the server).")
-
-class MissingApiKey(Exception):
-    pass
-
-
-_client: anthropic.AsyncAnthropic | None = None
-_client_key: str | None = None
-
-
-def get_client() -> anthropic.AsyncAnthropic:
-    """Client for the currently configured key (rebuilt when the key changes in the UI)."""
-    global _client, _client_key
-    key, _ = claude_settings.api_key()
-    if not key:
-        raise MissingApiKey()
-    if _client is None or key != _client_key:
-        _client = anthropic.AsyncAnthropic(api_key=key)
-        _client_key = key
-    return _client
-
-TOOLS: list[dict] = [
-    {"type": "bash_20250124", "name": "bash"},
-    {"type": "text_editor_20250728", "name": "str_replace_based_edit_tool"},
-    {
-        "name": "restart_app",
-        "description": (
-            "Restart the SysAdmin.IA web application (this app) so that changes to its "
-            "Python backend take effect. Call this only after you have modified files under the app "
-            "directory, verified them (e.g. `python -m py_compile`), and committed them with git. "
-            "The app first checks that the code still imports; if not, the restart is refused and "
-            "the error is returned. The restart happens after your current reply finishes. "
-            "Changes to static frontend files (app/static/) do NOT need a restart."
-        ),
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string", "description": "Short summary of what changed."}
-            },
-            "required": ["reason"],
-            "additionalProperties": False,
-        },
-        "eager_input_streaming": True,
-    },
-]
+NO_CONNECTION_MESSAGE = ("No AI connection is set up yet. An admin can add one in the AI connections "
+                         "module (or run `sudo sysadmin-ia set-api-key` on the server for Claude).")
 
 
 def _detect_sudo() -> str:
@@ -182,6 +138,8 @@ def render_history(messages: list[dict]) -> list[dict]:
                 out.append({"role": m["role"], "kind": "text", "text": b["text"]})
             elif t == "thinking" and b.get("thinking"):
                 out.append({"role": "assistant", "kind": "thinking", "text": b["thinking"]})
+            elif t == "reasoning" and b.get("text"):  # reasoning text from non-Claude models
+                out.append({"role": "assistant", "kind": "thinking", "text": b["text"]})
             elif t == "tool_use":
                 out.append({"role": "assistant", "kind": "tool_use", "id": b["id"], "name": b["name"],
                             "input": b.get("input", {})})
@@ -226,7 +184,7 @@ class ChatRunner:
         finally:
             self.pending.pop(tool_use_id, None)
 
-    async def run_turn(self, conv_id: int, user_text: str) -> None:
+    async def run_turn(self, conv_id: int, user_text: str, connection_id: int | None = None) -> None:
         global SYSTEM_PROMPT
         if SYSTEM_PROMPT is None:
             SYSTEM_PROMPT = await asyncio.to_thread(_system_prompt)
@@ -236,10 +194,22 @@ class ChatRunner:
             await self.send({"type": "error", "message": "Conversation not found."})
             await self.send({"type": "done", "conversation_id": conv_id})
             return
-        if not claude_settings.api_key()[0]:
-            await self.send({"type": "error", "message": NO_KEY_MESSAGE})
+        # The chat's AI connection: the one picked in the composer, else the chat's own, else the default.
+        if connection_id and connection_id != conv.get("connection_id") and ai.get(connection_id):
+            db.set_conversation_connection(conv_id, self.user.id, connection_id)
+            conv["connection_id"] = connection_id
+        conn = ai.resolve(conv.get("connection_id"))
+        if conn is None:
+            await self.send({"type": "error", "message": NO_CONNECTION_MESSAGE})
             await self.send({"type": "done", "conversation_id": conv_id})
             return
+        try:
+            provider = providers.for_connection(conn)
+        except providers.ProviderError as e:
+            await self.send({"type": "error", "message": str(e)})
+            await self.send({"type": "done", "conversation_id": conv_id})
+            return
+        await self.send({"type": "connection", "conversation_id": conv_id, "id": conn["id"], "name": conn["name"]})
         messages: list[dict] = conv["messages"]
         self.stop_event.clear()
 
@@ -247,25 +217,24 @@ class ChatRunner:
         dangling = _close_dangling(messages, "Interrupted: this tool call was never executed.")
         messages.append({"role": "user", "content": dangling + [{"type": "text", "text": user_text}]})
         db.save_messages(conv_id, messages)
-        db.audit("chat", self.user.username, self.ip, {"conversation": conv_id, "text": user_text})
+        db.audit("chat", self.user.username, self.ip,
+                 {"conversation": conv_id, "connection": conn["name"], "text": user_text})
 
         try:
             while not self.stop_event.is_set():
-                response = await self._call_claude(messages)
-                if response is None:  # stopped mid-stream
+                await self.send({"type": "assistant_start"})
+                result = await provider.turn(messages, SYSTEM_PROMPT, self.send, self.stop_event.is_set)
+                if result is None:  # stopped mid-stream
                     break
 
-                content = _sanitize_fallback(
-                    [b.model_dump(mode="json", by_alias=True, exclude_none=True) for b in response.content]
-                )
+                content = _sanitize_fallback(result.content)
                 messages.append({"role": "assistant", "content": content})
                 db.save_messages(conv_id, messages)
 
-                stop = response.stop_reason
+                stop = result.stop
                 if stop == "refusal":
-                    details = getattr(response, "stop_details", None)
-                    why = getattr(details, "explanation", None) if details else None
-                    await self.send({"type": "notice", "message": f"Claude declined this request.{(' ' + why) if why else ''}"})
+                    why = result.note
+                    await self.send({"type": "notice", "message": f"{conn['name']} declined this request.{(' ' + why) if why else ''}"})
                     break
                 if stop == "max_tokens":
                     await self.send({"type": "notice", "message": "Response hit the max_tokens limit and was cut off."})
@@ -282,75 +251,13 @@ class ChatRunner:
                 results = await self._run_tools(conv_id, content)
                 messages.append({"role": "user", "content": results})
                 db.save_messages(conv_id, messages)
-        except MissingApiKey:
-            await self.send({"type": "error", "message": NO_KEY_MESSAGE})
-        except anthropic.AuthenticationError:
-            await self.send({"type": "error", "message": "The Anthropic API key was rejected. Update it under Admin → Claude API."})
-        except anthropic.NotFoundError:
-            await self.send({"type": "error", "message": f"Model '{claude_settings.model()}' was not found. Check the model under Admin → Claude API."})
-        except anthropic.RateLimitError:
-            await self.send({"type": "error", "message": "Rate limited by the Anthropic API. Try again shortly."})
-        except anthropic.BadRequestError as e:
-            await self.send({"type": "error", "message": f"API rejected the request: {e.message}"})
-        except anthropic.APIStatusError as e:
-            await self.send({"type": "error", "message": f"Anthropic API error ({e.status_code}): {e.message}"})
-        except anthropic.APIConnectionError:
-            await self.send({"type": "error", "message": "Could not reach the Anthropic API (network error)."})
+        except providers.ProviderError as e:
+            await self.send({"type": "error", "message": str(e)})
         finally:
             if _pending_tool_ids(messages):
                 messages.append({"role": "user", "content": _close_dangling(messages, "Stopped by user before execution.")})
             db.save_messages(conv_id, messages)
             await self.send({"type": "done", "conversation_id": conv_id})
-
-    async def _call_claude(self, messages: list[dict]):
-        client = get_client()
-        kwargs: dict[str, Any] = dict(
-            model=claude_settings.model(),
-            max_tokens=settings.max_tokens,
-            system=SYSTEM_PROMPT,
-            tools=TOOLS,
-            messages=messages,
-            thinking={"type": "adaptive", "display": "summarized"},
-            output_config={"effort": claude_settings.effort()},
-            cache_control={"type": "ephemeral"},
-        )
-        betas: list[str] = []
-        if settings.fallbacks:
-            betas.append("server-side-fallback-2026-07-01")
-            kwargs["fallbacks"] = settings.fallbacks
-        if betas:
-            kwargs["betas"] = betas
-
-        await self.send({"type": "assistant_start"})
-        try:
-            manager = client.beta.messages.stream(**kwargs)
-        except TypeError:
-            # Older SDK without the `fallbacks` parameter: send it as a raw body field instead.
-            if "fallbacks" not in kwargs:
-                raise
-            kwargs["extra_body"] = {"fallbacks": kwargs.pop("fallbacks")}
-            manager = client.beta.messages.stream(**kwargs)
-        async with manager as stream:
-            async for event in stream:
-                if self.stop_event.is_set():
-                    return None
-                if event.type == "content_block_start":
-                    block = event.content_block
-                    if block.type == "tool_use":
-                        await self.send({"type": "tool_preparing", "name": block.name})
-                    elif block.type == "thinking":
-                        await self.send({"type": "thinking_start"})
-                    elif block.type == "text":
-                        await self.send({"type": "text_start"})
-                    elif block.type == "fallback":
-                        await self.send({"type": "notice", "message": "Request was rerouted to a fallback model."})
-                elif event.type == "content_block_delta":
-                    d = event.delta
-                    if d.type == "text_delta":
-                        await self.send({"type": "text_delta", "text": d.text})
-                    elif d.type == "thinking_delta" and d.thinking:
-                        await self.send({"type": "thinking_delta", "text": d.thinking})
-            return await stream.get_final_message()
 
     async def _run_tools(self, conv_id: int, content: list[dict]) -> list[dict]:
         results: list[dict] = []

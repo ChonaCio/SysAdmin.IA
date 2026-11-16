@@ -211,8 +211,8 @@ as_svc git -C "$PREFIX" commit -qm "$( [[ $UPGRADE -eq 1 ]] && echo Upgrade || e
 # ------------------------------------------------------------------ config
 if [[ ! -f "$ENV_FILE" ]]; then
   if [[ -z "$API_KEY" && $INTERACTIVE -eq 1 ]]; then
-    echo "An Anthropic API key is optional now: you can add it later in the web UI"
-    echo "(Admin → Claude API) or with 'sudo sysadmin-ia set-api-key'. The monitor works without it."
+    echo "An Anthropic API key is optional now: you can add Claude, ChatGPT, Grok, Gemini and other"
+    echo "AI services later in the web UI (AI connections). The monitor works without one."
     read -r -s -p "Anthropic API key (press Enter to skip): " API_KEY; echo
   fi
   c_info "Writing $ENV_FILE"
@@ -220,8 +220,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<EOF
 # SysAdmin.IA configuration. Restart after editing:
 #   sudo systemctl restart ${APP_NAME}
-# The API key, model and effort below are defaults; values saved in the web UI
-# (Admin → Claude API) or with 'sysadmin-ia set-api-key' take precedence and need no restart.
+# AI services are managed in the web UI (AI connections). An API key here is used by a
+# connection whose key field is left empty (also OPENAI_API_KEY, XAI_API_KEY, GEMINI_API_KEY, ...).
 ANTHROPIC_API_KEY=${API_KEY}
 SAI_MODEL=claude-opus-5-5
 SAI_EFFORT=high
@@ -433,7 +433,7 @@ else
 fi
 [[ -n "${GENERATED_PW:-}" ]] && echo "    Admin login: ${ADMIN_NAME} / ${GENERATED_PW}   (change it under Admin)"
 if ! grep -q '^ANTHROPIC_API_KEY=.\+' "$ENV_FILE"; then
-  echo "    No API key yet. Add it after signing in: Admin → Claude API (or: sudo sysadmin-ia set-api-key)."
+  echo "    No AI connected yet. Add one after signing in: AI connections (or: sudo sysadmin-ia set-api-key)."
 fi
 [[ $TLS -eq 1 ]] && echo "    The certificate is self-signed; your browser will warn the first time."
 echo "    Manage users: sudo sysadmin-ia --help    Logs: journalctl -u ${APP_NAME} -f"

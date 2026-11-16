@@ -60,8 +60,8 @@ class Settings:
     session_hours: int = field(default_factory=lambda: int(os.environ.get("SAI_SESSION_HOURS", "12")))
 
     # Claude
-    # Defaults only: model, effort and the API key can be changed at runtime in the web UI
-    # (Admin → Claude API); see claude_settings.py.
+    # Used once, to create the first "Claude" AI connection from older installs; after that,
+    # models, keys and providers are managed in the AI connections module (ai_connections.py).
     model: str = field(default_factory=lambda: os.environ.get("SAI_MODEL") or "claude-opus-5-5")
     effort: str = field(default_factory=lambda: os.environ.get("SAI_EFFORT") or "high")
     max_tokens: int = field(default_factory=lambda: int(os.environ.get("SAI_MAX_TOKENS", "64000")))

@@ -40,6 +40,18 @@ CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS ai_connections (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL,                       -- see ai_connections.PROVIDERS
+    method TEXT NOT NULL,                         -- how it authenticates (api_key, vertex, bedrock, ...)
+    config TEXT NOT NULL DEFAULT '{}',            -- non-secret settings (JSON): model, base_url, region, ...
+    secrets TEXT NOT NULL DEFAULT '{}',           -- API keys / credentials (JSON); never sent to browsers
+    enabled INTEGER NOT NULL DEFAULT 1,
+    is_default INTEGER NOT NULL DEFAULT 0,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,
@@ -77,11 +89,17 @@ _USER_COLUMNS = {
 }
 
 
+_CONVERSATION_COLUMNS = {
+    "connection_id": "INTEGER",   # AI connection used by this chat (NULL = the default one)
+}
+
+
 def _migrate(c: sqlite3.Connection) -> None:
-    have = {r["name"] for r in c.execute("PRAGMA table_info(users)")}
-    for name, decl in _USER_COLUMNS.items():
-        if name not in have:
-            c.execute(f"ALTER TABLE users ADD COLUMN {name} {decl}")
+    for table, columns in (("users", _USER_COLUMNS), ("conversations", _CONVERSATION_COLUMNS)):
+        have = {r["name"] for r in c.execute(f"PRAGMA table_info({table})")}
+        for name, decl in columns.items():
+            if name not in have:
+                c.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
 
 
 @contextmanager
@@ -170,9 +188,13 @@ def save_messages(conv_id: int, messages: list) -> None:
     )
 
 
+def set_conversation_connection(conv_id: int, user_id: int, connection_id: int | None) -> None:
+    execute("UPDATE conversations SET connection_id=? WHERE id=? AND user_id=?", (connection_id, conv_id, user_id))
+
+
 def list_conversations(user_id: int) -> list[dict]:
     rows = query(
-        "SELECT id, title, created_at, updated_at FROM conversations WHERE user_id=? ORDER BY updated_at DESC",
+        "SELECT id, title, connection_id, created_at, updated_at FROM conversations WHERE user_id=? ORDER BY updated_at DESC",
         (user_id,),
     )
     return [dict(r) for r in rows]

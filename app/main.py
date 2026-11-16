@@ -14,15 +14,18 @@ from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSock
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel
 
-import anthropic
 
-from . import agent, auth, claude_settings, console, db, drives, monitor, server_name, updater
+from . import ai_connections as ai
+from . import agent, auth, console, db, drives, monitor, providers, server_name, updater
 from .auth import User, admin_user, current_user
 from .config import settings
 
 STATIC = Path(__file__).parent / "static"
 
 app = FastAPI(title="SysAdmin.IA", docs_url=None, redoc_url=None, openapi_url=None)
+
+# Turn the old single Claude key (Admin → Claude API) into an AI connection, once.
+ai.migrate_legacy()
 
 
 @app.middleware("http")
@@ -130,10 +133,10 @@ async def me(user: User = Depends(current_user)):
     p = auth.get_profile(user.id) or {}
     return {"id": user.id, "username": user.username, "role": user.role,
             "display_name": p.get("display_name", ""), "email": p.get("email", ""),
-            "avatar_url": p.get("avatar_url"), "model": claude_settings.model(),
+            "avatar_url": p.get("avatar_url"),
             "allow_auto_approve": settings.allow_auto_approve,
             "console": settings.allow_console and user.is_admin,
-            "api_key_configured": bool(claude_settings.api_key()[0])}
+            "ai_ready": ai.any_enabled()}
 
 
 class PasswordBody(BaseModel):
@@ -256,67 +259,125 @@ async def remove_user(uid: int, request: Request, user: User = Depends(admin_use
     return {"ok": True}
 
 
-# ---------------------------------------------------------------- Claude API settings (admin)
+# ---------------------------------------------------------------- AI connections (admin)
 
-class ClaudeSettingsBody(BaseModel):
-    api_key: str | None = None        # new key; omitted/None = unchanged
-    clear_api_key: bool = False       # remove the key saved in the web UI
-    model: str | None = None          # "" = reset to config-file default
-    effort: str | None = None         # "" = reset to config-file default
-
-
-class TestKeyBody(BaseModel):
-    api_key: str | None = None        # test this key instead of the saved one
-
-
-@app.get("/api/claude-settings")
-async def get_claude_settings(user: User = Depends(admin_user)):
-    return claude_settings.summary()
+class ConnectionBody(BaseModel):
+    name: str | None = None
+    provider: str | None = None
+    method: str | None = None
+    config: dict = {}            # non-secret fields (+ model, effort)
+    secrets: dict = {}           # new secret values; blank/missing = keep the saved one
+    clear_secrets: list[str] = []
+    enabled: bool = True
+    is_default: bool = False
 
 
-@app.put("/api/claude-settings")
-async def put_claude_settings(body: ClaudeSettingsBody, request: Request, user: User = Depends(admin_user)):
-    changed = []
+class ConnectionProbe(BaseModel):
+    id: int | None = None                 # a saved connection …
+    draft: ConnectionBody | None = None   # … or the editor's current (unsaved) values
+
+
+def _probe_conn(body: ConnectionProbe) -> dict:
+    if body.draft is not None:
+        return ai.draft(body.draft.model_dump() if hasattr(body.draft, "model_dump") else body.draft.dict(), body.id)
+    c = ai.get(body.id)
+    if not c:
+        raise ai.ConnectionError_("That connection no longer exists.")
+    return c
+
+
+def _body_dict(body: ConnectionBody) -> dict:
+    return body.model_dump() if hasattr(body, "model_dump") else body.dict()
+
+
+@app.get("/api/ai/providers")
+async def ai_providers(user: User = Depends(admin_user)):
+    return ai.catalog()
+
+
+@app.get("/api/ai/connections")
+async def ai_connections_list(user: User = Depends(admin_user)):
+    return [ai.public(c) for c in ai.list_all()]
+
+
+@app.post("/api/ai/connections")
+async def ai_connection_create(body: ConnectionBody, request: Request, user: User = Depends(admin_user)):
     try:
-        if body.clear_api_key:
-            claude_settings.set_api_key(None)
-            changed.append("api_key cleared")
-        elif body.api_key:
-            claude_settings.set_api_key(body.api_key)
-            changed.append("api_key set")
-        if body.model is not None:
-            claude_settings.set_model(body.model)
-            changed.append(f"model={body.model or 'default'}")
-        if body.effort is not None:
-            claude_settings.set_effort(body.effort)
-            changed.append(f"effort={body.effort or 'default'}")
-    except ValueError as e:
+        c = ai.create(_body_dict(body))
+    except ai.ConnectionError_ as e:
         raise HTTPException(400, str(e))
-    db.audit("claude_settings", user.username, auth.client_ip(request), ", ".join(changed))
-    return claude_settings.summary()
+    db.audit("ai_connection_created", user.username, auth.client_ip(request),
+             {"id": c["id"], "name": c["name"], "provider": c["provider"], "method": c["method"]})
+    return ai.public(c)
 
 
-@app.post("/api/claude-settings/test")
-async def test_claude_settings(body: TestKeyBody, user: User = Depends(admin_user)):
-    """Check the key and model with a free Models API lookup (no tokens are used)."""
-    key = (body.api_key or "").strip() or claude_settings.api_key()[0]
-    if not key:
-        return {"ok": False, "message": "No API key to test."}
-    model_name = claude_settings.model()
+@app.put("/api/ai/connections/{cid}")
+async def ai_connection_update(cid: int, body: ConnectionBody, request: Request, user: User = Depends(admin_user)):
     try:
-        async with anthropic.AsyncAnthropic(api_key=key, max_retries=0, timeout=20) as client:
-            info = await client.models.retrieve(model_name)
-        return {"ok": True, "message": f"Key works. Model: {info.display_name} ({info.id})."}
-    except anthropic.AuthenticationError:
-        return {"ok": False, "message": "The API key was rejected (invalid or revoked)."}
-    except anthropic.PermissionDeniedError:
-        return {"ok": False, "message": "The key is valid but lacks permission for this request."}
-    except anthropic.NotFoundError:
-        return {"ok": False, "message": f"The key works, but model '{model_name}' was not found."}
-    except anthropic.APIStatusError as e:
-        return {"ok": False, "message": f"API error {e.status_code}: {e.message}"}
-    except anthropic.APIConnectionError:
-        return {"ok": False, "message": "Could not reach api.anthropic.com from this server."}
+        c = ai.update(cid, _body_dict(body))
+    except ai.ConnectionError_ as e:
+        raise HTTPException(400, str(e))
+    db.audit("ai_connection_updated", user.username, auth.client_ip(request),
+             {"id": cid, "name": c["name"], "provider": c["provider"], "method": c["method"],
+              "secrets_changed": sorted(k for k, v in body.secrets.items() if v) + list(body.clear_secrets)})
+    return ai.public(c)
+
+
+@app.delete("/api/ai/connections/{cid}")
+async def ai_connection_delete(cid: int, request: Request, user: User = Depends(admin_user)):
+    c = ai.get(cid)
+    if not c:
+        raise HTTPException(404)
+    ai.delete(cid)
+    db.audit("ai_connection_deleted", user.username, auth.client_ip(request), {"id": cid, "name": c["name"]})
+    return {"ok": True}
+
+
+@app.post("/api/ai/connections/{cid}/default")
+async def ai_connection_default(cid: int, request: Request, user: User = Depends(admin_user)):
+    if not ai.get(cid):
+        raise HTTPException(404)
+    ai.set_default(cid)
+    db.audit("ai_connection_default", user.username, auth.client_ip(request), {"id": cid})
+    return {"ok": True}
+
+
+@app.post("/api/ai/test")
+async def ai_test(body: ConnectionProbe, user: User = Depends(admin_user)):
+    """Check that a connection works (a tiny request; it may use a few tokens)."""
+    try:
+        conn = _probe_conn(body)
+        message = await asyncio.wait_for(providers.for_connection(conn).test(), 45)
+        return {"ok": True, "message": message}
+    except ai.ConnectionError_ as e:
+        return {"ok": False, "message": str(e)}
+    except providers.ProviderError as e:
+        return {"ok": False, "message": str(e)}
+    except asyncio.TimeoutError:
+        return {"ok": False, "message": "The AI service didn't answer within 45 seconds."}
+    except Exception as e:
+        return {"ok": False, "message": f"{type(e).__name__}: {e}"}
+
+
+@app.post("/api/ai/models")
+async def ai_models(body: ConnectionProbe, user: User = Depends(admin_user)):
+    """Models the connection can use, as reported by the service."""
+    try:
+        conn = _probe_conn(body)
+        return {"models": await asyncio.wait_for(providers.for_connection(conn).models(), 30)}
+    except (ai.ConnectionError_, providers.ProviderError) as e:
+        raise HTTPException(400, str(e))
+    except asyncio.TimeoutError:
+        raise HTTPException(400, "The AI service didn't answer within 30 seconds.")
+    except Exception as e:
+        raise HTTPException(400, f"Couldn't list models: {type(e).__name__}: {e}")
+
+
+@app.get("/api/chat/connections")
+async def chat_connections(user: User = Depends(admin_user)):
+    """Enabled connections for the chat's picker."""
+    return [{"id": c["id"], "name": c["name"], "short": ai.public(c)["short"], "model": ai.public(c)["model"],
+             "is_default": c["is_default"]} for c in ai.list_all() if c["enabled"]]
 
 
 # ---------------------------------------------------------------- drives (admin)
@@ -538,7 +599,8 @@ async def get_conversation(cid: int, user: User = Depends(admin_user)):
     conv = db.get_conversation(cid, user.id)
     if not conv:
         raise HTTPException(404)
-    return {"id": cid, "title": conv["title"], "items": agent.render_history(conv["messages"])}
+    return {"id": cid, "title": conv["title"], "connection_id": conv.get("connection_id"),
+            "items": agent.render_history(conv["messages"])}
 
 
 @app.patch("/api/conversations/{cid}")
@@ -601,9 +663,9 @@ async def chat_ws(ws: WebSocket):
     runner = agent.ChatRunner(user, ip, send)
     task: asyncio.Task | None = None
 
-    async def run(conv_id: int, text: str) -> None:
+    async def run(conv_id: int, text: str, connection_id: int | None) -> None:
         try:
-            await runner.run_turn(conv_id, text)
+            await runner.run_turn(conv_id, text, connection_id)
         except Exception as e:  # pragma: no cover - last-resort guard
             await send({"type": "error", "message": f"Internal error: {type(e).__name__}: {e}"})
             await send({"type": "done", "conversation_id": conv_id})
@@ -619,7 +681,7 @@ async def chat_ws(ws: WebSocket):
             kind = msg.get("type")
             if kind == "chat":
                 if task and not task.done():
-                    await send({"type": "error", "message": "Claude is still working; stop it or wait."})
+                    await send({"type": "error", "message": "The assistant is still working; stop it or wait."})
                     continue
                 text = str(msg.get("text", "")).strip()
                 if not text:
@@ -633,7 +695,11 @@ async def chat_ws(ws: WebSocket):
                     if conv and not conv["messages"] and conv["title"] == "New chat":
                         db.rename_conversation(int(conv_id), user.id, agent.title_from(text))
                         await send({"type": "conversation", "id": int(conv_id), "title": agent.title_from(text)})
-                task = asyncio.create_task(run(int(conv_id), text))
+                try:
+                    connection_id = int(msg["connection_id"]) if msg.get("connection_id") else None
+                except (TypeError, ValueError):
+                    connection_id = None
+                task = asyncio.create_task(run(int(conv_id), text, connection_id))
             elif kind == "approve":
                 runner.resolve_approval(str(msg.get("id")), {
                     "approved": bool(msg.get("approved")),
