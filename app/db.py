@@ -135,6 +135,7 @@ _USER_COLUMNS = {
     "avatar": "BLOB",           # profile picture (PNG/JPEG/WebP, small)
     "avatar_type": "TEXT",
     "avatar_ver": "INTEGER NOT NULL DEFAULT 0",   # bumps on change (cache busting)
+    "prefs": "TEXT",            # appearance & language (JSON, see user_prefs.py)
 }
 
 

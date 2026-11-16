@@ -62,6 +62,9 @@ const ICON = {
   stop: '<rect x="6" y="6" width="12" height="12" rx="2"/>',
   box: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
   link: '<path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1"/><path d="M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  palette: '<path d="M12 3a9 9 0 1 0 0 18c1.1 0 1.6-.8 1.6-1.6 0-1.2-1-1.6-1-2.6 0-.9.7-1.6 1.6-1.6H17a4 4 0 0 0 4-4C21 6.6 17 3 12 3z"/><circle cx="7.5" cy="11" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="15" cy="7.5" r="1.2"/>',
 };
 function icon(name, cls = "") {
   return `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name] || ""}</svg>`;
@@ -118,6 +121,7 @@ function setBar(el, pct) { el.style.width = `${Math.min(100, pct)}%`; el.classNa
 // ------------------------------------------------------------ boot
 async function boot() {
   state.me = await api("/api/me");
+  SAI_PREFS.adopt(state.me.prefs);   // the account's appearance & language win over this browser's
   renderProfileCard();
   if (!state.me.ai_ready && state.me.role === "admin") $("#api-warning").hidden = false;
   if (!state.me.allow_auto_approve) $("#auto-approve-wrap").hidden = true;
@@ -144,7 +148,7 @@ async function boot() {
 }
 
 $$(".tab").forEach((b) => b.addEventListener("click", () => switchView(b.dataset.view)));
-const SUBPAGES = new Set(["profile", "password"]);   // opened from the profile card, not tabs
+const SUBPAGES = new Set(["profile", "password", "prefs"]);   // opened from the profile card, not tabs
 function switchView(v) {
   if (!SUBPAGES.has(v) && v !== state.view) state.lastTab = v;
   if (SUBPAGES.has(v) && !SUBPAGES.has(state.view)) state.lastTab = state.view;
@@ -167,6 +171,7 @@ function switchView(v) {
   if (v === "users") loadUsers();
   if (v === "drives") openDrives();
   if (v === "profile") loadProfilePage();
+  if (v === "prefs") renderPrefs();
   if (v === "password") { $("#pw-form").reset(); setFormMsg("#pw-msg", ""); $("#pw-form").current_password.focus(); }
 }
 // ---- left sidebar: off-canvas on phones (menu button), collapsible to icons on wider screens
@@ -278,6 +283,56 @@ document.addEventListener("keydown", (e) => {
 });
 $("#menu-edit-profile").addEventListener("click", () => switchView("profile"));
 $("#menu-change-password").addEventListener("click", () => switchView("password"));
+$("#menu-prefs").addEventListener("click", () => switchView("prefs"));
+
+// ---- Appearance & language (prefs.js applies them; saved to the account here)
+SAI_PREFS.onChange((p) => {
+  clearTimeout(SAI_PREFS._saveT);
+  SAI_PREFS._saveT = setTimeout(() => {
+    api("/api/me/prefs", { method: "PUT", body: JSON.stringify(p) })
+      .then(() => { if (state.view === "prefs") setFormMsg("#pref-msg", "Saved."); })
+      .catch((ex) => { if (state.view === "prefs") setFormMsg("#pref-msg", ex.message, false); });
+  }, 400);
+});
+function renderPrefs() {
+  const p = SAI_PREFS.get();
+  const sel = $("#pref-lang");
+  if (!sel.options.length) for (const [code, name] of Object.entries(SAI_PREFS.LANGS)) sel.add(new Option(name, code));
+  sel.value = p.lang;
+  for (const [id, key] of [["#pref-theme", "theme"], ["#pref-accent", "accent"], ["#pref-text", "text"]]) {
+    $$("[data-v]", $(id)).forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.v === p[key])));
+  }
+  $("#pref-contrast").checked = p.contrast;
+  $("#pref-motion").checked = !p.motion;
+  renderThemeToggle();
+}
+function setPref(changes) { SAI_PREFS.set(changes); renderPrefs(); setFormMsg("#pref-msg", ""); }
+$("#pref-lang").addEventListener("change", (e) => setPref({ lang: e.target.value }));
+for (const [id, key] of [["#pref-theme", "theme"], ["#pref-accent", "accent"], ["#pref-text", "text"]]) {
+  $(id).addEventListener("click", (e) => { const b = e.target.closest("[data-v]"); if (b) setPref({ [key]: b.dataset.v }); });
+}
+$("#pref-contrast").addEventListener("change", (e) => setPref({ contrast: e.target.checked }));
+$("#pref-motion").addEventListener("change", (e) => setPref({ motion: !e.target.checked }));
+$("#pref-reset").addEventListener("click", () => setPref({ ...SAI_PREFS.DEFAULTS, lang: SAI_PREFS.get().lang }));
+// Quick light/dark switch in the top bar
+function renderThemeToggle() {
+  const dark = SAI_PREFS.mode() === "dark";
+  const b = $("#theme-toggle");
+  b.innerHTML = icon(dark ? "sun" : "moon");
+  b.title = dark ? "Switch to light mode" : "Switch to dark mode";   // English in the DOM; prefs.js translates
+  b.setAttribute("aria-label", b.title);
+}
+$("#theme-toggle").addEventListener("click", () => {
+  const p = SAI_PREFS.get();
+  const dark = SAI_PREFS.mode() === "dark";
+  SAI_PREFS.set({ theme: dark ? "light" : (p.theme === "black" ? "black" : "dark") });
+  if (state.view === "prefs") renderPrefs(); else renderThemeToggle();
+});
+window.addEventListener("sai:theme", () => {
+  renderThemeToggle();
+  if (state.view === "monitor") drawCharts();   // charts read the colours when drawn
+});
+renderThemeToggle();
 $("#logout").addEventListener("click", async () => {
   await api("/api/logout", { method: "POST" }).catch(() => {});
   location.href = "/login";

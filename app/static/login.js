@@ -2,6 +2,17 @@
 const form = document.getElementById("login-form");
 const errEl = document.getElementById("login-error");
 
+// Language and light/dark switch (remembered in this browser; the account's choice applies after signing in).
+const P = window.SAI_PREFS;
+const langSel = document.getElementById("login-lang");
+for (const [code, name] of Object.entries(P.LANGS)) langSel.add(new Option(name, code));
+langSel.value = P.get().lang;
+langSel.addEventListener("change", () => P.set({ lang: langSel.value }));
+const themeBtn = document.getElementById("login-theme");
+function themeLabel() { themeBtn.textContent = P.mode() === "dark" ? "☀ Light mode" : "☾ Dark mode"; }
+themeBtn.addEventListener("click", () => { P.set({ theme: P.mode() === "dark" ? "light" : "dark" }); themeLabel(); });
+themeLabel();
+
 fetch("/api/setup-status").then(r => r.json()).then(s => {
   if (!s.has_users) document.getElementById("no-users").hidden = false;
 }).catch(() => {});

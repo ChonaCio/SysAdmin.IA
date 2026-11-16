@@ -159,7 +159,19 @@ Supported filesystems: ext2/3/4, XFS, Btrfs, FAT32, exFAT, NTFS, F2FS, ISO 9660/
 ### Users and your profile
 
 - **Users** tab (admins only): everyone who can sign in, with their picture. Change roles (admin or viewer), set a new password for someone, delete users, and add new ones. There's always at least one admin.
-- **Your profile card** (top right) shows your picture and username. Click it for **Edit profile** (picture, username, display name, email), **Change password**, and **Sign out**. Pictures are cropped to a square in the browser and stored in the app database.
+- **Your profile card** (top right) shows your picture and username. Click it for **Edit profile** (picture, username, display name, email), **Change password**, **Appearance & language**, and **Sign out**. Pictures are cropped to a square in the browser and stored in the app database.
+
+### Appearance and language
+
+Profile card → **Appearance & language**. Each user has their own settings, saved to their account so they follow them to other devices (and remembered in the browser, so the page is drawn correctly from the first moment):
+
+- **Language**: English (default) or Español. The whole interface switches immediately, including the job, app and model catalogs and most server messages, and the chat assistant replies in that language (unless you write to it in another one). The sign-in page has its own language picker.
+- **Theme**: Automatic (follows your device's light/dark setting), Light, Dark, or Black (true black, for OLED screens). The sun/moon button in the top bar switches between light and dark in one click.
+- **Accent colour**: orange, blue, green, purple, pink, teal or graphite (buttons, links, highlights, charts).
+- **Text size**: Small, Normal, Large, Extra large (scales the whole interface).
+- **High contrast** (stronger text and borders) and **Reduce motion** (no animations or sliding panels).
+
+Names you choose (files, chats, containers, jobs…), command output, logs and code are never translated. Adding a language: copy `app/static/i18n/es.js` and `es-server.js`, translate the values, and add the language code to `LANGS` in `app/static/prefs.js` and `app/user_prefs.py`.
 
 ### Containers (Docker)
 

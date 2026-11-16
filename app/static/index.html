@@ -6,6 +6,7 @@
   <title>SysAdmin.IA</title>
   <link rel="stylesheet" href="/static/vendor/xterm.css">
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/prefs.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -14,6 +15,7 @@
     </button>
     <div class="brand"><span class="dot" id="conn-dot" title="Connection"></span> <strong id="hostname">SysAdmin.IA</strong> <span class="muted small" id="host-os"></span></div>
     <span class="spacer"></span>
+    <button type="button" class="ghost theme-toggle" id="theme-toggle" title="Switch between light and dark"><span data-icon="moon"></span></button>
     <div class="user">
       <button id="profile-btn" class="profile-btn" aria-haspopup="true" aria-expanded="false" title="Your account">
         <span class="avatar" id="profile-btn-avatar"></span>
@@ -28,6 +30,7 @@
         <div class="profile-menu-actions">
           <button type="button" class="menu-item" id="menu-edit-profile" role="menuitem"><span data-icon="edit"></span> Edit profile</button>
           <button type="button" class="menu-item" id="menu-change-password" role="menuitem"><span data-icon="key"></span> Change password</button>
+          <button type="button" class="menu-item" id="menu-prefs" role="menuitem"><span data-icon="palette"></span> Appearance &amp; language</button>
         </div>
         <div class="profile-menu-foot">
           <button type="button" class="menu-item" id="logout" role="menuitem"><span data-icon="logout"></span> Sign out</button>
@@ -104,7 +107,7 @@
             <button class="chip">Give me a health check of this server</button>
             <button class="chip">What is using the most disk space?</button>
             <button class="chip">Are there pending security updates?</button>
-            <button class="chip">Add a dark/light theme toggle to this app</button>
+            <button class="chip">Which services have failed recently, and why?</button>
           </div>
         </div>
       </div>
@@ -376,6 +379,58 @@
           <p class="small muted">After changing it you're signed out on all devices and sign in again with the new password.</p>
           <div class="row"><button class="primary">Change password</button><span class="small" id="pw-msg" hidden></span></div>
         </form>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= APPEARANCE & LANGUAGE (from the profile card) ================= -->
+  <section id="view-prefs" class="view">
+    <div class="page narrow">
+      <button type="button" class="ghost back-btn" data-back><span data-icon="arrow-left"></span> Back</button>
+      <h2>Appearance &amp; language</h2>
+      <p class="muted">Saved to your account, so they follow you to other devices. Other users keep their own.</p>
+      <div class="card pref-grid">
+        <div>
+          <h3>Language</h3>
+          <select id="pref-lang" aria-label="Language" data-no-i18n></select>
+          <p class="muted small">The interface and the chat assistant's answers use this language.</p>
+        </div>
+        <div>
+          <h3>Theme</h3>
+          <div class="pref-cards" id="pref-theme" role="group" aria-label="Theme">
+            <button type="button" class="pref-card" data-v="system"><span class="swatch sw-system"></span><span>Automatic</span><span class="muted small">Follows your device</span></button>
+            <button type="button" class="pref-card" data-v="light"><span class="swatch sw-light"><i></i><i></i></span><span>Light</span></button>
+            <button type="button" class="pref-card" data-v="dark"><span class="swatch sw-dark"><i></i><i></i></span><span>Dark</span></button>
+            <button type="button" class="pref-card" data-v="black"><span class="swatch sw-black"><i></i><i></i></span><span>Black</span><span class="muted small">For OLED screens</span></button>
+          </div>
+        </div>
+        <div>
+          <h3>Accent colour</h3>
+          <div class="accent-row" id="pref-accent" role="group" aria-label="Accent colour">
+            <button type="button" class="accent-dot" data-v="orange" title="Orange" style="background:#c2571a"></button>
+            <button type="button" class="accent-dot" data-v="blue" title="Blue" style="background:#2463c9"></button>
+            <button type="button" class="accent-dot" data-v="green" title="Green" style="background:#24804a"></button>
+            <button type="button" class="accent-dot" data-v="purple" title="Purple" style="background:#7a4cc0"></button>
+            <button type="button" class="accent-dot" data-v="pink" title="Pink" style="background:#c0356f"></button>
+            <button type="button" class="accent-dot" data-v="teal" title="Teal" style="background:#18807f"></button>
+            <button type="button" class="accent-dot" data-v="graphite" title="Graphite" style="background:#4a5361"></button>
+          </div>
+        </div>
+        <div>
+          <h3>Text size</h3>
+          <div class="seg-row" id="pref-text" role="group" aria-label="Text size">
+            <button type="button" data-v="90">Small</button>
+            <button type="button" data-v="100">Normal</button>
+            <button type="button" data-v="112">Large</button>
+            <button type="button" data-v="125">Extra large</button>
+          </div>
+        </div>
+        <div>
+          <h3>Accessibility</h3>
+          <label class="pref-check"><input type="checkbox" id="pref-contrast"> <span>High contrast <span class="muted small">— stronger text and borders</span></span></label>
+          <label class="pref-check"><input type="checkbox" id="pref-motion"> <span>Reduce motion <span class="muted small">— no animations or sliding panels</span></span></label>
+        </div>
+        <div class="row"><button type="button" class="ghost" id="pref-reset">Restore defaults</button><span class="small" id="pref-msg" hidden></span></div>
       </div>
     </div>
   </section>

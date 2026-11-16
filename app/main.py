@@ -19,7 +19,7 @@ from pydantic import BaseModel
 
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
-from . import containers, local_ai, model_search, variables
+from . import containers, local_ai, model_search, user_prefs, variables
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -139,7 +139,16 @@ async def me(user: User = Depends(current_user)):
             "avatar_url": p.get("avatar_url"),
             "allow_auto_approve": settings.allow_auto_approve,
             "console": settings.allow_console and user.is_admin,
-            "ai_ready": ai.any_enabled()}
+            "ai_ready": ai.any_enabled(),
+            "prefs": user_prefs.get(user.id)}
+
+
+@app.put("/api/me/prefs")
+async def update_my_prefs(body: dict, request: Request, user: User = Depends(current_user)):
+    """Appearance & language. Any signed-in user, for their own account."""
+    p = user_prefs.save(user.id, body if isinstance(body, dict) else {})
+    db.audit("prefs_updated", user.username, auth.client_ip(request), p)
+    return p
 
 
 class PasswordBody(BaseModel):

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sign in · SysAdmin.IA</title>
   <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/prefs.js"></script>
 </head>
 <body class="login-body">
   <main class="login-card">
@@ -23,6 +24,10 @@
     <p class="muted small" id="no-users" hidden>
       No users exist yet. On the server run <code>sudo sysadmin-ia create-user admin</code>.
     </p>
+    <div class="login-prefs small">
+      <label>Language <select id="login-lang" aria-label="Language" data-no-i18n></select></label>
+      <button type="button" class="ghost small" id="login-theme" title="Switch between light and dark"></button>
+    </div>
   </main>
   <script src="/static/login.js"></script>
 </body>

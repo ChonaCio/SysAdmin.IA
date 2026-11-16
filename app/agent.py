@@ -18,7 +18,7 @@ import subprocess
 from typing import Any, Awaitable, Callable
 
 from . import ai_connections as ai
-from . import db, monitor, providers
+from . import db, monitor, providers, user_prefs
 from .auth import User
 from .config import settings
 from .tools import BashSession, EditorError, check_app_importable, is_read_only, text_editor
@@ -228,7 +228,8 @@ class ChatRunner:
                     await self.send({"type": "error", "message": blocked})
                     break
                 await self.send({"type": "assistant_start"})
-                result = await provider.turn(messages, SYSTEM_PROMPT, self.send, self.stop_event.is_set)
+                system = SYSTEM_PROMPT + user_prefs.chat_language_note(user_prefs.language(self.user.id))
+                result = await provider.turn(messages, system, self.send, self.stop_event.is_set)
                 if result is None:  # stopped mid-stream
                     break
                 ai.set_rate(conn["id"], result.rate)
