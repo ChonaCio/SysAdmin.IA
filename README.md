@@ -83,7 +83,7 @@ The **AI connections** module (left sidebar → Settings) manages which AI servi
 
 | Provider | How it connects |
 |---|---|
-| **Anthropic Claude** | Anthropic API key · **Google Cloud (Vertex AI)** with a service-account key or the server's Google login · **Amazon Bedrock** with AWS keys or the server's AWS credentials |
+| **Anthropic Claude** | Anthropic API key · **Google account (Sign in with Google)** via Google Cloud Vertex AI · Google Cloud service-account key or the server's Google login · **Amazon Bedrock** with AWS keys or the server's AWS credentials |
 | **OpenAI (ChatGPT)** | OpenAI API key (a ChatGPT Plus/Pro subscription is separate from API access) |
 | **Microsoft Azure OpenAI** | Azure endpoint + key + deployment (the platform Microsoft Copilot is built on) |
 | **GitHub Models (Copilot)** | GitHub token with "Models: read" (OpenAI, xAI, Meta and other models through GitHub) |
@@ -93,7 +93,19 @@ The **AI connections** module (left sidebar → Settings) manages which AI servi
 
 **Load models** asks the service which models your key can use, and **Test connection** checks the settings before you save. The assistant needs a model that supports tool (function) calling, which all the suggested models do. Claude gets the most capable tools: Anthropic's built-in shell and editor tools, adaptive thinking, and the effort setting. Other models get the same three tools as plain functions. A chat can change provider partway through.
 
-**Signing in with Google.** Claude.ai and Claude Code subscription logins, including "Sign in with Google", can't be used by other applications under Anthropic's terms, so they aren't offered. To use Claude with your Google account, add **Anthropic Claude → Google Cloud (Vertex AI)**. Either paste a service-account key, or leave it empty and sign the server in once from the **Console**: `gcloud auth application-default login` (needs the Google Cloud CLI).
+**Signing in to Claude with Google.** Choose **Anthropic Claude → Google account (Sign in with Google)**. Claude then runs on **Google Cloud Vertex AI** under your Google account, and usage is billed by Google Cloud. (Claude.ai and Claude Code *subscription* logins can't be used by other applications under Anthropic's terms, so the Google sign-in works through Vertex AI instead.)
+
+You need, once, in a Google Cloud project with billing:
+
+1. **Vertex AI → Model Garden:** enable the Claude models. Give your Google account the **Vertex AI User** role in the project.
+2. **APIs & Services → OAuth consent screen:** set it up and set the publishing status to **In production**. While it's in "Testing", Google ends the sign-in after 7 days. Workspace organisations can choose "Internal" instead.
+3. **Credentials → Create credentials → OAuth client ID → Desktop app:** copy its client ID and secret into the connection.
+
+Then click **Sign in with Google** in the connection editor, choose your account and allow access. Google next sends that tab to `http://127.0.0.1:53682/…`, a page that doesn't load; that's expected. Copy the address from that tab and paste it into the editor, then click **Finish sign-in**, **Test connection** and **Save**. This copy-paste step is needed because Google only sends sign-ins back to public addresses or the local computer, not a LAN name like `office-server.local`.
+
+The app keeps a long-lived Google sign-in (refresh token) on the server and never sends it to the browser. To revoke it, delete the connection, or remove the app at [myaccount.google.com/permissions](https://myaccount.google.com/permissions).
+
+Other Google options: paste a service-account key, or leave it empty and sign the server itself in once from the **Console** with `gcloud auth application-default login` (needs the Google Cloud CLI).
 
 Keys and credentials are stored in the app database (`/var/lib/sysadmin-ia/sysadmin-ia.sqlite3`, readable only by the `sysadmin-ia` user), are never sent back to the browser, and every change is recorded in the audit log. A provider's key can also come from the config file instead (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `GROQ_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`, `DEEPSEEK_API_KEY`, `OPENROUTER_API_KEY`, `AZURE_OPENAI_API_KEY`, `GITHUB_TOKEN`): leave the key empty in the connection.
 

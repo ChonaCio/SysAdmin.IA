@@ -19,6 +19,55 @@ const state = {
   view: "chat",
 };
 
+// ------------------------------------------------------------ icons
+// One icon set for the whole app: 24×24 grid, 1.8px rounded strokes, drawn in currentColor.
+// Use icon("name") in scripts, or <span data-icon="name"></span> in the HTML.
+const ICON = {
+  chat: '<path d="M4 5h16v11H9l-5 4z"/>',
+  console: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/>',
+  monitor: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
+  internal: '<rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="16.5" cy="12" r="1.2"/><path d="M6 12h6"/>',
+  external: '<rect x="7" y="2" width="10" height="13" rx="2"/><path d="M9 15v4a3 3 0 0 0 6 0v-4M10 6h1M13 6h1"/>',
+  optical: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/>',
+  ai: '<path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  file: '<path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/>',
+  menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+  "chevron-left": '<path d="M15 6l-6 6 6 6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M14 6l4 4"/>',
+  key: '<circle cx="8" cy="15" r="3.5"/><path d="M10.5 12.5L20 3M17 6l2 2M14.5 8.5l2 2"/>',
+  logout: '<path d="M10 4H5v16h5M14 8l4 4-4 4M18 12H9"/>',
+  login: '<path d="M14 4h5v16h-5M10 8l4 4-4 4M14 12H4"/>',
+  refresh: '<path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 4v7h-7"/>',
+  "arrow-left": '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+  "arrow-up": '<path d="M12 19V5M6 11l6-6 6 6"/>',
+  download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+  check: '<path d="M5 12l5 5 9-10"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
+  test: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/>',
+};
+function icon(name, cls = "") {
+  return `<svg class="i ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICON[name] || ""}</svg>`;
+}
+// Button content: icon + label, laid out the same everywhere.
+function withIcon(name, text) {
+  const s = document.createElement("span");
+  s.className = "btn-in";
+  s.innerHTML = icon(name);
+  s.append(text);
+  return s;
+}
+function hydrateIcons(root = document) {
+  root.querySelectorAll("[data-icon]").forEach((e) => {
+    const cls = [...e.classList].join(" ");
+    e.outerHTML = icon(e.dataset.icon, cls);
+  });
+}
+hydrateIcons();
+
 // ------------------------------------------------------------ helpers
 async function api(path, opts = {}) {
   const r = await fetch(path, {
@@ -124,6 +173,29 @@ function setNavCollapsed(collapsed) {
 }
 $("#nav-collapse").addEventListener("click", () => setNavCollapsed(!document.body.classList.contains("nav-collapsed")));
 try { if (localStorage.getItem("sai.navCollapsed")) setNavCollapsed(true); } catch { /* private mode */ }
+
+// ---- chat list: collapsible like the modules sidebar (icon rail / slide-out on phones)
+function setChatsCollapsed(collapsed) {
+  document.body.classList.toggle("chats-collapsed", collapsed);
+  const b = $("#chats-collapse");
+  b.title = collapsed ? "Show the chat list" : "Collapse the chat list";
+  b.querySelector("span").textContent = collapsed ? "Expand" : "Collapse";
+  try { localStorage.setItem("sai.chatsCollapsed", collapsed ? "1" : ""); } catch { /* private mode */ }
+}
+function closeChats() {
+  document.body.classList.remove("chats-open");
+  $("#chats-scrim").hidden = true;
+  $("#chats-toggle").setAttribute("aria-expanded", "false");
+}
+$("#chats-collapse").addEventListener("click", () => setChatsCollapsed(!document.body.classList.contains("chats-collapsed")));
+$("#chats-toggle").addEventListener("click", () => {
+  const open = !document.body.classList.contains("chats-open");
+  document.body.classList.toggle("chats-open", open);
+  $("#chats-scrim").hidden = !open;
+  $("#chats-toggle").setAttribute("aria-expanded", String(open));
+});
+$("#chats-scrim").addEventListener("click", closeChats);
+try { if (localStorage.getItem("sai.chatsCollapsed")) setChatsCollapsed(true); } catch { /* private mode */ }
 
 $$("[data-back]").forEach((b) => b.addEventListener("click", () =>
   switchView(state.lastTab || (state.me.role === "admin" ? "chat" : "monitor"))));
@@ -316,7 +388,7 @@ async function loadUsers() {
     const actions = document.createElement("div");
     actions.className = "user-actions";
     const pw = document.createElement("button");
-    pw.type = "button"; pw.className = "ghost small"; pw.textContent = "Set password";
+    pw.type = "button"; pw.className = "ghost small"; pw.append(withIcon("key", "Set password"));
     pw.addEventListener("click", async () => {
       if (me) { switchView("password"); return; }
       const value = prompt(`New password for ${u.username} (at least 10 characters).\nThey'll be signed out everywhere.`);
@@ -327,7 +399,7 @@ async function loadUsers() {
     actions.append(pw);
     if (!me) {
       const del = document.createElement("button");
-      del.type = "button"; del.className = "ghost small danger"; del.textContent = "Delete";
+      del.type = "button"; del.className = "ghost small danger"; del.append(withIcon("trash", "Delete"));
       del.addEventListener("click", async () => {
         if (!confirm(`Delete user ${u.username}? Their conversations are deleted too.`)) return;
         try { await api(`/api/users/${u.id}`, { method: "DELETE" }); loadUsers(); }
@@ -624,6 +696,7 @@ function clearMessages() {
 
 function newChat() {
   if (state.busy) { toast("Stop the current task first."); return; }
+  closeChats();
   state.convId = null;
   state.convConnection = null;
   selectChatConnection(null);   // new chats start on the default connection
@@ -637,6 +710,7 @@ $("#new-chat").addEventListener("click", newChat);
 
 async function openConversation(id) {
   if (state.busy) { toast("Stop the current task first."); return; }
+  closeChats();
   const conv = await api(`/api/conversations/${id}`);
   state.convId = id;
   state.convConnection = conv.connection_id || null;
@@ -762,10 +836,10 @@ function startMonitor() {
 }
 
 // ------------------------------------------------------------ AI connections module
-function providerBadge(color, text) {
+// Same tile as the drive icons: a monogram of the provider (e.g. "Cl", "Ch", "Gr").
+function providerBadge(text, accent) {
   const b = document.createElement("span");
-  b.className = "prov-badge";
-  b.style.background = color;
+  b.className = `icon-tile monogram ${accent ? "accent" : ""}`;
   b.textContent = (text || "?").slice(0, 2);
   return b;
 }
@@ -792,7 +866,8 @@ async function loadAi() {
     const status = [];
     if (c.is_default) status.push(el("span", { class: "tag tag-accent" }, "Default"));
     if (!c.enabled) status.push(el("span", { class: "tag" }, "Disabled"));
-    const cred = c.uses_env_key ? "key from the server config file"
+    const cred = c.config.google_account ? `signed in as ${c.config.google_account}`
+      : c.uses_env_key ? "key from the server config file"
       : Object.keys(c.secrets_set).length === 0 ? "no sign-in needed"
       : Object.values(c.secrets_set).some(Boolean) ? "credentials saved" : (c.method === "vertex" || c.method === "bedrock" ? "server's own login" : "no key saved");
     const result = el("p", { class: "small", hidden: true });
@@ -805,20 +880,20 @@ async function loadAi() {
           result.className = `small ${r.ok ? "ok-text" : "error"}`; result.textContent = r.message;
         } catch (ex) { result.className = "small error"; result.textContent = ex.message; }
         b.disabled = false;
-      } }, "Test"),
-      el("button", { type: "button", class: "small", onclick: () => openAiEditor(c) }, "Edit"),
+      } }, withIcon("test", "Test")),
+      el("button", { type: "button", class: "small", onclick: () => openAiEditor(c) }, withIcon("edit", "Edit")),
       !c.is_default && c.enabled ? el("button", { type: "button", class: "small ghost", onclick: async () => {
         try { await api(`/api/ai/connections/${c.id}/default`, { method: "POST" }); loadAi(); loadChatConnections(); }
         catch (ex) { toast(ex.message); }
-      } }, "Make default") : null,
+      } }, withIcon("check", "Make default")) : null,
       el("button", { type: "button", class: "small ghost danger", onclick: async () => {
         if (!confirm(`Delete the AI connection “${c.name}”? Its saved key or credentials are deleted too. Chats that used it switch to the default connection.`)) return;
         try { await api(`/api/ai/connections/${c.id}`, { method: "DELETE" }); toast(`Deleted “${c.name}”.`); loadAi(); loadChatConnections(); }
         catch (ex) { toast(ex.message); }
-      } }, "Delete"));
+      } }, withIcon("trash", "Delete")));
     list.append(el("div", { class: `card ai-card ${c.enabled ? "" : "disabled"}` },
       el("div", { class: "ai-card-head" },
-        providerBadge(c.color, c.short),
+        providerBadge(c.short, c.is_default),
         el("div", { class: "ai-card-title" },
           el("div", {}, el("strong", {}, c.name), " ", status),
           el("div", { class: "muted small" }, `${c.provider_label} · ${c.method_label}`),
@@ -889,8 +964,14 @@ function renderAiFields(conn) {
   $("#ai-model-help").textContent = m.model_help || (p.models && p.models.length ? "Pick a suggestion, type any model ID, or use Load models." : "");
   const box = $("#ai-fields");
   box.innerHTML = "";
+  if (m.setup) {
+    box.append(el("details", { class: "setup-steps", open: !same },
+      el("summary", {}, "One-time setup in Google Cloud"),
+      el("ol", {}, m.setup.map((s) => el("li", {}, s)))));
+  }
   for (const fd of m.fields) {
     const id = `ai-f-${fd.key}`;
+    if (fd.type === "google_signin") { box.append(googleSignInField(fd, same ? conn : null)); continue; }
     let input;
     if (fd.type === "textarea") input = el("textarea", { id, rows: "4", spellcheck: "false" });
     else input = el("input", { id, type: fd.type === "password" ? "password" : (fd.type === "url" ? "url" : "text"), spellcheck: "false", autocomplete: "off" });
@@ -914,6 +995,63 @@ function renderAiFields(conn) {
   }
 }
 $("#ai-provider").addEventListener("change", () => { state.aiMethod = null; renderAiProvider(state.aiEditing); });
+
+// "Sign in with Google" (Claude on Vertex AI). Google sends the browser to a loopback address
+// (http://127.0.0.1:53682/…) that doesn't load; the admin pastes that address back here and the
+// server exchanges it for a sign-in it keeps. The browser only ever holds a short-lived "grant" id.
+function googleSignInField(fd, conn) {
+  const hidden = el("input", { type: "hidden", "data-key": fd.key, "data-secret": "1" });
+  const account = conn && conn.config.google_account;
+  const status = el("div", { class: "g-status" },
+    el("span", { class: `dot ${account ? "on" : ""}` }),
+    el("span", {}, account ? `Signed in as ${account}` : (conn && conn.secrets_set[fd.key] ? "Signed in" : "Not signed in yet")));
+  const paste = el("input", { type: "url", placeholder: "http://127.0.0.1:53682/?state=…&code=…", spellcheck: "false", "aria-label": "Address from Google" });
+  const finishBtn = el("button", { type: "button", class: "primary small" }, "Finish sign-in");
+  const msg = el("p", { class: "small", hidden: true });
+  const steps = el("div", { class: "g-steps", hidden: true },
+    el("ol", {},
+      el("li", {}, "In the Google tab that just opened, choose your account and allow access."),
+      el("li", {}, "Google then shows a page that doesn't load (“This site can't be reached”). That's expected."),
+      el("li", {}, "Copy the whole address from that tab's address bar, paste it here, and click Finish sign-in.")),
+    el("div", { class: "row" }, paste, finishBtn), msg);
+  const startBtn = el("button", { type: "button", class: "g-btn" }, withIcon("login", account ? "Sign in with a different Google account" : "Sign in with Google"));
+  const say = (text, ok) => { msg.textContent = text; msg.className = `small ${ok ? "ok-text" : "error"}`; msg.hidden = !text; };
+
+  startBtn.addEventListener("click", async () => {
+    const win = window.open("", "_blank");   // open now (a popup opened after an await may be blocked)
+    try {
+      const r = await api("/api/ai/google/start", { method: "POST", body: JSON.stringify({
+        client_id: ($("#ai-f-google_client_id")?.value || "").trim(),
+        client_secret: ($("#ai-f-google_client_secret")?.value || "").trim() || null,
+        connection_id: state.aiEditing?.id || null }) });
+      if (win) win.location.href = r.auth_url;
+      steps.hidden = false;
+      say("", true);
+      if (!win) {
+        msg.hidden = false; msg.className = "small";
+        msg.innerHTML = ""; msg.append("Your browser blocked the new tab. ", el("a", { href: r.auth_url, target: "_blank", rel: "noopener" }, "Open the Google sign-in page"), ".");
+      }
+      paste.focus();
+    } catch (ex) {
+      if (win) win.close();
+      steps.hidden = false; say(ex.message, false);
+    }
+  });
+  finishBtn.addEventListener("click", async () => {
+    finishBtn.disabled = true;
+    try {
+      const r = await api("/api/ai/google/finish", { method: "POST", body: JSON.stringify({ url: paste.value }) });
+      hidden.value = r.grant;
+      status.innerHTML = "";
+      status.append(el("span", { class: "dot on" }), el("span", {}, `Signed in as ${r.email || "your Google account"} — click Save to keep it`));
+      steps.hidden = true;
+      paste.value = "";
+      setFormMsg("#ai-msg", "Signed in with Google. Test the connection, then Save.");
+    } catch (ex) { say(ex.message, false); }
+    finishBtn.disabled = false;
+  });
+  return el("div", { class: "g-signin" }, el("div", { class: "g-label" }, fd.label), status, startBtn, steps, hidden);
+}
 
 function aiFormBody() {
   const f = $("#ai-form");
@@ -1408,13 +1546,6 @@ async function loadAudit() {
 $("#refresh-audit").addEventListener("click", loadAudit);
 
 // ------------------------------------------------------------ drives
-const ICONS = {
-  internal: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="16.5" cy="12" r="1.3"/><path d="M6 12h6"/></svg>',
-  external: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="2" width="10" height="13" rx="2"/><path d="M9 15v4a3 3 0 0 0 6 0v-4"/><path d="M10 6h1M13 6h1"/></svg>',
-  optical: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.5"/></svg>',
-  folder: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>',
-  file: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h8l4 4v14H6z"/><path d="M14 3v4h4"/></svg>',
-};
 const TRANSPORT = { nvme: "NVMe", sata: "SATA", ata: "ATA", usb: "USB", mmc: "SD card", sdio: "SD card", scsi: "SCSI",
                     sas: "SAS", virtio: "Virtual", optical: "Optical", ieee1394: "FireWire" };
 
@@ -1525,7 +1656,7 @@ function driveCard(disk, d) {
 
   return el("div", { class: "card drive-card" },
     el("div", { class: "drive-head" },
-      el("span", { class: `drive-icon ${kind}`, html: ICONS[kind] }),
+      el("span", { class: `icon-tile ${disk.external ? "accent" : ""}`, html: icon(kind) }),
       el("div", { class: "drive-title" },
         el("div", {}, el("strong", {}, disk.model), " ", el("span", { class: "muted" }, fmtBytes(disk.size))),
         el("div", { class: "drive-badges" }, badges, el("span", { class: "muted small mono" }, disk.path))),
@@ -1553,17 +1684,17 @@ function volumeRow(v, d) {
   const actions = el("div", { class: "vol-actions" });
   const noManage = !d.can_manage ? "Needs the one-time setup shown above" : null;
   if (v.mountpoint && !v.swap) {
-    actions.append(el("button", { type: "button", class: "small", onclick: () => { showDrivesSub("files"); browse(v.mountpoint); } }, "Open"));
+    actions.append(el("button", { type: "button", class: "small", onclick: () => { showDrivesSub("files"); browse(v.mountpoint); } }, withIcon("folder", "Open")));
   }
   if (v.can_unmount) {
     actions.append(el("button", { type: "button", class: "small", disabled: !!noManage, title: noManage,
-                                  onclick: () => openUnmount(v) }, "Unmount"));
+                                  onclick: () => openUnmount(v) }, withIcon("logout", "Unmount")));
   } else if (v.mountpoints.length && v.system) {
     actions.append(el("span", { class: "tag", title: "Used by the operating system; can't be unmounted here" }, "System"));
   }
   if (v.can_mount) {
     actions.append(el("button", { type: "button", class: "small primary", disabled: !!noManage, title: noManage,
-                                  onclick: () => openMount(v) }, "Mount…"));
+                                  onclick: () => openMount(v) }, withIcon("login", "Mount…")));
   }
   return el("div", { class: "volume" }, left, middle, status, actions);
 }
@@ -1638,7 +1769,7 @@ function renderPlaces() {
     seen.add(path);
     box.append(el("button", { type: "button", class: `place ${state.fb && state.fb.path.startsWith(path) && (path !== "/" || state.fb.path === "/") ? "active" : ""}`,
                               onclick: () => browse(path), title: path },
-      el("span", { class: "place-icon", html: ICONS[kind] }),
+      el("span", { class: "place-icon", html: icon(kind) }),
       el("span", { class: "place-text" }, el("strong", {}, label), el("span", { class: "muted small" }, sub))));
   };
   add("System", "/", "internal", "/");
@@ -1694,14 +1825,14 @@ function renderBrowser() {
   for (const e of entries) {
     const full = (r.path === "/" ? "" : r.path) + "/" + e.name;
     const name = e.dir
-      ? el("button", { type: "button", class: "fb-name link", onclick: () => browse(full) }, el("span", { class: "fb-icon dir", html: ICONS.folder }), e.name)
-      : el("span", { class: "fb-name" }, el("span", { class: "fb-icon", html: ICONS.file }), e.name);
+      ? el("button", { type: "button", class: "fb-name link", onclick: () => browse(full) }, el("span", { class: "fb-icon dir", html: icon("folder") }), e.name)
+      : el("span", { class: "fb-name" }, el("span", { class: "fb-icon", html: icon("file") }), e.name);
     if (e.link) name.append(el("span", { class: "muted small" }, " ↪"));
     const sz = sizeOf(e);
     const sizeCell = el("td", { class: "num nowrap" }, sz == null ? (e.dir ? "—" : "") : fmtBytes(sz));
     if (sizes && sz) sizeCell.prepend(el("span", { class: "size-bar", style: `width:${Math.max(2, 60 * sz / max)}px` }));
     const actions = el("td", { class: "num" });
-    if (!e.dir) actions.append(el("a", { class: "small", href: `/api/files/download?path=${encodeURIComponent(full)}`, download: e.name }, "Download"));
+    if (!e.dir) actions.append(el("a", { class: "small", href: `/api/files/download?path=${encodeURIComponent(full)}`, download: e.name }, withIcon("download", "Download")));
     tbody.append(el("tr", {}, el("td", {}, name), sizeCell,
       el("td", { class: "small muted nowrap hide-sm" }, e.mtime ? new Date(e.mtime * 1000).toLocaleString() : ""), actions));
   }

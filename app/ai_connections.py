@@ -42,8 +42,33 @@ PROVIDERS: dict[str, dict[str, Any]] = {
                 "help": "Create a key at console.anthropic.com → API keys.",
                 "fields": [dict(F_API_KEY, placeholder="sk-ant-…", required=True)],
             },
+            "google_account": {
+                "label": "Google account (Sign in with Google)",
+                "help": "Sign in with your Google account to use Claude through Google Cloud Vertex AI (billed by Google). "
+                        "Your account needs the “Vertex AI User” role in the project, with Claude enabled in the Model Garden.",
+                "setup": [
+                    "In the Google Cloud console, open APIs & Services → OAuth consent screen and set it up "
+                    "(set the publishing status to “In production”: in “Testing”, Google ends the sign-in after 7 days).",
+                    "Then Credentials → Create credentials → OAuth client ID → Application type “Desktop app”.",
+                    "Copy its client ID and client secret into the fields below, then click Sign in with Google.",
+                ],
+                "fields": [
+                    {"key": "project_id", "label": "Google Cloud project ID", "type": "text", "required": True,
+                     "placeholder": "my-project-123"},
+                    {"key": "region", "label": "Region", "type": "text", "default": "global",
+                     "placeholder": "global, us-east5, europe-west1…"},
+                    {"key": "google_client_id", "label": "OAuth client ID", "type": "text", "required": True,
+                     "placeholder": "123…-abc.apps.googleusercontent.com"},
+                    {"key": "google_client_secret", "label": "OAuth client secret", "type": "password",
+                     "secret": True, "required": True, "placeholder": "GOCSPX-…"},
+                    {"key": "google_refresh_token", "label": "Google account", "type": "google_signin",
+                     "secret": True, "required": True},
+                ],
+                "extra_config": ["google_account"],
+                "model_help": "Vertex model IDs may differ, e.g. claude-opus-5-5@20261001. Use Load models or check the Model Garden.",
+            },
             "vertex": {
-                "label": "Google Cloud (Vertex AI)",
+                "label": "Google Cloud service account (Vertex AI)",
                 "help": "Claude through your Google Cloud project, signing in with a Google service account, "
                         "or with the server's own Google login (run `gcloud auth application-default login` "
                         "in the Console as the app's user and leave the credentials empty).",
@@ -259,8 +284,11 @@ def any_enabled() -> bool:
     return db.query_one("SELECT 1 FROM ai_connections WHERE enabled=1 LIMIT 1") is not None
 
 
-def _clean(data: dict, existing: dict | None = None) -> tuple[dict, dict, dict]:
-    """Validate a create/update request. Returns (fields, config, secrets)."""
+def _clean(data: dict, existing: dict | None = None, consume: bool = True) -> tuple[dict, dict, dict]:
+    """Validate a create/update request. Returns (fields, config, secrets).
+
+    consume: swap a Google sign-in "grant:<id>" for the real token for good (saving),
+    or only look at it (Test / Load models before saving)."""
     provider = data.get("provider") or (existing or {}).get("provider")
     if provider not in PROVIDERS:
         raise ConnectionError_("Choose a provider.")
@@ -282,8 +310,28 @@ def _clean(data: dict, existing: dict | None = None) -> tuple[dict, dict, dict]:
 
     config: dict[str, Any] = {}
     secrets: dict[str, Any] = {}
+    same_method = bool(old_sec) or (existing and existing["provider"] == provider and existing["method"] == method)
+    for k in m.get("extra_config", []):   # set by the app, not typed by the user (e.g. the signed-in account)
+        if same_method and old_cfg.get(k):
+            config[k] = old_cfg[k]
     for f in m["fields"]:
         k = f["key"]
+        if f.get("type") == "google_signin":
+            v = incoming_secrets.get(k)
+            if v:
+                from . import google_oauth
+                g = google_oauth.take_grant(v) if consume else google_oauth.peek_grant(v)
+                if not g:
+                    raise ConnectionError_("The Google sign-in expired. Click “Sign in with Google” again.")
+                if g["client_id"] != (incoming.get("google_client_id") or old_cfg.get("google_client_id")):
+                    raise ConnectionError_("The OAuth client ID changed after signing in. Sign in with Google again.")
+                secrets[k] = g["refresh_token"]
+                config["google_account"] = g["email"]
+            elif k in old_sec and k not in clear:
+                secrets[k] = old_sec[k]
+            else:
+                config.pop("google_account", None)
+            continue
         if f.get("secret"):
             v = incoming_secrets.get(k)
             v = v.strip() if isinstance(v, str) else v
@@ -309,6 +357,8 @@ def _clean(data: dict, existing: dict | None = None) -> tuple[dict, dict, dict]:
             continue
         have = secrets.get(f["key"]) if f.get("secret") else config.get(f["key"])
         if not have and not (f["key"] == "api_key" and env_ok):
+            if f.get("type") == "google_signin":
+                raise ConnectionError_("Sign in with Google first.")
             raise ConnectionError_(f"{f['label']} is required.")
 
     model = str(incoming.get("model", old_cfg.get("model", p.get("default_model", ""))) or "").strip()
@@ -357,7 +407,7 @@ def update(conn_id: int, data: dict) -> dict:
 def draft(data: dict, conn_id: int | None = None) -> dict:
     """An unsaved connection (for Test / Load models in the editor), using saved secrets for blanks."""
     existing = get(conn_id) if conn_id else None
-    fields, config, secrets = _clean(data, existing)
+    fields, config, secrets = _clean(data, existing, consume=False)
     return {"id": conn_id or 0, **fields, "config": config, "secrets": secrets, "is_default": False,
             "created_at": 0, "updated_at": 0}
 

@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 
 from . import ai_connections as ai
-from . import agent, auth, console, db, drives, monitor, providers, server_name, updater
+from . import agent, auth, console, db, drives, google_oauth, monitor, providers, server_name, updater
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -371,6 +371,39 @@ async def ai_models(body: ConnectionProbe, user: User = Depends(admin_user)):
         raise HTTPException(400, "The AI service didn't answer within 30 seconds.")
     except Exception as e:
         raise HTTPException(400, f"Couldn't list models: {type(e).__name__}: {e}")
+
+
+class GoogleStartBody(BaseModel):
+    client_id: str
+    client_secret: str | None = None      # blank = the one saved in this connection
+    connection_id: int | None = None
+
+
+class GoogleFinishBody(BaseModel):
+    url: str                              # the address Google redirected the browser to
+
+
+@app.post("/api/ai/google/start")
+async def ai_google_start(body: GoogleStartBody, user: User = Depends(admin_user)):
+    """Begin “Sign in with Google” (Claude on Vertex AI). Returns the Google sign-in address."""
+    secret = (body.client_secret or "").strip()
+    if not secret and body.connection_id:
+        saved = ai.get(body.connection_id)
+        secret = (saved or {}).get("secrets", {}).get("google_client_secret", "")
+    try:
+        return google_oauth.start(body.client_id, secret)
+    except google_oauth.GoogleSignInError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.post("/api/ai/google/finish")
+async def ai_google_finish(body: GoogleFinishBody, request: Request, user: User = Depends(admin_user)):
+    try:
+        r = await asyncio.to_thread(google_oauth.finish, body.url)
+    except google_oauth.GoogleSignInError as e:
+        raise HTTPException(400, str(e))
+    db.audit("ai_google_signin", user.username, auth.client_ip(request), {"google_account": r["email"]})
+    return r   # {"grant": "grant:…", "email": …}; the refresh token itself stays on the server
 
 
 @app.get("/api/chat/connections")

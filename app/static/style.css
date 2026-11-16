@@ -85,6 +85,29 @@ input:focus, textarea:focus, select:focus { outline: 2px solid color-mix(in srgb
 .dot.on { background: var(--ok); }
 .dot.off { background: var(--crit); }
 .user { display: flex; align-items: center; gap: 8px; }
+
+/* ---------- icons: one style everywhere ---------- */
+.i {
+  width: 18px; height: 18px; flex-shrink: 0; display: inline-block; vertical-align: -4px;
+  fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+}
+button .i { margin-right: 2px; }
+button.small .i, .small .i { width: 15px; height: 15px; vertical-align: -3px; }
+button.big .i { width: 18px; height: 18px; }
+.btn-in { display: inline-flex; align-items: center; gap: 5px; }
+.btn-in .i { margin: 0; }
+/* Icon tiles (drives, AI providers): same size, shape and colours; .accent highlights one. */
+.icon-tile {
+  width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+  background: var(--surface-2); color: var(--muted); border: 1px solid var(--border);
+}
+.icon-tile .i { width: 22px; height: 22px; }
+.icon-tile.accent { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); border-color: color-mix(in srgb, var(--accent) 30%, var(--border)); }
+.icon-tile.monogram { font-weight: 700; font-size: 14px; letter-spacing: -.02em; color: var(--text); }
+.icon-tile.monogram.accent { color: var(--accent); }
+.nav-toggle .i { width: 22px; height: 22px; }
+.menu-item .i { color: var(--muted); }
+.back-btn { display: inline-flex; align-items: center; gap: 6px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* ---------- layout: left module sidebar + main area ---------- */
@@ -101,7 +124,7 @@ input:focus, textarea:focus, select:focus { outline: 2px solid color-mix(in srgb
   display: flex; align-items: center; gap: 10px; width: 100%; text-align: left; white-space: nowrap;
   border: none; background: transparent; padding: 8px 10px; border-radius: 8px; color: var(--muted); font-weight: 500;
 }
-.nav-item svg, .nav-toggle svg { width: 20px; height: 20px; flex-shrink: 0; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.nav-item .i { width: 20px; height: 20px; }
 .nav-item:hover { background: var(--surface-2); color: var(--text); }
 .nav-item.active { background: color-mix(in srgb, var(--accent) 14%, var(--surface)); color: var(--accent); font-weight: 600; }
 .nav-item span { overflow: hidden; text-overflow: ellipsis; }
@@ -119,6 +142,22 @@ body.nav-collapsed .nav-group + .nav-item { margin-top: 10px; }
 
 /* ---------- chat ---------- */
 .sidebar { width: 250px; border-right: 1px solid var(--border); padding: 12px; overflow-y: auto; background: var(--surface); flex-shrink: 0; }
+/* The chat list collapses like the modules sidebar: to an icon rail on wide screens,
+   and slides in over the chat on phones. */
+#view-chat { position: relative; }
+.chat-sidebar { display: flex; flex-direction: column; overflow-x: hidden; transition: width .18s ease; }
+#new-chat { display: flex; align-items: center; justify-content: center; gap: 6px; flex-shrink: 0; }
+#new-chat .i { margin: 0; }
+.chat-sidebar .conv-list { flex-shrink: 0; }
+body.chats-collapsed .chat-sidebar { width: 56px; padding: 12px 8px; }
+body.chats-collapsed .chat-sidebar .conv-list,
+body.chats-collapsed #new-chat .lbl,
+body.chats-collapsed #chats-collapse > span { display: none; }
+body.chats-collapsed #new-chat { padding: 8px 0; }
+body.chats-collapsed #chats-collapse { justify-content: center; padding: 9px 0; }
+body.chats-collapsed #chats-collapse .i { transform: rotate(180deg); }
+.chat-bar { display: none; }
+.chats-toggle { display: inline-flex; align-items: center; gap: 6px; }
 .conv-list { list-style: none; margin: 12px 0 0; padding: 0; }
 .conv-list li { display: flex; align-items: center; gap: 4px; padding: 7px 8px; border-radius: 8px; cursor: pointer; }
 .conv-list li:hover { background: var(--surface-2); }
@@ -174,7 +213,9 @@ pre.code code { background: none; padding: 0; }
 .toggle { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; }
 
 /* ---------- monitor ---------- */
-.monitor { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; max-width: 1400px; margin: 0 auto; width: 100%; }
+/* Scrolling pages span the full width (scrollbar at the window's right edge); the content is
+   centred with padding instead of max-width, so it still stops growing at 1400px. */
+.monitor { flex: 1; overflow-y: auto; padding: 16px max(16px, calc((100% - 1400px) / 2)); display: flex; flex-direction: column; gap: 16px; width: 100%; min-width: 0; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(165px, 1fr)); gap: 12px; }
 .tile, .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; }
 .tile .label { font-size: 12px; color: var(--muted); }
@@ -260,11 +301,14 @@ canvas { width: 100%; height: 160px; display: block; }
   border: none; background: transparent; padding: 9px 12px; border-radius: 10px; font-size: 14px;
 }
 .menu-item:hover, .menu-item:focus-visible { background: var(--surface-2); }
-.menu-item span { width: 18px; text-align: center; color: var(--muted); }
 
 /* ---------- pages (Users, Drives, profile sub-pages) ---------- */
-.page { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 16px; max-width: 1400px; margin: 0 auto; width: 100%; }
-.page.narrow { max-width: 640px; }
+.page { flex: 1; overflow-y: auto; padding: 16px max(16px, calc((100% - 1400px) / 2)); display: flex; flex-direction: column; gap: 16px; width: 100%; min-width: 0; }
+.page.narrow { padding-left: max(16px, calc((100% - 640px) / 2)); padding-right: max(16px, calc((100% - 640px) / 2)); }
+.page > * { flex-shrink: 0; }
+/* Sub-views inside a page (e.g. Drives / Browse files) keep the same spacing as the page. */
+.subview { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+.subview[hidden] { display: none; }
 .page h2 { margin: 0; font-size: 20px; }
 .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .page-head p { margin: 4px 0 0; }
@@ -291,9 +335,7 @@ canvas { width: 100%; height: 160px; display: block; }
 .drive-title { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 4px; }
 .drive-badges { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 .tag-accent { background: color-mix(in srgb, var(--accent) 18%, var(--surface)); color: var(--accent); font-weight: 600; }
-.drive-icon { width: 40px; height: 40px; border-radius: 10px; display: inline-flex; align-items: center; justify-content: center; background: var(--surface-2); color: var(--muted); flex-shrink: 0; }
-.drive-icon.external { color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, var(--surface)); }
-.drive-icon svg, .place-icon svg, .fb-icon svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.place-icon .i { width: 20px; height: 20px; }
 .drive-io { display: flex; gap: 14px; flex-wrap: wrap; }
 .volumes { margin-top: 12px; border-top: 1px solid var(--border); }
 /* Each drive card lays out its volumes by its own width (not the window's), so nothing is
@@ -338,7 +380,6 @@ canvas { width: 100%; height: 160px; display: block; }
 .fb-name.link:hover { color: var(--accent); text-decoration: underline; }
 .fb-icon { display: inline-flex; color: var(--muted); }
 .fb-icon.dir { color: var(--accent); }
-.fb-icon svg { width: 18px; height: 18px; }
 .size-bar { display: inline-block; height: 6px; border-radius: 3px; background: var(--accent); opacity: .7; margin-right: 8px; vertical-align: middle; }
 
 /* ---------- AI connections ---------- */
@@ -348,10 +389,6 @@ canvas { width: 100%; height: 160px; display: block; }
 .ai-card-title { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 2px; overflow-wrap: anywhere; }
 .ai-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 .ai-card > p { margin: 8px 0 0; }
-.prov-badge {
-  width: 40px; height: 40px; border-radius: 10px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
-  color: #fff; font-weight: 700; font-size: 14px; letter-spacing: -.02em;
-}
 .empty-card { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .empty-card p { margin: 0; }
 .methods { border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px 10px; margin: 0; }
@@ -362,6 +399,17 @@ canvas { width: 100%; height: 160px; display: block; }
 .method-option:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
 .methods p { margin: 6px 0 0 !important; }
 .ai-fields { display: flex; flex-direction: column; gap: 12px; }
+.setup-steps { font-size: 13px; background: var(--surface-2); border-radius: 10px; padding: 8px 12px; }
+.setup-steps summary { cursor: pointer; font-weight: 600; }
+.setup-steps ol, .g-steps ol { margin: 6px 0 0; padding-left: 20px; display: flex; flex-direction: column; gap: 4px; }
+.g-signin { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.g-label { font-size: 13px; font-weight: 600; }
+.g-status { display: flex; align-items: center; gap: 6px; font-size: 13px; }
+.g-btn { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.g-steps { width: 100%; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+.g-steps .row { display: flex; gap: 8px; }
+.g-steps .row input { flex: 1; min-width: 0; font-family: var(--mono); font-size: 12px; }
+.g-steps p { margin: 0; }
 .ai-fields textarea { font-family: var(--mono); font-size: 12px; resize: vertical; }
 .conn-pick select { max-width: 260px; padding: 4px 8px; font-size: 12.5px; }
 
@@ -440,7 +488,17 @@ button.big { padding: 8px 18px; font-size: 14px; }
 
 /* ---------- small screens ---------- */
 @media (max-width: 760px) {
-  .sidebar { display: none; }
+  .chat-sidebar {
+    position: absolute; z-index: 20; top: 0; bottom: 0; left: 0; width: 264px;
+    transform: translateX(-105%); transition: transform .2s ease;
+  }
+  body.chats-open .chat-sidebar { transform: none; box-shadow: 8px 0 28px rgba(0, 0, 0, .3); }
+  .nav-scrim.chats-scrim { z-index: 15; }
+  body.chats-collapsed .chat-sidebar { width: 264px; padding: 12px; }
+  body.chats-collapsed .chat-sidebar .conv-list { display: block; }
+  body.chats-collapsed #new-chat .lbl { display: inline; }
+  #chats-collapse { display: none; }
+  .chat-bar { display: flex; padding: 6px 12px 0; }
   .tabs { margin: 0; }
   .charts, .grid2 { grid-template-columns: 1fr; }
   .msg.user { max-width: 92%; }

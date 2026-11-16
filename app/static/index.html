@@ -10,7 +10,7 @@
 <body>
   <header class="topbar">
     <button type="button" class="ghost nav-toggle" id="nav-toggle" aria-controls="sidenav" aria-expanded="false" title="Menu">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg><span class="sr-only">Menu</span>
+      <span data-icon="menu"></span><span class="sr-only">Menu</span>
     </button>
     <div class="brand"><span class="dot" id="conn-dot" title="Connection"></span> <strong id="hostname">SysAdmin.IA</strong> <span class="muted small" id="host-os"></span></div>
     <span class="spacer"></span>
@@ -26,11 +26,11 @@
           <div class="muted small" id="profile-menu-sub"></div>
         </div>
         <div class="profile-menu-actions">
-          <button type="button" class="menu-item" id="menu-edit-profile" role="menuitem"><span aria-hidden="true">✎</span> Edit profile</button>
-          <button type="button" class="menu-item" id="menu-change-password" role="menuitem"><span aria-hidden="true">🔑</span> Change password</button>
+          <button type="button" class="menu-item" id="menu-edit-profile" role="menuitem"><span data-icon="edit"></span> Edit profile</button>
+          <button type="button" class="menu-item" id="menu-change-password" role="menuitem"><span data-icon="key"></span> Change password</button>
         </div>
         <div class="profile-menu-foot">
-          <button type="button" class="menu-item" id="logout" role="menuitem"><span aria-hidden="true">⎋</span> Sign out</button>
+          <button type="button" class="menu-item" id="logout" role="menuitem"><span data-icon="logout"></span> Sign out</button>
         </div>
       </div>
     </div>
@@ -47,35 +47,43 @@
   <nav class="sidenav" id="sidenav" aria-label="Modules">
     <div class="nav-group admin-only">Workspace</div>
     <button data-view="chat" class="tab nav-item active" id="tab-chat" title="Chat">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/></svg><span>Chat</span></button>
+      <span data-icon="chat"></span><span>Chat</span></button>
     <button data-view="console" class="tab nav-item" id="tab-console" title="Console" hidden>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></svg><span>Console</span></button>
+      <span data-icon="console"></span><span>Console</span></button>
     <div class="nav-group">Server</div>
     <button data-view="monitor" class="tab nav-item" id="tab-monitor" title="Monitor">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg><span>Monitor</span></button>
+      <span data-icon="monitor"></span><span>Monitor</span></button>
     <button data-view="drives" class="tab nav-item admin-only" id="tab-drives" title="Drives">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="16.5" cy="12" r="1.2"/><path d="M6 12h6"/></svg><span>Drives</span></button>
+      <span data-icon="internal"></span><span>Drives</span></button>
     <div class="nav-group admin-only">Settings</div>
     <button data-view="ai" class="tab nav-item admin-only" id="tab-ai" title="AI connections">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/><path d="M18 15l.8 2.2L21 18l-2.2.8L18 21l-.8-2.2L15 18l2.2-.8z"/></svg><span>AI connections</span></button>
+      <span data-icon="ai"></span><span>AI connections</span></button>
     <button data-view="users" class="tab nav-item admin-only" id="tab-users" title="Users">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.5"/><path d="M2.5 20a6.5 6.5 0 0 1 13 0"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18 14a6 6 0 0 1 3.5 6"/></svg><span>Users</span></button>
+      <span data-icon="users"></span><span>Users</span></button>
     <button data-view="admin" class="tab nav-item admin-only" id="tab-admin" title="Admin">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/></svg><span>Admin</span></button>
+      <span data-icon="settings"></span><span>Admin</span></button>
     <span class="spacer"></span>
     <button type="button" class="nav-item nav-collapse" id="nav-collapse" title="Collapse the sidebar">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg><span>Collapse</span></button>
+      <span data-icon="chevron-left"></span><span>Collapse</span></button>
   </nav>
   <div class="nav-scrim" id="nav-scrim" hidden></div>
 
   <main class="main">
   <!-- ================= CHAT ================= -->
   <section id="view-chat" class="view active">
-    <aside class="sidebar">
-      <button id="new-chat" class="primary block">+ New chat</button>
+    <aside class="sidebar chat-sidebar" id="chat-sidebar" aria-label="Chats">
+      <button id="new-chat" class="primary block" title="New chat"><span data-icon="plus"></span><span class="lbl">New chat</span></button>
       <ul id="conv-list" class="conv-list"></ul>
+      <span class="spacer"></span>
+      <button type="button" class="nav-item nav-collapse" id="chats-collapse" title="Collapse the chat list">
+        <span data-icon="chevron-left"></span><span>Collapse</span></button>
     </aside>
+    <div class="nav-scrim chats-scrim" id="chats-scrim" hidden></div>
     <div class="chat-main">
+      <div class="chat-bar">
+        <button type="button" class="ghost small chats-toggle" id="chats-toggle" aria-controls="chat-sidebar" aria-expanded="false">
+          <span data-icon="chat"></span> Chats</button>
+      </div>
       <div id="api-warning" class="banner warn" hidden>No AI is connected yet. <a href="#" id="goto-ai">Add an AI connection</a> (Claude, ChatGPT, Grok, Gemini and more). The monitor works without it.</div>
       <div id="messages" class="messages">
         <div class="empty" id="empty-state">
@@ -178,7 +186,7 @@
               <span class="muted" id="update-checked"></span></p>
           </div>
           <div class="update-actions">
-            <button type="button" id="update-check" class="primary big"><span aria-hidden="true">⟳</span> Check for updates</button>
+            <button type="button" id="update-check" class="primary big"><span data-icon="refresh"></span> Check for updates</button>
             <button type="button" id="update-apply" class="primary big" hidden>Update</button>
           </div>
         </div>
@@ -242,18 +250,18 @@
         </span>
       </div>
 
-      <div id="drives-sub-drives">
+      <div id="drives-sub-drives" class="subview">
         <p class="note warn" id="drives-setup" hidden></p>
         <div class="tiles" id="drive-tiles"></div>
         <div id="drive-list" class="drive-list"></div>
-        <div class="row muted small"><button type="button" class="ghost small" id="drives-refresh">Refresh</button><span id="drives-updated"></span></div>
+        <div class="row muted small"><button type="button" class="ghost small" id="drives-refresh"><span data-icon="refresh"></span> Refresh</button><span id="drives-updated"></span></div>
       </div>
 
-      <div id="drives-sub-files" hidden>
+      <div id="drives-sub-files" class="subview" hidden>
         <div class="card file-browser">
           <div class="fb-places" id="fb-places" aria-label="Places"></div>
           <div class="fb-bar">
-            <button type="button" class="ghost small" id="fb-up" title="Up one folder" aria-label="Up one folder">↑</button>
+            <button type="button" class="ghost small" id="fb-up" title="Up one folder" aria-label="Up one folder"><span data-icon="arrow-up"></span></button>
             <nav class="crumbs" id="fb-crumbs" aria-label="Current folder"></nav>
             <span class="spacer"></span>
             <label class="toggle"><input type="checkbox" id="fb-hidden"> Show hidden</label>
@@ -300,7 +308,7 @@
   <!-- ================= PROFILE (from the profile card) ================= -->
   <section id="view-profile" class="view">
     <div class="page narrow">
-      <button type="button" class="ghost back-btn" data-back>← Back</button>
+      <button type="button" class="ghost back-btn" data-back><span data-icon="arrow-left"></span> Back</button>
       <h2>Edit profile</h2>
       <div class="card">
         <form id="profile-form" class="settings-form" autocomplete="off">
@@ -326,7 +334,7 @@
 
   <section id="view-password" class="view">
     <div class="page narrow">
-      <button type="button" class="ghost back-btn" data-back>← Back</button>
+      <button type="button" class="ghost back-btn" data-back><span data-icon="arrow-left"></span> Back</button>
       <h2>Change password</h2>
       <div class="card">
         <form id="pw-form" class="settings-form">
@@ -350,7 +358,7 @@
           <h2>AI connections</h2>
           <p class="muted small">The AI services the chat can use. Each chat can pick one; the <strong>default</strong> is used otherwise.</p>
         </div>
-        <button type="button" class="primary" id="ai-add">+ Add connection</button>
+        <button type="button" class="primary" id="ai-add"><span data-icon="plus"></span> Add connection</button>
       </div>
       <div id="ai-list" class="ai-list"></div>
       <p class="small muted">API keys and credentials are stored on this server and are never shown again after saving.
@@ -391,7 +399,7 @@
       <label class="check"><input type="checkbox" name="is_default"> Use by default for new chats</label>
       <p class="small" id="ai-msg" hidden></p>
       <div class="dialog-actions">
-        <button type="button" class="ghost" id="ai-test">Test connection</button>
+        <button type="button" class="ghost" id="ai-test"><span data-icon="test"></span> Test connection</button>
         <span class="spacer"></span>
         <button type="button" class="ghost" id="ai-cancel">Cancel</button>
         <button class="primary" id="ai-save">Save</button>

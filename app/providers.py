@@ -110,6 +110,20 @@ FUNCTION_TOOLS: list[dict] = [
 _ANTHROPIC_ONLY = {"thinking", "redacted_thinking", "fallback", "server_tool_use"}
 
 
+def _credential_hint(conn: dict, e: Exception) -> str:
+    """A readable message for Google / AWS credential problems."""
+    text = f"{type(e).__name__}: {e}"
+    if "invalid_grant" in text or "RefreshError" in text:
+        return (f"The Google sign-in for “{conn['name']}” is no longer valid (expired or revoked). "
+                "Edit the connection and click Sign in with Google again.")
+    if "DefaultCredentialsError" in text:
+        return (f"“{conn['name']}” has no Google credentials: paste a service-account key, or sign the server in "
+                "with `gcloud auth application-default login` in the Console.")
+    if "NoCredentialsError" in text or "Unable to locate credentials" in text:
+        return f"“{conn['name']}” has no AWS credentials: enter an access key, or configure the server's AWS credentials."
+    return f"“{conn['name']}”: {text}"
+
+
 def _safe_id(tool_id: str) -> str:
     """Anthropic tool ids must match ^[a-zA-Z0-9_-]+$ (ids from other providers may not)."""
     return re.sub(r"[^a-zA-Z0-9_-]", "_", tool_id or "") or "call"
@@ -133,13 +147,27 @@ class AnthropicProvider:
             if not key:
                 raise ProviderError(f"Connection “{self.conn['name']}” has no API key. Add one in AI connections.")
             return anthropic.AsyncAnthropic(api_key=key)
-        if self.method == "vertex":
+        if self.method in ("vertex", "google_account"):
             try:
                 from anthropic import AsyncAnthropicVertex
             except ImportError:
                 raise ProviderError("Google Cloud support isn't installed on the server (pip package google-auth). "
                                     "Install the latest update to add it.")
             kwargs: dict[str, Any] = {"project_id": self.cfg.get("project_id"), "region": self.cfg.get("region") or "global"}
+            if self.method == "google_account":
+                refresh = self.conn["secrets"].get("google_refresh_token")
+                if not refresh:
+                    raise ProviderError(f"“{self.conn['name']}” isn't signed in to Google. Edit it and click Sign in with Google.")
+                try:
+                    from google.oauth2.credentials import Credentials
+                except ImportError:
+                    raise ProviderError("Google Cloud support isn't installed on the server (pip package google-auth).")
+                from .google_oauth import CLOUD_SCOPE, TOKEN_URL
+                kwargs["credentials"] = Credentials(
+                    token=None, refresh_token=refresh, token_uri=TOKEN_URL,
+                    client_id=self.cfg.get("google_client_id"),
+                    client_secret=self.conn["secrets"].get("google_client_secret"), scopes=[CLOUD_SCOPE])
+                return AsyncAnthropicVertex(**kwargs)
             creds_json = self.conn["secrets"].get("credentials_json")
             if creds_json:
                 try:
@@ -244,7 +272,7 @@ class AnthropicProvider:
         except ProviderError:
             raise
         except Exception as e:  # e.g. Google/AWS credential errors
-            raise ProviderError(f"“{self.conn['name']}”: {type(e).__name__}: {e}")
+            raise ProviderError(_credential_hint(self.conn, e))
 
         content = [b.model_dump(mode="json", by_alias=True, exclude_none=True) for b in response.content]
         stop = response.stop_reason or "end_turn"
@@ -256,11 +284,27 @@ class AnthropicProvider:
 
     async def test(self) -> str:
         client = self.client()
-        if self.method == "api_key":
-            info = await client.models.retrieve(self.model)
-            return f"Connected. Model: {info.display_name} ({info.id})."
-        await client.messages.create(model=self.model, max_tokens=1,
-                                     messages=[{"role": "user", "content": "Reply with OK."}])
+        try:
+            if self.method == "api_key":
+                info = await client.models.retrieve(self.model)
+                return f"Connected. Model: {info.display_name} ({info.id})."
+            await client.messages.create(model=self.model, max_tokens=1,
+                                         messages=[{"role": "user", "content": "Reply with OK."}])
+        except anthropic.AuthenticationError:
+            raise ProviderError("The key or credentials were rejected.")
+        except anthropic.PermissionDeniedError as e:
+            raise ProviderError(f"Signed in, but not allowed to use this model: {e.message} "
+                                "(Google Cloud: the account needs the “Vertex AI User” role and Claude enabled in the Model Garden.)")
+        except anthropic.NotFoundError:
+            raise ProviderError(f"Model “{self.model}” was not found. Use Load models or check the model ID for this platform/region.")
+        except anthropic.APIStatusError as e:
+            raise ProviderError(f"AI service error ({e.status_code}): {e.message}")
+        except anthropic.APIConnectionError:
+            raise ProviderError("Could not reach the AI service from the server (network error).")
+        except ProviderError:
+            raise
+        except Exception as e:
+            raise ProviderError(_credential_hint(self.conn, e))
         return f"Connected. Model {self.model} answered."
 
     async def models(self) -> list[str]:
