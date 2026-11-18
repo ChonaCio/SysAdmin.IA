@@ -726,8 +726,10 @@ details.ph-group > summary { cursor: pointer; }
 .update-head h3 { margin-top: 0; }
 .update-head p { margin: 4px 0 0; }
 .update-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.update-channel { display: flex; align-items: center; gap: 6px 12px; flex-wrap: wrap; margin: 12px 0 4px; }
-.update-channel > span:first-child { font-weight: 600; }
+.update-channel { display: flex; align-items: center; justify-content: space-between; gap: 8px 16px; flex-wrap: wrap; margin: 12px 0 4px; }
+.update-channel-text { display: flex; flex-direction: column; gap: 2px; flex: 1 1 260px; min-width: 0; }
+.update-channel-label { font-weight: 600; }
+.update-channel .seg { flex: 0 0 auto; margin-left: auto; }
 .update-channel .seg-btn:disabled { opacity: .6; }
 #update-push { margin: 4px 0; overflow-wrap: anywhere; }
 button.big { padding: 8px 18px; font-size: 14px; }

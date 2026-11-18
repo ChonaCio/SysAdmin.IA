@@ -211,12 +211,14 @@
           </div>
         </div>
         <div class="update-channel small" id="update-channel">
-          <span>Update channel</span>
+          <div class="update-channel-text">
+            <span class="update-channel-label">Update channel</span>
+            <span class="muted" id="update-channel-help"></span>
+          </div>
           <div class="seg" role="radiogroup" aria-label="Update channel">
             <button type="button" class="seg-btn" role="radio" data-channel="public">Public</button>
             <button type="button" class="seg-btn" role="radio" data-channel="developer">Developer</button>
           </div>
-          <span class="muted" id="update-channel-help"></span>
         </div>
         <p class="small muted" id="update-push" hidden></p>
         <div id="update-latest" class="small" hidden>
