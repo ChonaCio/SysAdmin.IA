@@ -1309,4 +1309,14 @@ SAI_I18N.register("zh", {
   "Marked as a pre-release on GitHub": "在 GitHub 上标记为预发布",
   "tag only": "仅标签",
   "A version tag without a GitHub release": "没有 GitHub 发布的版本标签",
+  // ---- Network: device and target pickers
+  "Other address…": "其他地址…",
+  "Other address and port…": "其他地址和端口…",
+  "Known devices": "已知设备",
+  "This server — {0}": "本服务器 — {0}",
+  "Apps on this server": "本服务器上的应用",
+  "Web pages on the network": "网络上的网页",
+  "A device on the network (choose the port)": "网络上的设备（选择端口）",
+  "The device's page uses HTTPS": "设备的页面使用 HTTPS",
+  "Pick SysAdmin.IA itself, an app, a web page found on the network, or a device and its port; or choose “Other” and type an address and port.": "选择 SysAdmin.IA 本身、某个应用、在网络上发现的网页，或某个设备及其端口；也可以选择“其他”并输入地址和端口。",
 });

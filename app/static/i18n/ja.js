@@ -1309,4 +1309,14 @@ SAI_I18N.register("ja", {
   "Marked as a pre-release on GitHub": "GitHub でプレリリースとしてマークされています",
   "tag only": "タグのみ",
   "A version tag without a GitHub release": "GitHub リリースのないバージョンタグ",
+  // ---- Network: device and target pickers
+  "Other address…": "その他のアドレス…",
+  "Other address and port…": "その他のアドレスとポート…",
+  "Known devices": "既知のデバイス",
+  "This server — {0}": "このサーバー — {0}",
+  "Apps on this server": "このサーバーのアプリ",
+  "Web pages on the network": "ネットワーク上の Web ページ",
+  "A device on the network (choose the port)": "ネットワーク上のデバイス（ポートを指定）",
+  "The device's page uses HTTPS": "デバイスのページは HTTPS を使用",
+  "Pick SysAdmin.IA itself, an app, a web page found on the network, or a device and its port; or choose “Other” and type an address and port.": "SysAdmin.IA 自身、アプリ、ネットワークで見つかった Web ページ、またはデバイスとそのポートを選ぶか、「その他」を選んでアドレスとポートを入力してください。",
 });

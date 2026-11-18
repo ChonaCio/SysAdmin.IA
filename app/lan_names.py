@@ -299,7 +299,7 @@ def list_sites() -> list[dict]:
 
 
 def site_targets() -> list[dict]:
-    return [{"label": "SysAdmin.IA (this app)", "target": APP_TARGET}] + publish.targets()
+    return [{"label": "SysAdmin.IA (this app)", "target": APP_TARGET, "group": "app"}] + publish.targets()
 
 
 def _proxy_ports(sites: list[dict]) -> set[int]:

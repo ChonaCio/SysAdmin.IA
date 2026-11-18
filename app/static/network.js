@@ -88,10 +88,12 @@ const NAME_STATE = { ok: ["announced", "tag-ok"], pending: ["starting…", ""], 
 
 async function netNamesTab(pane) {
   let names, sites;
-  if (!state.net.devices) state.net.devices = await api("/api/network/devices").catch(() => []);
-  try { [names, sites] = await Promise.all([api("/api/network/names"), api("/api/network/sites")]); }
+  let devices;   // fresh list of known devices for the dropdowns
+  try { [names, sites, devices] = await Promise.all([api("/api/network/names"), api("/api/network/sites"),
+    api("/api/network/devices").catch(() => state.net.devices || [])]); }
   catch (ex) { pane.innerHTML = ""; pane.append(el("p", { class: "small error" }, ex.message)); return; }
   if (state.net.tab !== "names") return;
+  state.net.devices = devices;
   state.net.names = names;
   state.net.sites = sites;
   pane.innerHTML = "";
@@ -141,22 +143,96 @@ function netNamesCard(n) {
   return box;
 }
 
-function netIpList() {
+// ---- dropdowns of known choices, with "Other…" for anything not listed (a text box appears)
+const PICK_OTHER = "__other";
+
+function netDeviceLabel(d) {
+  const name = d.name || (d.vendor && !d.vendor.startsWith("Private") ? `${d.vendor} device` : "Unknown device");
+  return `${name} — ${d.ip}${d.online ? "" : " (offline)"}`;
+}
+
+function netKnownDevices() {
+  const me = (state.net.names || {}).server_ip;
+  return (state.net.devices || []).filter((d) => d.ip && d.ip !== me && d.kind !== "this_server")
+    .sort((a, b) => (b.online - a.online) || netDeviceLabel(a).localeCompare(netDeviceLabel(b)));
+}
+
+function netPicker(groups, current, { otherLabel = "Other address…", otherPlaceholder = "" } = {}) {
+  const sel = el("select", { class: "net-picker" });
+  let found = false;
+  for (const g of groups) {
+    if (!g.items.length) continue;
+    const parent = g.label ? el("optgroup", { label: g.label }) : sel;
+    for (const it of g.items) {
+      const o = el("option", { value: it.value, "data-no-i18n": it.data ? "" : null }, it.label);
+      if (current != null && it.value === current) { o.selected = true; found = true; }
+      parent.append(o);
+    }
+    if (g.label) sel.append(parent);
+  }
+  sel.append(el("option", { value: PICK_OTHER }, otherLabel));
+  const other = el("input", { class: "mono", placeholder: otherPlaceholder, spellcheck: "false", autocomplete: "off" });
+  if (!found && current) { sel.value = PICK_OTHER; other.value = current; }
+  const extra = el("div", { class: "net-picker-extra" });
+  const sync = () => { other.hidden = sel.value !== PICK_OTHER; other.required = !other.hidden; };
+  sel.addEventListener("change", () => { sync(); if (!other.hidden) other.focus(); });
+  sync();
+  return { node: el("div", { class: "net-picker-wrap" }, sel, other, extra), sel, other, extra,
+    get value() { return sel.value === PICK_OTHER ? other.value.trim() : sel.value; } };
+}
+
+// A device's address: this server, a known device, or another address.
+function netAddressPicker(current) {
   const n = state.net.names || {};
-  const devs = (state.net.devices || []).filter((d) => d.ip);
-  return el("datalist", { id: "lan-name-ips" }, n.server_ip ? el("option", { value: n.server_ip }, "This server") : null,
-    ...devs.filter((d) => d.ip !== n.server_ip).map((d) => el("option", { value: d.ip }, d.name || d.vendor || d.mac)));
+  return netPicker([
+    { items: n.server_ip ? [{ value: n.server_ip, label: `This server — ${n.server_ip}` }] : [] },
+    { label: "Known devices", items: netKnownDevices().map((d) => ({ value: d.ip, label: netDeviceLabel(d), data: true })) },
+  ], current, { otherLabel: "Other address…", otherPlaceholder: "192.168.1.20" });
+}
+
+// Where a website goes: SysAdmin.IA, an app on this server, a web page found on the LAN, a device + port, or another address.
+function netTargetPicker(current) {
+  const s = state.net.sites || { targets: [] };
+  const n = state.net.names || {};
+  const t = s.targets || [];
+  const devs = netKnownDevices();
+  let cur = current, devPort = "";
+  const m = /^(?:https?:\/\/)?([\d.]+):(\d+)\/?$/.exec(current || "");
+  const listed = current && t.some((x) => x.target === current);
+  if (m && !listed && devs.some((d) => d.ip === m[1])) { cur = `dev:${m[1]}`; devPort = m[2]; }
+  if (current === s.app_target) cur = "app";
+  const p = netPicker([
+    { items: t.filter((x) => x.group === "app").map((x) => ({ value: x.target, label: x.label })) },
+    { label: "Apps on this server", items: t.filter((x) => x.group === "apps").map((x) => ({ value: x.target, label: x.label, data: true })) },
+    { label: "Web pages on the network", items: t.filter((x) => x.group === "web").map((x) => ({ value: x.target, label: x.label, data: true })) },
+    { label: "A device on the network (choose the port)", items: [
+      ...(n.server_ip ? [{ value: `dev:${n.server_ip}`, label: `This server — ${n.server_ip}` }] : []),
+      ...devs.map((d) => ({ value: `dev:${d.ip}`, label: netDeviceLabel(d), data: true }))] },
+  ], cur, { otherLabel: "Other address and port…", otherPlaceholder: "192.168.1.20:8080" });
+  const port = el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: "8080", value: devPort });
+  const https = el("input", { type: "checkbox" });
+  p.extra.append(el("div", { class: "net-picker-port" }, el("label", {}, "Port on the device", port),
+    el("label", { class: "check" }, https, " The device's page uses HTTPS")));
+  const sync = () => { p.extra.hidden = !p.sel.value.startsWith("dev:"); port.required = !p.extra.hidden; };
+  p.sel.addEventListener("change", () => { sync(); if (!p.extra.hidden) port.focus(); });
+  sync();
+  return { node: p.node, sel: p.sel,
+    get value() {
+      const v = p.value;
+      if (v.startsWith("dev:")) return `${https.checked ? "https" : "http"}://${v.slice(4)}:${port.value}`;
+      return v;
+    } };
 }
 
 function netNameEditDialog(x) {
   const mapped = (x.ports || []).length > 0;
   const f = {
     name: el("input", { required: true, class: "mono", value: x.name, spellcheck: "false", autocomplete: "off" }),
-    ip: el("input", { required: true, class: "mono", list: "lan-name-ips", value: x.device_ip || x.ip, spellcheck: "false", autocomplete: "off" }),
+    ip: netAddressPicker(x.device_ip || x.ip),
   };
-  netDialog(`Edit ${x.name}`, [netIpList(),
+  netDialog(`Edit ${x.name}`, [
     field("Name", f.name, "Renaming keeps its port mappings."),
-    field("Device (address)", f.ip, mapped
+    field("Device (address)", f.ip.node, mapped
       ? "The name points to this server, whose proxy passes its ports on. A new address moves the port mappings to that device; edit single mappings under Websites on this server."
       : "Pick a device or this server."),
   ], async () => {
@@ -168,11 +244,10 @@ function netNameEditDialog(x) {
 
 function netNameDialog() {
   const n = state.net.names || {};
-  const list = netIpList();
   const docker = !!state.net.sites?.docker;
   const f = {
     name: el("input", { required: true, class: "mono", placeholder: n.router_dns ? "e.g. nas.local or nas.home.lan" : "e.g. nas.local", spellcheck: "false", autocomplete: "off" }),
-    ip: el("input", { required: true, class: "mono", list: "lan-name-ips", placeholder: "192.168.1.20", spellcheck: "false", autocomplete: "off" }),
+    ip: netAddressPicker(null),
     port: el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: "80", disabled: !docker }),
     target: el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: "8080", disabled: !docker }),
     https: el("input", { type: "checkbox", disabled: !docker }),
@@ -185,8 +260,8 @@ function netNameDialog() {
       : "Port mappings go through this server's proxy, which needs Docker (install it in the Containers module)."),
     el("div", { class: "two-col" }, field("Port on the name", f.port, "Default 80 (443 with HTTPS)."), field("Port on the device", f.target)),
     el("label", { class: "check" }, f.https, " HTTPS (with this server's own certificate; browsers warn until it's trusted)"));
-  netDialog("Add a name", [list, field("Name", f.name, n.router_dns ? "Ends in .local (announced by this server) or any other domain (kept in the router)." : "One word plus .local."),
-    field("Device (address)", f.ip, "Pick a device or this server. Give the device a reserved address (Router & DHCP) so the name keeps working."),
+  netDialog("Add a name", [field("Name", f.name, n.router_dns ? "Ends in .local (announced by this server) or any other domain (kept in the router)." : "One word plus .local."),
+    field("Device (address)", f.ip.node, "Pick a device or this server. Give the device a reserved address (Router & DHCP) so the name keeps working."),
     portsBox],
   async () => {
     const body = { name: f.name.value, ip: f.ip.value, https: f.https.checked,
@@ -243,13 +318,11 @@ function netSitesCard(s, n) {
 function netSiteDialog(existing = null) {
   const s = state.net.sites || { targets: [] };
   const n = state.net.names || {};
-  const list = el("datalist", { id: "lan-site-targets" }, ...s.targets.map((t) => el("option", { value: t.target }, t.label)));
   const isApp = existing && existing.target === s.app_target;
   const f = {
     host: el("input", { required: true, class: "mono", placeholder: n.router_dns ? "e.g. photos.local or photos.home.lan" : "e.g. photos.local", spellcheck: "false", autocomplete: "off",
       value: existing?.hostname || "" }),
-    target: el("input", { required: true, class: "mono", list: "lan-site-targets", placeholder: "127.0.0.1:2283", spellcheck: "false", autocomplete: "off",
-      value: existing ? (isApp ? "app" : existing.target) : "" }),
+    target: netTargetPicker(existing ? existing.target : null),
     https: el("input", { type: "checkbox", checked: !!existing?.https }),
     name: el("input", { type: "checkbox", checked: true }),
     port: el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: existing?.https ? "443" : "80",
@@ -263,10 +336,10 @@ function netSiteDialog(existing = null) {
   });
   const appNote = el("p", { class: "muted small", hidden: !isApp },
     "SysAdmin.IA itself. With HTTPS, sign-in passwords stay encrypted on the network; without it, they cross the network in plain text.");
-  f.target.addEventListener("input", () => { appNote.hidden = f.target.value.trim() !== "app"; });
-  netDialog(existing ? `Edit ${existing.hostname}` : "Add a website", [list,
+  f.target.sel.addEventListener("change", () => { appNote.hidden = f.target.sel.value !== "app"; });
+  netDialog(existing ? `Edit ${existing.hostname}` : "Add a website", [
     field("Name", f.host, "The address people type, e.g. photos.local."),
-    field("Goes to", f.target, "Pick an app (a container, a device's web page, or “app” for SysAdmin.IA itself) or type an address and port."),
+    field("Goes to", f.target.node, "Pick SysAdmin.IA itself, an app, a web page found on the network, or a device and its port; or choose “Other” and type an address and port."),
     appNote,
     field("Port", f.port, "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it."),
     el("label", { class: "check" }, f.https, " HTTPS (with this server's own certificate; browsers warn until it's trusted)"),
@@ -465,7 +538,7 @@ function netDialog(title, body, onOk, okLabel = "Save") {
   $("#net-dialog-title").textContent = title;
   const box = $("#net-dialog-body");
   box.innerHTML = "";
-  box.append(...[].concat(body));
+  box.append(...[].concat(body).filter((x) => x != null && x !== false));
   $("#net-ok").textContent = okLabel;
   $("#net-dialog-error").hidden = true;
   state.net.onOk = onOk;

@@ -820,6 +820,12 @@ button.tag-btn:disabled { opacity: .5; cursor: not-allowed; }
 .fw-table td.right { text-align: right; white-space: nowrap; }
 .fw-table .fw-note { white-space: normal; max-width: 220px; }
 .lan-port { color: var(--accent); white-space: nowrap; }
+.net-picker-wrap { display: flex; flex-direction: column; gap: 6px; font-weight: 400; }
+.net-picker-wrap select, .net-picker-wrap input:not([type=checkbox]) { width: 100%; max-width: 460px; }
+.net-picker-port { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 6px 14px; }
+.net-picker-port label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.net-picker-port label.check { flex-direction: row; align-items: center; gap: 6px; }
+.net-picker-port input[type=number] { width: 120px; }
 fieldset.lan-ports { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px 12px; margin: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 fieldset.lan-ports legend { font-size: 13px; font-weight: 600; padding: 0 4px; }
 .fw-table button.icon-only { padding: 3px 6px; }

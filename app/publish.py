@@ -514,8 +514,9 @@ def targets() -> list[dict]:
                 continue
             for p in c.get("ports") or []:
                 if p.get("host") and p.get("proto", "tcp") == "tcp":
-                    out.append({"label": f"{c['name']} (container, port {p['host']})", "target": f"http://127.0.0.1:{p['host']}"})
-    except containers.DockerError:
+                    out.append({"label": f"{c['name']} (container, port {p['host']})", "target": f"http://127.0.0.1:{p['host']}",
+                                "group": "apps"})
+    except Exception:  # noqa: BLE001 - Docker missing or not allowed: no container suggestions
         pass
     for d in network.devices():
         for port, info in (d.get("http") or {}).items():
@@ -523,7 +524,7 @@ def targets() -> list[dict]:
             if d.get("kind") == "this_server":
                 continue
             out.append({"label": f"{d['name'] or d['ip']}: {info.get('title') or 'web page'} (port {port})",
-                        "target": f"{'https' if tls else 'http'}://{d['ip']}:{port}"})
+                        "target": f"{'https' if tls else 'http'}://{d['ip']}:{port}", "group": "web"})
     return out
 
 

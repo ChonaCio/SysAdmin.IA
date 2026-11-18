@@ -258,6 +258,7 @@ The **Network** module (Server group) shows what's on your LAN, talks to your ro
 - **Names on the network:** give a device (or this server) a name.
   - Names ending in **`.local`** (e.g. `nas.local`) are announced by this server over mDNS (`avahi-publish`, package avahi-utils). They work on any network, with no router support; phones, Macs, Windows 10+ and Linux understand them. If another device already uses the name, the row says so.
   - **Other names** (e.g. `nas.home.lan`) are stored as DNS entries in the router (OpenWrt, MikroTik). Devices must use the router as their DNS server (the usual setup).
+  - Pick the device from a dropdown of this server and all known devices (from the last scan), or choose **Other address…** and type one.
   - Reserve the device's address (**Router & DHCP**) so the name keeps pointing to it.
   - **Ports (optional):** map a port of the name to a port of the device, e.g. `website1.local:80 → 192.168.1.10:8080` and `website2.local:80 → 192.168.1.10:8081`.
     - A name alone can't change ports, so the mapping goes through this server's proxy (Caddy): the name then points to this server, and the proxy passes each visit on to the device's port.
@@ -265,6 +266,7 @@ The **Network** module (Server group) shows what's on your LAN, talks to your ro
     - Websites (HTTP) only; needs Docker.
     - Removing the last mapping points the name back where it was. Removing the name removes its mappings.
 - **Websites on this server:** many sites and apps on the same port. Each site gets a name (e.g. `photos.local` → the Immich container, `nas.local` → the NAS's web page, `admin.local` → SysAdmin.IA itself). A small proxy (Caddy, container `sai-caddy`) listens on port 80 (and 443) and sends each visit to the right app by name.
+  - **Goes to** is a dropdown, grouped as SysAdmin.IA itself, apps on this server (container ports), web pages found on the network, and any known device. For a device you then choose its port (and whether its page uses HTTPS). **Other address and port…** lets you type any address.
   - The name is created too, pointing to this server (optional).
   - Each website answers on port 80 (443 with HTTPS) unless you pick another **Port**. Several websites share a port as long as their names differ. Ports already used by another program, or SysAdmin.IA's own port, are refused. If the firewall keeps the port closed, you're told to open it in **Ports**.
   - **HTTPS** uses certificates from this server's own certificate authority. Browsers warn until you trust it; the tab has a link to download it.

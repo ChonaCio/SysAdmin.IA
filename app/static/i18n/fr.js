@@ -1311,4 +1311,14 @@ SAI_I18N.register("fr", {
   "Marked as a pre-release on GitHub": "Marquée comme préversion sur GitHub",
   "tag only": "tag seul",
   "A version tag without a GitHub release": "Un tag de version sans release sur GitHub",
+  // ---- Network: device and target pickers
+  "Other address…": "Autre adresse…",
+  "Other address and port…": "Autre adresse et port…",
+  "Known devices": "Appareils connus",
+  "This server — {0}": "Ce serveur — {0}",
+  "Apps on this server": "Applications sur ce serveur",
+  "Web pages on the network": "Pages web sur le réseau",
+  "A device on the network (choose the port)": "Un appareil du réseau (choisissez le port)",
+  "The device's page uses HTTPS": "La page de l’appareil utilise HTTPS",
+  "Pick SysAdmin.IA itself, an app, a web page found on the network, or a device and its port; or choose “Other” and type an address and port.": "Choisissez SysAdmin.IA lui-même, une application, une page web trouvée sur le réseau, ou un appareil et son port ; ou choisissez « Autre » et saisissez une adresse et un port.",
 });
