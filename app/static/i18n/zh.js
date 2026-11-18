@@ -1284,4 +1284,13 @@ SAI_I18N.register("zh", {
   "Passed on by this server's proxy": "由本服务器的代理转发",
   "Remove the name {0} and its port mappings?": "删除名称 {0} 及其端口映射？",
   "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it.": "网站在本服务器上响应的端口。默认 80（HTTPS 为 443）；多个网站可以共用。",
+  // ---- Network: editing names & websites
+  "Edit this name": "编辑此名称",
+  "Edit this website": "编辑此网站",
+  "Renaming keeps its port mappings.": "重命名会保留其端口映射。",
+  "The name points to this server, whose proxy passes its ports on. A new address moves the port mappings to that device; edit single mappings under Websites on this server.": "该名称指向本服务器，由其代理转发端口。填写新地址会把端口映射移到该设备；单个映射请在“本服务器上的网站”中编辑。",
+  "Pick a device or this server.": "选择一个设备或本服务器。",
+  "Name saved.": "名称已保存。",
+  "Website saved.": "网站已保存。",
+  "SysAdmin.IA itself. With HTTPS, sign-in passwords stay encrypted on the network; without it, they cross the network in plain text.": "SysAdmin.IA 本身。使用 HTTPS 时，登录密码在网络上加密传输；不使用时则以明文传输。",
 });

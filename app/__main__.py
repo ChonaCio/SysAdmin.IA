@@ -31,7 +31,11 @@ async def _serve() -> None:
 
     servers: list[_Server] = []
     for port, tls in settings.listeners():
-        kwargs = dict(host=settings.host, port=port, proxy_headers=False, log_level="info")
+        # The local proxy (Network → Names & websites, Caddy on this machine) connects from 127.0.0.1 and says
+        # in X-Forwarded-Proto/-For how the visitor really connected: trust that, and only from this machine,
+        # so login cookies match the visitor's http/https and the audit log shows the visitor's address.
+        kwargs = dict(host=settings.host, port=port, proxy_headers=True, forwarded_allow_ips="127.0.0.1",
+                      log_level="info")
         if tls:
             kwargs.update(ssl_certfile=settings.tls_cert, ssl_keyfile=settings.tls_key)
         servers.append(_Server(uvicorn.Config(app, **kwargs)))

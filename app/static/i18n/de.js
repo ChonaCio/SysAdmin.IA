@@ -1284,4 +1284,13 @@ SAI_I18N.register("de", {
   "Passed on by this server's proxy": "Vom Proxy dieses Servers weitergeleitet",
   "Remove the name {0} and its port mappings?": "Den Namen {0} und seine Port-Zuordnungen entfernen?",
   "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it.": "Wo die Website auf diesem Server antwortet. Standard 80 (443 mit HTTPS); mehrere Websites können ihn teilen.",
+  // ---- Network: editing names & websites
+  "Edit this name": "Diesen Namen bearbeiten",
+  "Edit this website": "Diese Website bearbeiten",
+  "Renaming keeps its port mappings.": "Beim Umbenennen bleiben die Port-Zuordnungen erhalten.",
+  "The name points to this server, whose proxy passes its ports on. A new address moves the port mappings to that device; edit single mappings under Websites on this server.": "Der Name zeigt auf diesen Server, dessen Proxy die Ports weiterleitet. Eine neue Adresse verschiebt die Port-Zuordnungen auf dieses Gerät; einzelne Zuordnungen bearbeitest du unter Websites auf diesem Server.",
+  "Pick a device or this server.": "Wähle ein Gerät oder diesen Server.",
+  "Name saved.": "Name gespeichert.",
+  "Website saved.": "Website gespeichert.",
+  "SysAdmin.IA itself. With HTTPS, sign-in passwords stay encrypted on the network; without it, they cross the network in plain text.": "SysAdmin.IA selbst. Mit HTTPS bleiben Anmeldepasswörter im Netzwerk verschlüsselt; ohne gehen sie im Klartext durchs Netzwerk.",
 });

@@ -812,4 +812,11 @@ SAI_I18N.register("ja", {
   "{0} still points to {1}: {2}": "{0} はまだ {1} を指しています: {2}",
   "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} は {1} を指しており、このサーバー（{2}）ではありません。その名前でのアクセスは Webサイトに届きません。",
   "Enter the port on the device too (or leave both ports empty for a plain name).": "デバイス側のポートも入力してください（単純な名前にするなら両方のポートを空欄に）。",
+  // ---- Network: editing names & websites
+  "HTTPS can't use port 80 (browsers ask port 80 for plain HTTP). Use 443, or turn HTTPS off.": "HTTPS ではポート 80 を使えません（ブラウザーはポート 80 で通常の HTTP を使います）。443 を使うか、HTTPS をオフにしてください。",
+  "Port 443 is for HTTPS. Turn HTTPS on, or use port 80.": "ポート 443 は HTTPS 用です。HTTPS をオンにするか、ポート 80 を使ってください。",
+  "SysAdmin.IA is reached over plain HTTP at this address: passwords cross the network unencrypted. Turn HTTPS on for it if you can.": "このアドレスでは SysAdmin.IA に通常の HTTP でアクセスします。パスワードは暗号化されずにネットワークを流れます。可能なら HTTPS をオンにしてください。",
+  "{0} already exists. Remove it first, or pick another name.": "{0} はすでに存在します。先に削除するか、別の名前を選んでください。",
+  "{0} is already used by a website.": "{0} はすでに Webサイトで使われています。",
+  "{0} was added, but {1} couldn't be removed: {2}": "{0} を追加しましたが、{1} を削除できませんでした: {2}",
 });

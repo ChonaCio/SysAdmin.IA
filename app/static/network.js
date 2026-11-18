@@ -124,7 +124,10 @@ function netNamesCard(n) {
           `:${p.port} → ${p.target.replace(/^https?:\/\//, "").replace(/^127\.0\.0\.1(?=:)/, "this server")}`, p.https ? " (HTTPS)" : ""))),
       el("td", {}, x.where === "router" ? "Router DNS" : ".local"),
       el("td", {}, el("span", { class: `tag ${cls}`, title: x.error || "" }, label), x.error ? el("div", { class: "small error" }, x.error) : null),
-      el("td", { class: "right" }, el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Remove this name", title: "Remove this name",
+      el("td", { class: "right" },
+        el("button", { type: "button", class: "small ghost icon-only", "aria-label": "Edit this name", title: "Edit this name",
+          onclick: () => netNameEditDialog(x) }, iconEl("edit")),
+        el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Remove this name", title: "Remove this name",
         onclick: async () => {
           if (!confirm(x.ports?.length ? `Remove the name ${x.name} and its port mappings?` : `Remove the name ${x.name}?`)) return;
           try { await api("/api/network/names/remove", { method: "POST", body: JSON.stringify({ id: x.id }) }); toast("Name removed."); }
@@ -138,11 +141,34 @@ function netNamesCard(n) {
   return box;
 }
 
-function netNameDialog() {
+function netIpList() {
   const n = state.net.names || {};
   const devs = (state.net.devices || []).filter((d) => d.ip);
-  const list = el("datalist", { id: "lan-name-ips" }, n.server_ip ? el("option", { value: n.server_ip }, "This server") : null,
+  return el("datalist", { id: "lan-name-ips" }, n.server_ip ? el("option", { value: n.server_ip }, "This server") : null,
     ...devs.filter((d) => d.ip !== n.server_ip).map((d) => el("option", { value: d.ip }, d.name || d.vendor || d.mac)));
+}
+
+function netNameEditDialog(x) {
+  const mapped = (x.ports || []).length > 0;
+  const f = {
+    name: el("input", { required: true, class: "mono", value: x.name, spellcheck: "false", autocomplete: "off" }),
+    ip: el("input", { required: true, class: "mono", list: "lan-name-ips", value: x.device_ip || x.ip, spellcheck: "false", autocomplete: "off" }),
+  };
+  netDialog(`Edit ${x.name}`, [netIpList(),
+    field("Name", f.name, "Renaming keeps its port mappings."),
+    field("Device (address)", f.ip, mapped
+      ? "The name points to this server, whose proxy passes its ports on. A new address moves the port mappings to that device; edit single mappings under Websites on this server."
+      : "Pick a device or this server."),
+  ], async () => {
+    await api("/api/network/names", { method: "PUT", body: JSON.stringify({ id: x.id, name: f.name.value, ip: f.ip.value }) });
+    toast("Name saved.");
+    showNetTab("names");
+  }, "Save");
+}
+
+function netNameDialog() {
+  const n = state.net.names || {};
+  const list = netIpList();
   const docker = !!state.net.sites?.docker;
   const f = {
     name: el("input", { required: true, class: "mono", placeholder: n.router_dns ? "e.g. nas.local or nas.home.lan" : "e.g. nas.local", spellcheck: "false", autocomplete: "off" }),
@@ -189,7 +215,10 @@ function netSitesCard(s, n) {
       el("td", {}, el("a", { href: url, target: "_blank", rel: "noopener noreferrer", class: "mono", "data-no-i18n": "" }, x.hostname + (dflt ? "" : `:${x.port}`))),
       el("td", { class: "mono small" }, tgtLabel(x.target)),
       el("td", {}, x.https ? el("span", { class: "tag tag-ok" }, "HTTPS") : el("span", { class: "tag" }, "HTTP")),
-      el("td", { class: "right" }, el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Remove this website", title: "Remove this website",
+      el("td", { class: "right" },
+        el("button", { type: "button", class: "small ghost icon-only", "aria-label": "Edit this website", title: "Edit this website",
+          onclick: () => netSiteDialog(x) }, iconEl("edit")),
+        el("button", { type: "button", class: "small ghost danger icon-only", "aria-label": "Remove this website", title: "Remove this website",
         onclick: async () => {
           if (!confirm(`Remove the website ${x.hostname}? The app behind it keeps running; it's just no longer reachable by this name.`)) return;
           try { await api(`/api/network/sites/${x.id}`, { method: "DELETE" }); toast("Website removed."); }
@@ -211,36 +240,46 @@ function netSitesCard(s, n) {
   return box;
 }
 
-function netSiteDialog() {
+function netSiteDialog(existing = null) {
   const s = state.net.sites || { targets: [] };
   const n = state.net.names || {};
   const list = el("datalist", { id: "lan-site-targets" }, ...s.targets.map((t) => el("option", { value: t.target }, t.label)));
+  const isApp = existing && existing.target === s.app_target;
   const f = {
-    host: el("input", { required: true, class: "mono", placeholder: n.router_dns ? "e.g. photos.local or photos.home.lan" : "e.g. photos.local", spellcheck: "false", autocomplete: "off" }),
-    target: el("input", { required: true, class: "mono", list: "lan-site-targets", placeholder: "127.0.0.1:2283", spellcheck: "false", autocomplete: "off" }),
-    https: el("input", { type: "checkbox" }),
+    host: el("input", { required: true, class: "mono", placeholder: n.router_dns ? "e.g. photos.local or photos.home.lan" : "e.g. photos.local", spellcheck: "false", autocomplete: "off",
+      value: existing?.hostname || "" }),
+    target: el("input", { required: true, class: "mono", list: "lan-site-targets", placeholder: "127.0.0.1:2283", spellcheck: "false", autocomplete: "off",
+      value: existing ? (isApp ? "app" : existing.target) : "" }),
+    https: el("input", { type: "checkbox", checked: !!existing?.https }),
     name: el("input", { type: "checkbox", checked: true }),
-    port: el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: "80" }),
+    port: el("input", { type: "number", min: "1", max: "65535", class: "mono", placeholder: existing?.https ? "443" : "80",
+      value: existing && existing.port !== (existing.https ? 443 : 80) ? String(existing.port) : "" }),
   };
   f.https.addEventListener("change", () => { f.port.placeholder = f.https.checked ? "443" : "80"; });
-  const appNote = el("p", { class: "muted small", hidden: true }, "SysAdmin.IA itself: it's served over HTTPS when the app uses HTTPS, so signing in keeps working.");
-  f.target.addEventListener("input", () => {
-    appNote.hidden = f.target.value.trim() !== "app";
-    if (f.target.value.trim() === "app" && s.app_target.startsWith("https")) f.https.checked = true;
+  f.port.addEventListener("input", () => {             // the two standard ports decide http or https
+    if (f.port.value === "80") f.https.checked = false;
+    if (f.port.value === "443") f.https.checked = true;
+    f.port.placeholder = f.https.checked ? "443" : "80";
   });
-  netDialog("Add a website", [list,
+  const appNote = el("p", { class: "muted small", hidden: !isApp },
+    "SysAdmin.IA itself. With HTTPS, sign-in passwords stay encrypted on the network; without it, they cross the network in plain text.");
+  f.target.addEventListener("input", () => { appNote.hidden = f.target.value.trim() !== "app"; });
+  netDialog(existing ? `Edit ${existing.hostname}` : "Add a website", [list,
     field("Name", f.host, "The address people type, e.g. photos.local."),
     field("Goes to", f.target, "Pick an app (a container, a device's web page, or “app” for SysAdmin.IA itself) or type an address and port."),
     appNote,
     field("Port", f.port, "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it."),
     el("label", { class: "check" }, f.https, " HTTPS (with this server's own certificate; browsers warn until it's trusted)"),
-    el("label", { class: "check" }, f.name, ` Also create the name, pointing to this server (${n.server_ip || "?"})`)],
+    existing ? null : el("label", { class: "check" }, f.name, ` Also create the name, pointing to this server (${n.server_ip || "?"})`)],
   async () => {
-    const r = await api("/api/network/sites", { method: "POST", body: JSON.stringify({ hostname: f.host.value, target: f.target.value,
-      https: f.https.checked, make_name: f.name.checked, port: f.port.value ? Number(f.port.value) : null }) });
-    toast(r.note || "Website added.", r.note ? 8000 : 3500);
+    const body = { hostname: f.host.value, target: f.target.value, https: f.https.checked, make_name: f.name.checked,
+      port: f.port.value ? Number(f.port.value) : null };
+    const r = existing
+      ? await api(`/api/network/sites/${existing.id}`, { method: "PUT", body: JSON.stringify(body) })
+      : await api("/api/network/sites", { method: "POST", body: JSON.stringify(body) });
+    toast(r.note || (existing ? "Website saved." : "Website added."), r.note ? 8000 : 3500);
     showNetTab("names");
-  }, "Add");
+  }, existing ? "Save" : "Add");
 }
 
 // ------------------------------------------------------------ Ports (this server's firewall)

@@ -261,7 +261,8 @@ The **Network** module (Server group) shows what's on your LAN, talks to your ro
   - The name is created too, pointing to this server (optional).
   - Each website answers on port 80 (443 with HTTPS) unless you pick another **Port**. Several websites share a port as long as their names differ. Ports already used by another program, or SysAdmin.IA's own port, are refused. If the firewall keeps the port closed, you're told to open it in **Ports**.
   - **HTTPS** uses certificates from this server's own certificate authority. Browsers warn until you trust it; the tab has a link to download it.
-  - SysAdmin.IA itself is always served over HTTPS when the app uses HTTPS, so signing in keeps working.
+  - **SysAdmin.IA itself** can be a website (pick “app”, or type its address and port, e.g. `192.168.1.5:8765`), e.g. `a.local` on port 80. HTTPS in front is recommended (otherwise passwords cross the network unencrypted), but plain HTTP works too: the app trusts the proxy's forwarded headers (only from this machine), so signing in and the audit log's addresses are right either way.
+  - **Edit** any name or website with its pencil button. Renaming a name keeps its port mappings. Giving a name with mappings a new address moves the mappings to that device. A website's name, target, port and HTTPS can all be changed.
   - The proxy is shared with **Publish on the internet** (Caddy method): public and local sites live in the same configuration. It's removed when nothing needs it. Needs Docker, and ports 80/443 not used by another program.
 
 **Ports.** This server's own firewall: which of its ports other devices can connect to.

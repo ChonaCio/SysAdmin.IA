@@ -812,4 +812,11 @@ SAI_I18N.register("zh", {
   "{0} still points to {1}: {2}": "{0} 仍指向 {1}：{2}",
   "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} 指向 {1}，而不是本服务器（{2}）：通过该名称的访问将无法到达网站。",
   "Enter the port on the device too (or leave both ports empty for a plain name).": "请同时填写设备端口（或将两个端口都留空以使用普通名称）。",
+  // ---- Network: editing names & websites
+  "HTTPS can't use port 80 (browsers ask port 80 for plain HTTP). Use 443, or turn HTTPS off.": "HTTPS 不能使用 80 端口（浏览器在 80 端口使用普通 HTTP）。请使用 443，或关闭 HTTPS。",
+  "Port 443 is for HTTPS. Turn HTTPS on, or use port 80.": "443 端口用于 HTTPS。请开启 HTTPS，或使用 80 端口。",
+  "SysAdmin.IA is reached over plain HTTP at this address: passwords cross the network unencrypted. Turn HTTPS on for it if you can.": "在此地址通过普通 HTTP 访问 SysAdmin.IA：密码会以未加密方式在网络上传输。如有可能请开启 HTTPS。",
+  "{0} already exists. Remove it first, or pick another name.": "{0} 已存在。请先删除它，或另选一个名称。",
+  "{0} is already used by a website.": "{0} 已被某个网站使用。",
+  "{0} was added, but {1} couldn't be removed: {2}": "已添加 {0}，但无法删除 {1}：{2}",
 });

@@ -1284,4 +1284,13 @@ SAI_I18N.register("ja", {
   "Passed on by this server's proxy": "このサーバーのプロキシが転送",
   "Remove the name {0} and its port mappings?": "名前 {0} とそのポートの対応付けを削除しますか？",
   "Where the website answers on this server. Default 80 (443 with HTTPS); several websites can share it.": "このサーバーで Webサイトが応答するポート。既定は 80（HTTPS なら 443）。複数の Webサイトで共有できます。",
+  // ---- Network: editing names & websites
+  "Edit this name": "この名前を編集",
+  "Edit this website": "この Webサイトを編集",
+  "Renaming keeps its port mappings.": "名前を変更してもポートの対応付けは保持されます。",
+  "The name points to this server, whose proxy passes its ports on. A new address moves the port mappings to that device; edit single mappings under Websites on this server.": "この名前はこのサーバーを指しており、そのプロキシがポートを転送します。新しいアドレスにすると、ポートの対応付けはそのデバイスに移ります。個々の対応付けは「このサーバーの Webサイト」で編集してください。",
+  "Pick a device or this server.": "デバイスまたはこのサーバーを選んでください。",
+  "Name saved.": "名前を保存しました。",
+  "Website saved.": "Webサイトを保存しました。",
+  "SysAdmin.IA itself. With HTTPS, sign-in passwords stay encrypted on the network; without it, they cross the network in plain text.": "SysAdmin.IA 自身です。HTTPS ならログインのパスワードはネットワーク上で暗号化されます。HTTPS なしでは平文で送られます。",
 });

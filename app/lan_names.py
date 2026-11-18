@@ -200,8 +200,10 @@ def list_names() -> dict:
     names.sort(key=lambda n: n["name"])
     sites = list_sites()
     for n in names:
-        n["ports"] = [{"port": s["port"], "target": s["target"], "https": bool(s.get("https")), "site_id": s["id"]}
-                      for s in sites if s["hostname"] == n["name"]] if n["ip"] == me else []
+        mine = [s for s in sites if s["hostname"] == n["name"]] if n["ip"] == me else []
+        n["ports"] = [{"port": s["port"], "target": s["target"], "https": bool(s.get("https")), "site_id": s["id"],
+                       "app": s["target"] == app_target()} for s in mine]
+        n["device_ip"] = _mapped_device(mine) or n["ip"]     # what the edit dialog shows as the address
     return {"server": {"name": sn["name"], "mdns_name": sn["mdns_name"], "mdns": sn["mdns"], "ip": me},
             "names": names, "router_dns": router_dns, "router_error": router_error,
             "avahi": avahi_available(), "server_ip": me}
@@ -271,7 +273,20 @@ APP_TARGET = "app"
 
 
 def app_target() -> str:
-    return f"{'https' if settings.tls_enabled else 'http'}://127.0.0.1:{settings.port}"
+    """How the proxy reaches SysAdmin.IA: its main port, over HTTPS when the app uses TLS."""
+    host = settings.host if settings.host not in ("", "0.0.0.0", "::") else "127.0.0.1"
+    return f"{'https' if settings.tls_enabled else 'http'}://{host}:{settings.port}"
+
+
+def _is_app(target: str) -> bool:
+    """A target typed by hand that is in fact SysAdmin.IA itself (this server, one of the app's ports)."""
+    import urllib.parse
+    u = urllib.parse.urlsplit(target if "://" in target else "http://" + target)
+    mine = {"127.0.0.1", "localhost", "0.0.0.0", server_ip() or "-", settings.host}
+    try:
+        return (u.hostname or "") in mine and u.port in {p for p, _tls in settings.listeners()}
+    except ValueError:
+        return False
 
 
 def site_port(s: dict) -> int:
@@ -309,6 +324,77 @@ def _check_listen_port(port, https: bool) -> int:
     if port in {p for p, _tls in settings.listeners()}:
         raise NamesError(f"Port {port} is SysAdmin.IA's own port. Pick another one, e.g. 80.")
     return port
+
+
+def _target_host(target: str) -> str:
+    import urllib.parse
+    h = urllib.parse.urlsplit(target).hostname or ""
+    return (server_ip() or h) if h in ("127.0.0.1", "localhost") else h
+
+
+def _mapped_device(mapped: list[dict]) -> str | None:
+    """The device a name's port mappings lead to (the first one that isn't SysAdmin.IA itself)."""
+    return next((_target_host(s["target"]) for s in mapped if s["target"] != app_target()), None)
+
+
+def _retarget(target: str, ip: str) -> str:
+    """Same scheme and port, another device (this server itself becomes 127.0.0.1)."""
+    import urllib.parse
+    u = urllib.parse.urlsplit(target)
+    host = "127.0.0.1" if ip == server_ip() else ip
+    return f"{u.scheme}://{host}:{u.port}"
+
+
+def update_name(nid: str, name: str, ip: str) -> dict:
+    """Rename a name and/or point it elsewhere. A name with port mappings keeps pointing to this server (the
+    proxy); a new address then moves its mappings to that device."""
+    kind, _, key = (nid or "").partition(":")
+    ip = _check_ip(ip)
+    with _lock:
+        if kind == "mdns":
+            entry = next((n for n in _load("lan_names") if n["name"] == key), None)
+            old_name, old_ip, auto = (entry["name"], entry["ip"], bool(entry.get("auto"))) if entry else (None, None, False)
+        elif kind == "router":
+            e = next((x for x in _router_names() if x["id"] == key), None)
+            old_name, old_ip, auto = (e["name"], e["ip"], False) if e else (None, None, False)
+        else:
+            raise NamesError("Unknown name.")
+        if not old_name:
+            raise NamesError("That name doesn't exist any more.")
+        new_name = _check_name(name) if (name or "").strip().lower().rstrip(".") != old_name else old_name
+        me = server_ip()
+        sites = _load("lan_sites")
+        mapped = [s for s in sites if s["hostname"] == old_name] if old_ip == me else []
+        point_to = old_ip if mapped else ip
+        if new_name != old_name:
+            if _name_exists(new_name):
+                raise NamesError(f"{new_name} already exists. Remove it first, or pick another name.")
+            if any(s["hostname"] == new_name for s in sites) or any(s["hostname"] == new_name for s in publish.list_services()):
+                raise NamesError(f"{new_name} is already used by a website.")
+            add_name(new_name, point_to, auto=auto)
+            try:
+                if kind == "mdns":
+                    _remove_mdns(old_name)
+                else:
+                    routers.dns_remove(key)
+            except routers.RouterError as ex:
+                raise NamesError(f"{new_name} was added, but {old_name} couldn't be removed: {ex}")
+        elif not mapped and ip != old_ip:
+            add_name(old_name, ip, auto=auto)
+        device_now = _mapped_device(mapped)
+        move = mapped and ip not in (old_ip, device_now)
+        if mapped and (new_name != old_name or move):
+            for s in sites:
+                if s["hostname"] == old_name:
+                    s["hostname"] = new_name
+                    if move and s["target"] != app_target() and _target_host(s["target"]) == device_now:
+                        s["target"] = _retarget(s["target"], ip)
+            _save("lan_sites", sites)
+            try:
+                publish._write_caddy()
+            except Exception as ex:  # noqa: BLE001
+                raise NamesError(str(ex))
+    return list_names()
 
 
 def _router_names() -> list[dict]:
@@ -349,25 +435,39 @@ def _firewall_note(port: int) -> str:
     return f"The firewall keeps port {port} closed: open it in Network → Ports."
 
 
-def add_site(hostname: str, target: str, https: bool = False, make_name: bool = True, port=None,
-             repoint: bool = False) -> dict:
-    """A website on this server: hostname:port (default 80, or 443 for HTTPS) → target, through the proxy.
-    repoint: if the name already points to another device, point it to this server (the proxy) instead."""
+def _check_hostname(hostname: str) -> str:
     hostname = (hostname or "").strip().lower().rstrip(".")
     if hostname.endswith(".local"):
         if not MDNS_LABEL.fullmatch(hostname):
             raise NamesError("A .local name is one word plus .local, e.g. photos.local.")
     elif not publish.HOST_RE.fullmatch(hostname):
         raise NamesError("Enter the site's name, e.g. photos.local or photos.home.lan.")
-    if (target or "").strip() == APP_TARGET:
-        target = app_target()
-        https = https or settings.tls_enabled      # the app's secure login cookie needs HTTPS in front of it
-    else:
-        try:
-            target = publish.check_target(target, allow_admin=True)
-        except publish.PublishError as e:
-            raise NamesError(str(e))
+    return hostname
+
+
+def _check_site_target(target: str) -> str:
+    t = (target or "").strip()
+    if t == APP_TARGET or t == app_target() or _is_app(t):
+        return app_target()          # SysAdmin.IA itself, however it was typed (its port may be HTTPS)
+    try:
+        return publish.check_target(t, allow_admin=True)
+    except publish.PublishError as e:
+        raise NamesError(str(e))
+
+
+def add_site(hostname: str, target: str, https: bool = False, make_name: bool = True, port=None,
+             repoint: bool = False, _id: int | None = None, _inherit: dict | None = None,
+             _extra_ports: frozenset = frozenset()) -> dict:
+    """A website on this server: hostname:port (default 80, or 443 for HTTPS) → target, through the proxy.
+    repoint: if the name already points to another device, point it to this server (the proxy) instead.
+    _id/_inherit/_extra_ports: used by update_site (keep the id and what was done with the name)."""
+    hostname = _check_hostname(hostname)
+    target = _check_site_target(target)
     port = _check_listen_port(port, https)
+    if https and port == 80:
+        raise NamesError("HTTPS can't use port 80 (browsers ask port 80 for plain HTTP). Use 443, or turn HTTPS off.")
+    if not https and port == 443:
+        raise NamesError("Port 443 is for HTTPS. Turn HTTPS on, or use port 80.")
     with _lock:
         sites = list_sites()
         if any(s["hostname"] == hostname and s["port"] == port for s in sites):
@@ -376,11 +476,14 @@ def add_site(hostname: str, target: str, https: bool = False, make_name: bool = 
             raise NamesError(f"{hostname} is already published on the internet (Network → Publish).")
         need = {port} | ({80} if https and port == 443 else set())
         try:
-            publish.ports_free(tuple(sorted(need - _proxy_ports(sites))))
+            publish.ports_free(tuple(sorted(need - _proxy_ports(sites) - set(_extra_ports))))
         except publish.PublishError as e:
             raise NamesError(str(e))
-        site = {"id": max([s["id"] for s in sites] + [0]) + 1, "hostname": hostname, "target": target,
-                "https": bool(https), "port": port, "created": time.time(), "name_added": False}
+        site = {"id": _id or max([s["id"] for s in _load("lan_sites")] + [0]) + 1, "hostname": hostname, "target": target,
+                "https": bool(https), "port": port, "created": (_inherit or {}).get("created", time.time()),
+                "name_added": bool((_inherit or {}).get("name_added"))}
+        if (_inherit or {}).get("repointed_from"):
+            site["repointed_from"] = _inherit["repointed_from"]
         _save("lan_sites", sites + [site])
         try:
             publish._write_caddy()
@@ -394,6 +497,9 @@ def add_site(hostname: str, target: str, https: bool = False, make_name: bool = 
         notes = []
         ip = server_ip()
         now = _name_ip(hostname)
+        if target == app_target() and not https and settings.tls_enabled:
+            notes.append("SysAdmin.IA is reached over plain HTTP at this address: passwords cross the network "
+                         "unencrypted. Turn HTTPS on for it if you can.")
         if ip and make_name and now is None:
             try:
                 add_name(hostname, ip, auto=True)
@@ -446,6 +552,33 @@ def _release_name(site: dict, remaining: list[dict]) -> None:
 def _remove_mdns(name: str) -> None:
     _save("lan_names", [n for n in _load("lan_names") if n["name"] != name])
     sync_mdns()
+
+
+def update_site(sid: int, hostname: str, target: str, https: bool = False, port=None) -> dict:
+    """Change a website (name, port, target, HTTPS), keeping its id; the old name is released if no other
+    website uses it any more."""
+    with _lock:
+        sites = _load("lan_sites")
+        old = next((s for s in sites if s["id"] == sid), None)
+        if not old:
+            raise NamesError("That website doesn't exist any more.")
+        others = [s for s in sites if s["id"] != sid]
+        new_host = _check_hostname(hostname)
+        _save("lan_sites", others)
+        try:
+            r = add_site(new_host, target, https, make_name=True, port=port, repoint=False, _id=sid,
+                         _inherit=old if new_host == old["hostname"] else None,
+                         _extra_ports=frozenset(_proxy_ports(sites)))
+        except Exception:
+            _save("lan_sites", sites)
+            try:
+                publish._write_caddy()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        if new_host != old["hostname"]:
+            _release_name(old, _load("lan_sites"))
+        return r
 
 
 def remove_site(sid: int) -> None:

@@ -836,4 +836,11 @@ SAI_I18N.register("es", {
   "{0} still points to {1}: {2}": "{0} sigue apuntando a {1}: {2}",
   "{0} points to {1}, not to this server ({2}): visits by that name won't reach the website.": "{0} apunta a {1}, no a este servidor ({2}): las visitas con ese nombre no llegarán a la web.",
   "Enter the port on the device too (or leave both ports empty for a plain name).": "Escribe también el puerto del dispositivo (o deja ambos puertos vacíos para un nombre simple).",
+  // ---- Network: editing names & websites
+  "HTTPS can't use port 80 (browsers ask port 80 for plain HTTP). Use 443, or turn HTTPS off.": "HTTPS no puede usar el puerto 80 (los navegadores piden HTTP simple en el puerto 80). Usa 443 o desactiva HTTPS.",
+  "Port 443 is for HTTPS. Turn HTTPS on, or use port 80.": "El puerto 443 es para HTTPS. Activa HTTPS o usa el puerto 80.",
+  "SysAdmin.IA is reached over plain HTTP at this address: passwords cross the network unencrypted. Turn HTTPS on for it if you can.": "A SysAdmin.IA se accede por HTTP simple en esta dirección: las contraseñas viajan sin cifrar por la red. Activa HTTPS si puedes.",
+  "{0} already exists. Remove it first, or pick another name.": "{0} ya existe. Quítalo primero o elige otro nombre.",
+  "{0} is already used by a website.": "{0} ya lo usa una web.",
+  "{0} was added, but {1} couldn't be removed: {2}": "Se añadió {0}, pero no se pudo quitar {1}: {2}",
 });

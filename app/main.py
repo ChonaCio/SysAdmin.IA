@@ -1292,6 +1292,19 @@ async def net_names_add(body: LanNameBody, request: Request, user: User = Depend
     return out
 
 
+class LanNameEditBody(BaseModel):
+    id: str
+    name: str
+    ip: str
+
+
+@app.put("/api/network/names")
+async def net_names_edit(body: LanNameEditBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, lan_names.update_name, body.id, body.name, body.ip)
+    db.audit("lan_name_changed", user.username, auth.client_ip(request), _dump(body))
+    return out
+
+
 @app.post("/api/network/names/remove")
 async def net_names_remove(body: LanNameRemoveBody, request: Request, user: User = Depends(admin_user)):
     out = await asyncio.to_thread(_net, lan_names.remove_name, body.id)
@@ -1308,6 +1321,13 @@ async def net_sites(user: User = Depends(admin_user)):
 async def net_sites_add(body: LanSiteBody, request: Request, user: User = Depends(admin_user)):
     out = await asyncio.to_thread(_net, lan_names.add_site, body.hostname, body.target, body.https, body.make_name, body.port)
     db.audit("lan_site_added", user.username, auth.client_ip(request), _dump(body))
+    return out
+
+
+@app.put("/api/network/sites/{sid}")
+async def net_sites_edit(sid: int, body: LanSiteBody, request: Request, user: User = Depends(admin_user)):
+    out = await asyncio.to_thread(_net, lan_names.update_site, sid, body.hostname, body.target, body.https, body.port)
+    db.audit("lan_site_changed", user.username, auth.client_ip(request), {"id": sid, **_dump(body)})
     return out
 
 
