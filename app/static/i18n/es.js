@@ -1343,4 +1343,10 @@ SAI_I18N.register("es", {
   "A device on the network (choose the port)": "Un dispositivo de la red (elige el puerto)",
   "The device's page uses HTTPS": "La página del dispositivo usa HTTPS",
   "Pick SysAdmin.IA itself, an app, a web page found on the network, or a device and its port; or choose “Other” and type an address and port.": "Elige el propio SysAdmin.IA, una app, una página web encontrada en la red, o un dispositivo y su puerto; o elige “Otra” y escribe una dirección y un puerto.",
+  // ---- Console: more tabs
+  "New console": "Nueva consola",
+  "Close this console": "Cerrar esta consola",
+  "Double-click to rename": "Doble clic para renombrar",
+  "Name of this console": "Nombre de esta consola",
+  "At most {0} shell consoles at a time: close one first.": "Como máximo {0} consolas de shell a la vez: cierra una primero.",
 });

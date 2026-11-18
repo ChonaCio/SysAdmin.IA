@@ -407,6 +407,8 @@ Jobs run inside the app, so they only run while it's running. Commands run with 
 
 ### Console
 
+**Several consoles at once:** the **+** button next to the tabs opens another shell (Shell 2, Shell 3… up to 9 shells). Each tab is its own session; switching tabs keeps them running. Double-click a tab to rename it, and click its **×** to close it (that ends its session). SSH sessions opened from Network → Devices are tabs too.
+
 The **Console** tab (admins only) is a terminal on the server in the browser: a login shell as the `sysadmin-ia` user, with full colors, resizing and copy/paste. With full access it can use `sudo`, just like Claude's commands. Unlike Claude's actions, commands typed there run immediately, without an approval step. Opening and closing a console session is recorded in the audit log, but what is typed is not. The **Update progress** session follows the installer's output while an update runs. To turn the console off, set `SAI_ALLOW_CONSOLE=false` and restart.
 
 ## Day-to-day

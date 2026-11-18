@@ -1612,8 +1612,8 @@ function renderReleases(s) {
         onclick: () => installVersion(v.version, v.status === "older") },
         v.status === "older" ? "Downgrade" : "Install");
     }
-    list.append(el("div", { class: `release-row ${v.status}` }, link, tag,
-      el("span", { class: "muted" }, v.published_at ? fmtDate(v.published_at) : ""), el("span", { class: "spacer" }), btn));
+    list.append(el("div", { class: `release-row ${v.status}` }, link, tag,   // always 5 cells (grid columns)
+      el("span", { class: "muted" }, v.published_at ? fmtDate(v.published_at) : ""), el("span", { class: "spacer" }), el("span", { class: "release-action" }, btn)));
   }
 }
 
@@ -1718,7 +1718,9 @@ function waitForVersion(target, tries = 0) {
 // log). For an app-code-only update there is no log file, so its output is written locally.
 const consoles = {};
 state.sshSessions = {};   // "ssh-N" → {host, port, user, label}: tabs opened from Network → Devices
-const isInteractive = (name) => name === "shell" || name === "container" || name.startsWith("ssh-");
+state.extraShells = {};   // "sh-N" → {label}: more shell tabs opened with the "+" button
+const MAX_EXTRA_SHELLS = 8;
+const isInteractive = (name) => name === "shell" || name === "container" || name.startsWith("ssh-") || name.startsWith("sh-");
 
 function makeConsole(name) {
   if (consoles[name]) return consoles[name];
@@ -1748,13 +1750,14 @@ function connectConsole(name) {
   const ssh = state.sshSessions[name];
   const extra = name === "container" ? `&id=${encodeURIComponent(state.consoleContainer?.id || "")}`
     : ssh ? `&host=${encodeURIComponent(ssh.host)}&port=${ssh.port}&user_name=${encodeURIComponent(ssh.user)}` : "";
-  const ws = new WebSocket(`${proto}://${location.host}/ws/console?mode=${ssh ? "ssh" : name}${extra}`);
+  const mode = ssh ? "ssh" : name.startsWith("sh-") ? "shell" : name;   // every shell tab is its own session
+  const ws = new WebSocket(`${proto}://${location.host}/ws/console?mode=${mode}${extra}`);
   ws.binaryType = "arraybuffer";
   c.ws = ws;
   if (name === "update") c.term.reset();  // the log is replayed from the start
   setConsoleStatus(name, "connecting…");
   ws.onopen = () => {
-    setConsoleStatus(name, name === "shell" ? "connected" : name === "container"
+    setConsoleStatus(name, name === "shell" || name.startsWith("sh-") ? "connected" : name === "container"
       ? `connected to container “${state.consoleContainer?.name}”`
       : ssh ? `SSH to ${ssh.user}@${ssh.host}${ssh.port !== 22 ? `:${ssh.port}` : ""}` : "following the update log");
     ws.send(JSON.stringify({ type: "resize", cols: c.term.cols, rows: c.term.rows }));
@@ -1784,6 +1787,7 @@ function setConsoleStatus(name, text) {
 function showConsoleSession(name) {
   if (name === "container" && !state.consoleContainer) name = "shell";
   if (name.startsWith("ssh-") && !state.sshSessions[name]) name = "shell";
+  if (name.startsWith("sh-") && !state.extraShells[name]) name = "shell";
   state.consoleSession = name;
   if (name === "update") $("#console-update-tab").hidden = false;
   $$("#console-sessions .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.session === name));
@@ -1814,28 +1818,54 @@ function openContainerConsole(id, name) {
   openConsole("container");
 }
 
+// A closable tab in the console bar (extra shells and SSH sessions). Double-click the name to rename it.
+function addConsoleTab(name, label, title) {
+  const text = el("span", { "data-no-i18n": "" }, label);
+  const close = el("span", { class: "console-tab-close", role: "button", title: "Close this console", "aria-label": "Close this console",
+    onclick: (e) => { e.stopPropagation(); closeConsoleTab(name); } }, "×");
+  const tab = el("button", { type: "button", class: "seg-btn", "data-session": name, title: title || "Double-click to rename",
+    onclick: () => showConsoleSession(name),
+    ondblclick: () => {
+      const v = prompt("Name of this console", text.textContent);
+      if (v && v.trim()) text.textContent = v.trim().slice(0, 40);
+    } }, text, close);
+  $("#console-sessions").append(tab);
+  tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+// Another shell on this server, in a new tab (the "+" button). Each one is an independent session.
+function newShellConsole() {
+  if (Object.keys(state.extraShells).length >= MAX_EXTRA_SHELLS) {
+    toast(`At most ${MAX_EXTRA_SHELLS + 1} shell consoles at a time: close one first.`);
+    return;
+  }
+  state.shellCount = (state.shellCount || 1) + 1;
+  const name = `sh-${state.shellCount}`;
+  state.extraShells[name] = { label: `Shell ${state.shellCount}` };
+  addConsoleTab(name, `Shell ${state.shellCount}`);
+  openConsole(name);
+}
+
 // An SSH session to a device, in a new tab (opened from Network → Devices). Each click opens a new tab.
 function openSshConsole(host, port, user, label) {
   state.sshCount = (state.sshCount || 0) + 1;
   const name = `ssh-${state.sshCount}`;
   state.sshSessions[name] = { host, port: Number(port) || 22, user, label };
-  const close = el("span", { class: "console-tab-close", role: "button", title: "Close this session", "aria-label": "Close this session",
-    onclick: (e) => { e.stopPropagation(); closeSshConsole(name); } }, "×");
-  const tab = el("button", { type: "button", class: "seg-btn", "data-session": name, title: `${user}@${host}:${port}`,
-    onclick: () => showConsoleSession(name) }, el("span", { "data-no-i18n": "" }, `SSH: ${label || host}`), close);
-  $("#console-sessions").append(tab);
+  addConsoleTab(name, `SSH: ${label || host}`, `${user}@${host}:${port}`);
   openConsole(name);
 }
 
-function closeSshConsole(name) {
+function closeConsoleTab(name) {
   const c = consoles[name];
   if (c) { if (c.ws) { c.ws.onclose = null; c.ws.close(); } c.term.dispose(); delete consoles[name]; }
   $(`#console-term-${name}`)?.remove();
   $(`#console-sessions [data-session="${name}"]`)?.remove();
   delete state.sshSessions[name];
+  delete state.extraShells[name];
   if (state.consoleSession === name) showConsoleSession("shell");
 }
 window.openSshConsole = openSshConsole;
+$("#console-new").addEventListener("click", newShellConsole);
 
 function resetUpdateConsole() {
   const c = makeConsole("update");

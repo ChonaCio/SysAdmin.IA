@@ -1319,4 +1319,10 @@ SAI_I18N.register("zh", {
   "A device on the network (choose the port)": "网络上的设备（选择端口）",
   "The device's page uses HTTPS": "设备的页面使用 HTTPS",
   "Pick SysAdmin.IA itself, an app, a web page found on the network, or a device and its port; or choose “Other” and type an address and port.": "选择 SysAdmin.IA 本身、某个应用、在网络上发现的网页，或某个设备及其端口；也可以选择“其他”并输入地址和端口。",
+  // ---- Console: more tabs
+  "New console": "新建控制台",
+  "Close this console": "关闭此控制台",
+  "Double-click to rename": "双击以重命名",
+  "Name of this console": "此控制台的名称",
+  "At most {0} shell consoles at a time: close one first.": "最多同时打开 {0} 个 Shell 控制台：请先关闭一个。",
 });

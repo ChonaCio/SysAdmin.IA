@@ -742,10 +742,15 @@ button.big { padding: 8px 18px; font-size: 14px; }
 .update-target { display: flex; align-items: center; gap: 6px; }
 .update-releases { margin-top: 12px; }
 .update-releases summary { cursor: pointer; }
-.release-list { display: flex; flex-direction: column; max-height: 360px; overflow-y: auto; border-top: 1px solid var(--border); }
-.release-row { display: flex; align-items: center; gap: 10px; padding: 6px 2px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.release-row.current { background: color-mix(in srgb, var(--accent) 8%, transparent); }
-.release-name { font-weight: 600; overflow-wrap: anywhere; }
+/* one grid for all rows: version, tags, date, spacer, button line up in columns whatever the version's length
+   (vX.X.X and vX.X.X.X take the same space) */
+.release-list { display: grid; grid-template-columns: minmax(0, max-content) max-content max-content 1fr auto; max-height: 360px;
+  overflow: auto; border-top: 1px solid var(--border); }
+.release-row { display: contents; }
+.release-row > * { padding: 6px 5px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 4px; min-height: 30px; }
+.release-row.current > * { background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.release-row > .release-action { justify-content: flex-end; }
+.release-name { font-weight: 600; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 .update-token { margin-top: 12px; }
 .update-token summary { cursor: pointer; }
 .update-token form { margin-top: 8px; }
@@ -774,7 +779,10 @@ button.big { padding: 8px 18px; font-size: 14px; }
 /* ---------- console ---------- */
 .console { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 12px 16px 16px; gap: 8px; }
 .console-bar { display: flex; align-items: center; gap: 10px; }
-.console-bar .seg { margin-left: 0; }
+.console-bar .seg { margin-left: 0; max-width: 100%; overflow-x: auto; scrollbar-width: thin; flex: 0 1 auto; min-width: 0; }
+.console-bar .seg-btn { white-space: nowrap; flex: 0 0 auto; }
+.console-new { padding: 2px 6px; flex: 0 0 auto; }
+.console-new .i { width: 15px; height: 15px; }
 .console-bar .spacer { flex: 1; }
 .console-term {
   flex: 1; min-height: 0; background: #111317; border: 1px solid var(--border); border-radius: var(--radius);
