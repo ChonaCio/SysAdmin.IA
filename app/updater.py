@@ -8,9 +8,15 @@ while keeping config, data and users. If the helper isn't available ("code" mode
 code is copied over the install directory (.venv, data, .git and .env are left alone),
 Python dependencies are refreshed, and the change is committed to the local git repo.
 
-The "latest version" is the highest version number among the repository's GitHub releases
-and version tags (v1.2.3); only if there are neither, the VERSION file on the update branch
-(default: main). Updates are cumulative: they go straight to the latest version.
+Two update channels (Admin → Updates; default "public", SAI_UPDATE_CHANNEL sets the default):
+  public    – the highest version among the repository's published GitHub releases (no drafts,
+              no pre-releases);
+  developer – the highest version tag pushed to the repository (releases, pre-releases and tags
+              without a release); without any version tag, the VERSION file on the update branch
+              (default: main). The latest push to that branch is shown too.
+Version tags are vX.X.X or vX.X.X.X (numbers only, leftmost most significant: v1.2.10 > v1.2.9,
+v1.2.3.1 > v1.2.3 = v1.2.3.0); other tags are ignored. Updates are cumulative: they go straight
+to the latest version.
 
 The installed version is the VERSION file next to app/. install.sh writes it from the git
 tag (or release archive name) it is installed from, so it need not be bumped by hand. Private repositories need a
@@ -165,56 +171,127 @@ def _get(url: str, what: str, raw: bool = False, missing_ok: bool = False) -> by
         raise UpdateError(f"Could not reach GitHub: {getattr(e, 'reason', e)}") from e
 
 
-STABLE_RE = re.compile(r"v?\d+(\.\d+){1,3}")  # v1.2.3 / 1.2.3 (pre-releases like -beta are skipped)
+# Version tags: vX.X.X or vX.X.X.X (numbers only; the leftmost number is the most significant).
+# Anything else (v1.2, 1.2.3 without "v", v1.2.3-beta, nightly…) is not a version.
+VERSION_TAG_RE = re.compile(r"v\d+\.\d+\.\d+(\.\d+)?")
+CHANNELS = {
+    "public": "Public: published GitHub releases only",
+    "developer": "Developer: every version tag pushed to GitHub (including pre-releases and tags without a release)",
+}
+_CHANNEL_KEY = "update_channel"
+
+
+def channel() -> str:
+    """'public' (releases) or 'developer' (version tags). Saved in Admin → Updates; SAI_UPDATE_CHANNEL sets the default."""
+    c = (db.get_setting(_CHANNEL_KEY) or os.environ.get("SAI_UPDATE_CHANNEL") or "public").strip().lower()
+    return c if c in CHANNELS else "public"
+
+
+def set_channel(value: str) -> None:
+    value = (value or "").strip().lower()
+    if value not in CHANNELS:
+        raise ValueError("The update channel must be “public” or “developer”.")
+    db.set_setting(_CHANNEL_KEY, value)
+    global _last_check
+    _last_check = None          # the other channel sees other versions: check again
+
+
+def is_version_tag(tag: str) -> bool:
+    return bool(VERSION_TAG_RE.fullmatch(tag or ""))
 
 
 def _vkey(v: str) -> tuple[int, ...]:
+    """Comparable key: 'v1.2.3' == 'v1.2.3.0' < 'v1.2.3.1' < 'v1.2.10' < 'v2.0.0'."""
     p = parse_version(v)
     return p + (0,) * (4 - len(p))
 
 
-def _versions_blocking() -> list[dict]:
-    """Every published version, highest first: GitHub releases plus version tags.
+def _paged(url: str, what: str, pages: int = 5) -> list:
+    """Every item of a paged GitHub list (100 per page, up to `pages` pages)."""
+    out: list = []
+    for page in range(1, pages + 1):
+        sep = "&" if "?" in url else "?"
+        body = _get(f"{url}{sep}per_page=100&page={page}", what, missing_ok=True)
+        items = json.loads(body or b"[]")
+        if not isinstance(items, list):
+            break
+        out += items
+        if len(items) < 100:
+            break
+    return out
 
-    The highest version number wins, not the most recently published release, so an update
-    always goes straight to the newest version (cumulative). Without releases or tags, the
-    VERSION file on the update branch is used.
+
+def _release_entry(rel: dict) -> dict:
+    tag = rel.get("tag_name") or ""
+    return {"version": tag[1:], "source": "release", "ref": tag, "name": rel.get("name") or tag,
+            "notes": (rel.get("body") or "")[:5000], "published_at": rel.get("published_at"),
+            "url": rel.get("html_url") or release_page(tag), "prerelease": bool(rel.get("prerelease"))}
+
+
+def _versions_blocking(chan: str | None = None) -> list[dict]:
+    """Every available version of the channel, highest version number first.
+
+    public    – GitHub releases (not drafts, not pre-releases) whose tag is vX.X.X or vX.X.X.X.
+    developer – every vX.X.X / vX.X.X.X tag pushed to the repository, with the release's notes when the tag
+                has a release (pre-releases included); tags without a release use their commit message.
+                Without any version tag, the VERSION file on the update branch is used.
+
+    The highest version number wins, not the most recent date, so an update always goes straight to the
+    newest version (cumulative).
     """
+    chan = chan or channel()
     base = f"{API}/repos/{repo()}"
     found: dict[tuple, dict] = {}
-    body = _get(f"{base}/releases?per_page=100", "Releases", missing_ok=True)
-    for rel in json.loads(body or b"[]"):
+    for rel in _paged(f"{base}/releases", "Releases"):
         tag = rel.get("tag_name") or ""
-        if rel.get("draft") or rel.get("prerelease") or not STABLE_RE.fullmatch(tag):
+        if rel.get("draft") or not is_version_tag(tag):
             continue
-        found[_vkey(tag)] = {
-            "version": tag.lstrip("vV"), "source": "release", "ref": tag,
-            "name": rel.get("name") or tag, "notes": (rel.get("body") or "")[:5000],
-            "published_at": rel.get("published_at"), "url": rel.get("html_url") or release_page(tag),
-        }
-    body = _get(f"{base}/tags?per_page=100", "Tags", missing_ok=True)
-    for t in json.loads(body or b"[]"):
-        tag = t.get("name") or ""
-        if STABLE_RE.fullmatch(tag) and _vkey(tag) not in found:
-            found[_vkey(tag)] = {
-                "version": tag.lstrip("vV"), "source": "tag", "ref": tag, "name": tag, "notes": "",
-                "published_at": None, "url": release_page(tag),
-                "_sha": t.get("commit", {}).get("sha"),
-            }
+        if chan == "public" and rel.get("prerelease"):
+            continue
+        found.setdefault(_vkey(tag), _release_entry(rel))
+    if chan == "developer":
+        for t in _paged(f"{base}/tags", "Tags"):
+            tag = t.get("name") or ""
+            if not is_version_tag(tag):
+                continue
+            sha = (t.get("commit") or {}).get("sha")
+            if _vkey(tag) in found:
+                found[_vkey(tag)]["_sha"] = sha
+                continue
+            found[_vkey(tag)] = {"version": tag[1:], "source": "tag", "ref": tag, "name": tag, "notes": "",
+                                 "published_at": None, "url": release_page(tag), "prerelease": False, "_sha": sha}
     versions = [found[k] for k in sorted(found, reverse=True)]
     if not versions:
-        return [_branch_version(base)]
-    # A tag without a release has no notes: use its commit message (newest only, to save requests).
-    top = versions[0]
-    if top["source"] == "tag" and top.get("_sha"):
-        cm = _get(f"{base}/commits/{top['_sha']}", "Commit", missing_ok=True)
+        return [_branch_version(base)] if chan == "developer" else []
+    # A tag without a release has no notes or date: use its commit (newest few only, to save requests).
+    for v in [v for v in versions if v["source"] == "tag" and v.get("_sha")][:3]:
+        cm = _get(f"{base}/commits/{v['_sha']}", "Commit", missing_ok=True)
         if cm:
             c = json.loads(cm).get("commit", {})
-            top["notes"] = (c.get("message") or "")[:5000]
-            top["published_at"] = c.get("committer", {}).get("date")
+            v["notes"] = (c.get("message") or "")[:5000]
+            v["published_at"] = c.get("committer", {}).get("date")
     for v in versions:
         v.pop("_sha", None)
     return versions
+
+
+def _latest_push_blocking(versions: list[dict]) -> dict | None:
+    """Developer channel: the newest commit on the update branch, and whether a version tag points at it."""
+    base = f"{API}/repos/{repo()}"
+    body = _get(f"{base}/commits/{urllib.parse.quote(branch(), safe='')}", "Latest commit", missing_ok=True)
+    if not body:
+        return None
+    cm = json.loads(body)
+    sha = cm.get("sha") or ""
+    tagged = None
+    for t in _paged(f"{base}/tags", "Tags", pages=1):
+        if (t.get("commit") or {}).get("sha") == sha and is_version_tag(t.get("name") or ""):
+            tagged = t["name"]
+            break
+    c = cm.get("commit") or {}
+    return {"sha": sha[:7], "message": (c.get("message") or "").splitlines()[0][:200] if c.get("message") else "",
+            "date": (c.get("committer") or {}).get("date"), "branch": branch(), "tag": tagged,
+            "url": cm.get("html_url") or f"https://github.com/{repo()}/commit/{sha}"}
 
 
 def _branch_version(base: str) -> dict:
@@ -251,11 +328,12 @@ def _with_pending(result: dict) -> dict:
     releases = []
     for v in versions:
         rel = "newer" if is_newer(v["version"], current) else "older" if is_newer(current, v["version"]) else "current"
-        releases.append({k: v[k] for k in ("version", "name", "notes", "published_at", "url", "source")} | {"status": rel})
+        releases.append({k: v.get(k) for k in ("version", "name", "notes", "published_at", "url", "source", "prerelease")} | {"status": rel})
     latest = result.get("latest")
     out = {k: v for k, v in result.items() if k != "versions"}
     return {**out, "current": current, "pending": pending, "releases": releases,
-            "update_available": bool(latest) and is_newer(latest["version"], current)}
+            "update_available": bool(latest) and is_newer(latest["version"], current),
+            "channel": channel(), "channels": CHANNELS}
 
 
 async def check(force: bool = False) -> dict:
@@ -265,7 +343,8 @@ async def check(force: bool = False) -> dict:
     "pending" lists every version from the installed one up to it, with release notes.
     """
     global _last_check
-    if not force and _last_check and time.time() - _last_check["checked_at"] < CACHE_SECONDS:
+    if (not force and _last_check and time.time() - _last_check["checked_at"] < CACHE_SECONDS
+            and _last_check.get("checked_channel") == channel()):
         return _with_pending(_last_check)
     tok, tok_source = token()
     result = {
@@ -281,11 +360,23 @@ async def check(force: bool = False) -> dict:
         "latest": None,
         "update_available": False,
         "error": None,
+        "note": None,
+        "latest_push": None,
+        "checked_channel": channel(),
     }
     try:
-        versions = await asyncio.to_thread(_versions_blocking)
+        chan = channel()
+        versions = await asyncio.to_thread(_versions_blocking, chan)
         result["versions"] = versions
-        result["latest"] = versions[0]
+        result["latest"] = versions[0] if versions else None
+        if not versions:
+            result["note"] = ("No releases are published on GitHub yet. Switch to the Developer channel to follow "
+                              "version tags (vX.X.X or vX.X.X.X).")
+        if chan == "developer":
+            try:
+                result["latest_push"] = await asyncio.to_thread(_latest_push_blocking, versions)
+            except UpdateError:
+                pass            # only informational
     except UpdateError as e:
         result["error"] = str(e)
     _last_check = result
@@ -483,6 +574,8 @@ async def _apply_full(info: dict, target: dict) -> dict:
 
 def _pick(versions: list[dict], version: str | None, current: str, allow_downgrade: bool) -> dict:
     """The version to install: `version` if given (any published one), else the newest."""
+    if not versions:
+        raise UpdateError("No version is available on this update channel.")
     if not version:
         target = versions[0]
     else:

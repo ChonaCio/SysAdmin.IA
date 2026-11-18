@@ -210,6 +210,15 @@
             <button type="button" id="update-apply" class="primary big" hidden>Update</button>
           </div>
         </div>
+        <div class="update-channel small" id="update-channel">
+          <span>Update channel</span>
+          <div class="seg" role="radiogroup" aria-label="Update channel">
+            <button type="button" class="seg-btn" role="radio" data-channel="public">Public</button>
+            <button type="button" class="seg-btn" role="radio" data-channel="developer">Developer</button>
+          </div>
+          <span class="muted" id="update-channel-help"></span>
+        </div>
+        <p class="small muted" id="update-push" hidden></p>
         <div id="update-latest" class="small" hidden>
           <p id="update-latest-line"></p>
           <div id="update-pending" class="pending-list"></div>
@@ -217,7 +226,7 @@
         <p class="small" id="update-msg" hidden></p>
         <p class="small muted" id="update-mode" hidden></p>
         <details class="small update-releases" id="update-releases" hidden>
-          <summary>All releases <span class="muted" id="update-releases-count"></span></summary>
+          <summary><span id="update-releases-title">All releases</span> <span class="muted" id="update-releases-count"></span></summary>
           <p class="muted">Every published version, newest first. Click a name to open its release page on GitHub. Installing an older version (downgrade) keeps your settings, users and data.</p>
           <div id="update-release-list" class="release-list"></div>
         </details>

@@ -1680,6 +1680,7 @@ async def reboot_server(request: Request, user: User = Depends(admin_user)):
 class UpdateSettingsBody(BaseModel):
     github_token: str | None = None   # new token; omitted/None = unchanged
     clear_github_token: bool = False
+    channel: str | None = None        # "public" (releases) or "developer" (version tags); None = unchanged
 
 
 @app.get("/api/version")
@@ -1707,6 +1708,9 @@ async def update_settings(body: UpdateSettingsBody, request: Request, user: User
         elif body.github_token:
             updater.set_token(body.github_token)
             db.audit("update_settings", user.username, auth.client_ip(request), "github_token set")
+        if body.channel is not None and body.channel != updater.channel():
+            updater.set_channel(body.channel)
+            db.audit("update_settings", user.username, auth.client_ip(request), f"channel {body.channel}")
     except ValueError as e:
         raise HTTPException(400, str(e))
     return await asyncio.to_thread(updater.status)

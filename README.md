@@ -131,7 +131,14 @@ The app can update itself from [github.com/ChonaCio/SysAdmin.IA](https://github.
 - **Choosing a version:** when several newer versions are out, a **Version to install** list next to the button lets you install one of them instead of the latest (the latest is preselected and includes everything before it).
 - **All releases:** under the update notes, **All releases** lists every published version, newest first, marked Newer / Installed / Older. Each name links to its release page on GitHub. **Install** installs a newer one; **Downgrade** goes back to an older one after a confirmation. A downgrade runs that version's own installer exactly like an update: your settings, users and data are kept (the database only ever gains columns, which older versions ignore), but features added later disappear until you update again.
 
-Updates are cumulative: the latest version is the **highest version number** among the repository's GitHub releases and version tags (`v1.3.3`), and an update installs it directly, whatever the installed version. Only if the repository has neither, the `VERSION` file on the `main` branch is used. To publish a new version, push a tag (or create a release) such as `v1.3.3`.
+Updates are cumulative: the latest version is the **highest version number** on the chosen **update channel** (Admin → Updates), and an update installs it directly, whatever the installed version.
+
+| Channel | Offers |
+|---|---|
+| **Public** (default) | Published GitHub releases only (no drafts, no pre-releases). Recommended. |
+| **Developer** | Every version tag pushed to the repository: releases, pre-releases and tags without a release. It also shows the latest push to the `main` branch and whether it's tagged. Only tagged versions can be installed; with no version tags at all, the `VERSION` file on `main` is used. |
+
+Version tags are `vX.X.X` or `vX.X.X.X` (numbers only, e.g. `v1.3.3`, `v1.3.3.1`). They compare number by number, leftmost first: `v1.2.10` > `v1.2.9`, `v1.3.3.1` > `v1.3.3` (= `v1.3.3.0`), `v2.0.0` > `v1.99.0`. Other tags (`v1.3`, `1.3.3`, `v1.3.3-beta`…) are ignored. To publish a version, push a tag such as `v1.3.3`, and create a GitHub release from it for the Public channel. Switching channels re-checks right away. Switching from Developer back to Public may leave you on a newer version than the latest release; you can then downgrade from the list.
 
 The installed version is the `VERSION` file in `/opt/sysadmin-ia`. `install.sh` sets it from the tag it's installed from (a `git clone` checked out at a tag, or a release's "Source code" archive such as `SysAdmin.IA-1.3.3`), so `VERSION` in the repository doesn't have to be bumped by hand. A copy of a branch without a tag (for example "Download ZIP" of `main`) falls back to the `VERSION` file.
 
@@ -436,7 +443,8 @@ The **Console** tab (admins only) is a terminal on the server in the browser: a 
 | `SAI_ALLOW_AUTO_APPROVE` | `true` | Whether users can turn on "Auto-approve actions" in the chat |
 | `SAI_ALLOW_CONSOLE` | `true` | Whether admins get the web **Console** (a shell on the server). `false` removes it |
 | `SAI_UPDATE_REPO` | `ChonaCio/SysAdmin.IA` | GitHub repository checked for updates |
-| `SAI_UPDATE_BRANCH` | `main` | Branch whose `VERSION` file is used when the repository has no releases |
+| `SAI_UPDATE_BRANCH` | `main` | Branch shown as "latest push" on the Developer channel, and whose `VERSION` file is used when the repository has no version tags |
+| `SAI_UPDATE_CHANNEL` | `public` | Default update channel (`public` or `developer`); a choice saved in Admin → Updates wins |
 | `SAI_GITHUB_TOKEN` | – | GitHub token for a private repository; one saved in the web UI overrides it |
 
 Restart the service after editing.

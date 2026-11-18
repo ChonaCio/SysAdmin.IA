@@ -819,4 +819,8 @@ SAI_I18N.register("ja", {
   "{0} already exists. Remove it first, or pick another name.": "{0} はすでに存在します。先に削除するか、別の名前を選んでください。",
   "{0} is already used by a website.": "{0} はすでに Webサイトで使われています。",
   "{0} was added, but {1} couldn't be removed: {2}": "{0} を追加しましたが、{1} を削除できませんでした: {2}",
+  // ---- Updates: channels
+  "No releases are published on GitHub yet. Switch to the Developer channel to follow version tags (vX.X.X or vX.X.X.X).": "GitHub にはまだリリースが公開されていません。バージョンタグ（vX.X.X または vX.X.X.X）を追うには開発者チャネルに切り替えてください。",
+  "No version is available on this update channel.": "このアップデートチャネルで利用できるバージョンはありません。",
+  "The update channel must be “public” or “developer”.": "アップデートチャネルは “public” または “developer” にしてください。",
 });

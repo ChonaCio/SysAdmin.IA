@@ -819,4 +819,8 @@ SAI_I18N.register("zh", {
   "{0} already exists. Remove it first, or pick another name.": "{0} 已存在。请先删除它，或另选一个名称。",
   "{0} is already used by a website.": "{0} 已被某个网站使用。",
   "{0} was added, but {1} couldn't be removed: {2}": "已添加 {0}，但无法删除 {1}：{2}",
+  // ---- Updates: channels
+  "No releases are published on GitHub yet. Switch to the Developer channel to follow version tags (vX.X.X or vX.X.X.X).": "GitHub 上还没有发布任何版本。切换到开发者渠道以跟踪版本标签（vX.X.X 或 vX.X.X.X）。",
+  "No version is available on this update channel.": "此更新渠道上没有可用的版本。",
+  "The update channel must be “public” or “developer”.": "更新渠道必须是 “public” 或 “developer”。",
 });

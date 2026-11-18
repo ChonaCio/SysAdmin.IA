@@ -1489,8 +1489,10 @@ function renderUpdate(s) {
   if (latest) apply.textContent = `Update to ${sel.value || latest.version}`;
   renderReleases(s);
   $("#update-check").className = s.update_available ? "ghost big" : "primary big";
+  renderUpdateChannel(s);
   if (state.updating) { /* keep the progress message */ }
   else if (s.error) setUpdateMsg(s.error, false);
+  else if (s.note && !latest) setUpdateMsg(s.note, false);
   else if (s.update_available && !s.can_apply) setUpdateMsg("This app runs from a git clone: update it with `git pull`.", false);
   else setUpdateMsg("", true);
   $("#update-clear-token").hidden = s.token_source !== "web";
@@ -1505,6 +1507,44 @@ function renderUpdate(s) {
   }
   state.update = s;
 }
+
+// ---- update channel: Public (published releases) or Developer (every vX.X.X / vX.X.X.X tag)
+function renderUpdateChannel(s) {
+  const chan = s.channel || "public";
+  $$("#update-channel .seg-btn").forEach((b) => {
+    b.classList.toggle("active", b.dataset.channel === chan);
+    b.setAttribute("aria-checked", String(b.dataset.channel === chan));
+  });
+  $("#update-channel-help").textContent = chan === "developer"
+    ? "Every version tag pushed to GitHub (vX.X.X or vX.X.X.X), including pre-releases and tags without a release. For trying versions before they're released."
+    : "Published releases only. Recommended.";
+  $("#update-releases-title").textContent = chan === "developer" ? "All version tags" : "All releases";
+  const push = $("#update-push");
+  const p = chan === "developer" ? s.latest_push : null;
+  push.hidden = !p;
+  if (p) {
+    push.innerHTML = "";
+    const a = el("a", { href: p.url, target: "_blank", rel: "noopener noreferrer", class: "mono" }, p.sha);
+    push.append(`Latest push to ${p.branch}: `, a, p.message ? el("span", { "data-no-i18n": "" }, ` “${p.message}”`) : "",
+      p.date ? ` · ${fmtDate(p.date)}` : "", " · ",
+      p.tag ? el("span", {}, "tagged ", el("strong", { "data-no-i18n": "" }, p.tag))
+        : el("span", {}, "not tagged yet: only tagged versions can be installed"));
+  }
+}
+
+$$("#update-channel .seg-btn").forEach((b) => b.addEventListener("click", async () => {
+  const chan = b.dataset.channel;
+  if (chan === (state.update?.channel || "public")) return;
+  if (chan === "developer" && !confirm("Switch updates to the Developer channel?\n\nYou'll be offered every version tag pushed to GitHub, " +
+      "including versions that aren't released yet and may be unfinished.")) return;
+  $$("#update-channel .seg-btn").forEach((x) => { x.disabled = true; });
+  setUpdateBusy("Checking GitHub…");
+  try {
+    renderUpdate(await api("/api/update/settings", { method: "PUT", body: JSON.stringify({ channel: chan }) }));
+    renderUpdate(await api("/api/update/check", { method: "POST" }));
+  } catch (ex) { setUpdateMsg(ex.message, false); }
+  finally { $$("#update-channel .seg-btn").forEach((x) => { x.disabled = false; }); }
+}));
 
 async function loadUpdate() {
   const s = await api("/api/update");
@@ -1561,8 +1601,10 @@ function renderReleases(s) {
   for (const v of rels) {
     const link = el("a", { href: v.url, target: "_blank", rel: "noopener noreferrer", class: "release-name", "data-no-i18n": "" },
       v.name && v.name.replace(/^v/i, "") !== v.version ? `${v.version} · ${v.name}` : v.version);
-    const tag = v.status === "current" ? el("span", { class: "tag tag-accent" }, "Installed")
-      : v.status === "newer" ? el("span", { class: "tag" }, "Newer") : el("span", { class: "tag muted" }, "Older");
+    const tag = el("span", {}, v.status === "current" ? el("span", { class: "tag tag-accent" }, "Installed")
+      : v.status === "newer" ? el("span", { class: "tag" }, "Newer") : el("span", { class: "tag muted" }, "Older"),
+      v.prerelease ? " " : null, v.prerelease ? el("span", { class: "tag tag-warn", title: "Marked as a pre-release on GitHub" }, "pre-release") : null,
+      v.source === "tag" ? " " : null, v.source === "tag" ? el("span", { class: "tag muted", title: "A version tag without a GitHub release" }, "tag only") : null);
     let btn = null;
     if (v.status !== "current" && s.can_apply) {
       btn = el("button", { type: "button", class: `small ${v.status === "older" ? "ghost" : "primary"}`,

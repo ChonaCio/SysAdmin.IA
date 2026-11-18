@@ -843,4 +843,8 @@ SAI_I18N.register("es", {
   "{0} already exists. Remove it first, or pick another name.": "{0} ya existe. Quítalo primero o elige otro nombre.",
   "{0} is already used by a website.": "{0} ya lo usa una web.",
   "{0} was added, but {1} couldn't be removed: {2}": "Se añadió {0}, pero no se pudo quitar {1}: {2}",
+  // ---- Updates: channels
+  "No releases are published on GitHub yet. Switch to the Developer channel to follow version tags (vX.X.X or vX.X.X.X).": "Aún no hay releases publicadas en GitHub. Cambia al canal Desarrollador para seguir las etiquetas de versión (vX.X.X o vX.X.X.X).",
+  "No version is available on this update channel.": "No hay ninguna versión disponible en este canal de actualizaciones.",
+  "The update channel must be “public” or “developer”.": "El canal de actualizaciones debe ser “público” o “desarrollador”.",
 });
