@@ -901,10 +901,10 @@ async def _act_check_updates(a: dict, ctx: dict) -> tuple[str, str]:
             else:
                 msg = f"{found} Installed (app code); the app restarts in a few seconds. The result is added to this run."
                 if r.get("restart"):
-                    # Code-only update: restart (systemd starts the new code) a moment after this run is saved.
-                    import os
-                    import signal
-                    asyncio.get_running_loop().call_later(5, lambda: os.kill(os.getpid(), signal.SIGTERM))
+                    # Code-only update: restart every process (they all load the new code) a moment after this
+                    # run is saved.
+                    from . import procs
+                    procs.restart_app(delay=5)
             ctx["_update_followup"] = {"from": s["current"], "to": r["to"], "mode": r.get("mode")}
             log_lines = "\n".join(r.get("log") or [])
             if log_lines:
@@ -1086,7 +1086,30 @@ class JobEngine:
         jobs = [j for j in list_all() if j["enabled"]]
         if not jobs:
             return
-        types = {t["type"] for j in jobs for t in j["triggers"]}
+        snap = await self.snapshot({t["type"] for j in jobs for t in j["triggers"]})
+        now = time.time()
+        for j in jobs:
+            state = j["state"]
+            changed = False
+            for i, t in enumerate(j["triggers"]):
+                key = str(i)
+                st = state.get(key) if isinstance(state.get(key), dict) else None
+                if not st or st.get("sig") != _sig(t):
+                    st = {"sig": _sig(t)}
+                    if t["type"] == "schedule":
+                        st["next"] = next_run(t, now)
+                    state[key] = st
+                    changed = True
+                fired = await self._check(j, t, st, snap, now)
+                changed = True if fired is not None or t["type"] in ("schedule", "mail_received", "new_device",
+                                                                     "public_ip_changed") else changed
+                for ctx, why in fired or []:
+                    self._spawn(j, ctx, why)
+            if changed:
+                _save_state(j["id"], state)
+
+    async def snapshot(self, types: set[str]) -> dict[str, Any]:
+        """What the condition triggers of these types look at (read once per tick for all jobs/DAGs)."""
         snap: dict[str, Any] = {}
         if types & {"disk_usage", "cpu_usage", "memory_usage", "load_average", "temperature"}:
             from . import monitor
@@ -1116,26 +1139,7 @@ class JobEngine:
                 self._update_info = await updater.check(force=False)
             except Exception:
                 self._update_info = None
-        now = time.time()
-        for j in jobs:
-            state = j["state"]
-            changed = False
-            for i, t in enumerate(j["triggers"]):
-                key = str(i)
-                st = state.get(key) if isinstance(state.get(key), dict) else None
-                if not st or st.get("sig") != _sig(t):
-                    st = {"sig": _sig(t)}
-                    if t["type"] == "schedule":
-                        st["next"] = next_run(t, now)
-                    state[key] = st
-                    changed = True
-                fired = await self._check(j, t, st, snap, now)
-                changed = True if fired is not None or t["type"] in ("schedule", "mail_received", "new_device",
-                                                                     "public_ip_changed") else changed
-                for ctx, why in fired or []:
-                    self._spawn(j, ctx, why)
-            if changed:
-                _save_state(j["id"], state)
+        return snap
 
     async def _check(self, j: dict, t: dict, st: dict, snap: dict, now: float) -> list | None:
         ty = t["type"]

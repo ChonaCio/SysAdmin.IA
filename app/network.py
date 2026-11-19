@@ -867,6 +867,16 @@ class NetworkEngine:
         if self.task is None and ARP_FILE.exists():
             self.task = asyncio.get_running_loop().create_task(self._loop())
 
+    def info(self) -> dict:
+        """For the Processes page (sent with the network watcher's heartbeat)."""
+        try:
+            s = get_settings()
+            last = float(db.get_setting("network_last_scan") or 0) or None
+        except Exception:  # noqa: BLE001
+            s, last = {}, None
+        return {"watching": bool(s.get("watch")) and self.task is not None, "interval_min": s.get("interval"),
+                "last_scan": last, "scanning": progress().get("state") == "running"}
+
     async def _loop(self) -> None:
         from . import lan_names
         await asyncio.sleep(2)

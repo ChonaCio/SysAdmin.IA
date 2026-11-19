@@ -5,9 +5,10 @@ import argparse
 import asyncio
 import getpass
 import sys
+import time
 
 from . import ai_connections as ai
-from . import auth, db, server_name, updater
+from . import auth, db, procs, server_name, updater
 from .config import settings
 
 
@@ -90,6 +91,11 @@ def main(argv: list[str] | None = None) -> int:
     g = sub.add_parser("set-github-token", help="save a GitHub token (needed if the repository is private)")
     g.add_argument("--stdin", action="store_true", help="read the token from stdin")
     sub.add_parser("clear-github-token", help="remove the saved GitHub token")
+
+    sub.add_parser("processes", help="show the app's processes (web, jobs, network)")
+    pr = sub.add_parser("process", help="start, stop or restart one of the app's processes")
+    pr.add_argument("action", choices=["start", "stop", "restart"])
+    pr.add_argument("name", choices=list(procs.WORKERS))
 
     args = ap.parse_args(argv)
 
@@ -186,6 +192,21 @@ def main(argv: list[str] | None = None) -> int:
             db.audit("server_reboot", "sysadmin-ia", "local")
         elif args.cmd == "version":
             print(updater.current_version())
+        elif args.cmd in ("processes", "process"):
+            try:
+                if args.cmd == "process":
+                    # from the command line the web interface may be stopped too ("force")
+                    st = procs.request({"cmd": args.action, "name": args.name, "force": True}, timeout=30)["status"]
+                    print(f"{procs.WORKERS[args.name]['label']}: {args.action} done.")
+                else:
+                    st = procs.request({"cmd": "status"})["status"]
+            except procs.ProcessError as e:
+                print(f"{e} Is the service running? (sudo systemctl status sysadmin-ia)", file=sys.stderr)
+                return 1
+            for w in st["workers"]:
+                s = "not responding" if w.get("responding") is False else w["state"]
+                up = f"up {int(time.time() - w['started_at'])} s" if w["state"] == "running" and w.get("started_at") else ""
+                print(f"{w['name']:<8} {s:<15} pid {w['pid'] or '-':<7} restarts {w['restarts']:<3} {up}")
         elif args.cmd == "check-update":
             s = asyncio.run(updater.check(force=True))
             print(f"Installed: {s['current']}   Source: github.com/{s['repo']}")

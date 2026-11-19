@@ -119,6 +119,50 @@ CREATE TABLE IF NOT EXISTS job_runs (
     log TEXT NOT NULL DEFAULT '[]'                -- JSON list of {action, ok, message}
 );
 CREATE INDEX IF NOT EXISTS job_runs_job ON job_runs (job_id, id);
+CREATE TABLE IF NOT EXISTS dags (                     -- Jobs as DAGs (Airflow-like): triggers + tasks with dependencies
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dag_id TEXT UNIQUE NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    paused INTEGER NOT NULL DEFAULT 0,
+    triggers TEXT NOT NULL DEFAULT '[]',          -- JSON list of {type, ...settings} (jobs.TRIGGERS)
+    tasks TEXT NOT NULL DEFAULT '[]',             -- JSON list of {task_id, operator, params, upstream, retries, ...}
+    layout TEXT NOT NULL DEFAULT '{}',            -- JSON {task_id: [x, y]} for the graph editor
+    options TEXT NOT NULL DEFAULT '{}',           -- JSON {max_active_runs}
+    state TEXT NOT NULL DEFAULT '{}',             -- JSON: per-trigger scheduler state
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS dag_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dag_pk INTEGER NOT NULL,
+    run_id TEXT NOT NULL,                          -- e.g. manual__2026-11-19T10:00:00
+    run_type TEXT NOT NULL,                        -- scheduled | triggered | manual
+    state TEXT NOT NULL,                           -- queued | running | success | failed
+    trigger TEXT NOT NULL DEFAULT '',              -- what started it, in words
+    conf TEXT NOT NULL DEFAULT '{}',               -- JSON: the trigger's values ({{trigger.*}})
+    requested_by TEXT NOT NULL DEFAULT '',
+    queued_at REAL NOT NULL,
+    started_at REAL,
+    finished_at REAL,
+    stop_requested INTEGER NOT NULL DEFAULT 0,
+    note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS dag_runs_dag ON dag_runs (dag_pk, id);
+CREATE INDEX IF NOT EXISTS dag_runs_state ON dag_runs (state);
+CREATE TABLE IF NOT EXISTS task_instances (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_pk INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    state TEXT NOT NULL,                           -- none | running | up_for_retry | success | failed | skipped | upstream_failed
+    try_number INTEGER NOT NULL DEFAULT 0,
+    started_at REAL,
+    finished_at REAL,
+    message TEXT NOT NULL DEFAULT '',
+    details TEXT NOT NULL DEFAULT '',
+    output TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS task_instances_run ON task_instances (run_pk);
 CREATE TABLE IF NOT EXISTS audit_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     ts REAL NOT NULL,

@@ -1,12 +1,18 @@
-"""Entry point: `python -m app` starts the web server(s).
+"""Entry point: `python -m app` starts the process supervisor, which runs the web interface, the jobs scheduler
+and the network watcher as separate processes (see app/supervisor.py and app/procs.py).
 
-With TLS configured, HTTPS is served on SAI_PORT and, if SAI_HTTP_PORT is set, plain
-HTTP on that port too: both run in this one process and share the same app and state.
+`python -m app --single` (or SAI_SINGLE_PROCESS=1) runs everything in this one process instead, as before
+(development, troubleshooting).
+
+The web interface: with TLS configured, HTTPS is served on SAI_PORT and, if SAI_HTTP_PORT is set, plain HTTP on
+that port too: both run in one process and share the same app and state.
 """
 import asyncio
 import contextlib
 import logging
+import os
 import signal
+import sys
 
 import uvicorn
 
@@ -26,7 +32,7 @@ class _Server(uvicorn.Server):
         yield
 
 
-async def _serve() -> None:
+async def serve_web() -> None:
     from .main import app  # import once; every listener shares the same app object
 
     servers: list[_Server] = []
@@ -55,7 +61,12 @@ async def _serve() -> None:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    asyncio.run(_serve())
+    if "--single" in sys.argv or os.environ.get("SAI_SINGLE_PROCESS", "").lower() in ("1", "true", "yes"):
+        os.environ.pop("SAI_PROCESS", None)          # this process is everything ("all")
+        asyncio.run(serve_web())
+        return
+    from .supervisor import main as supervise
+    supervise()
 
 
 if __name__ == "__main__":

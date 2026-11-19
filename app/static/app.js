@@ -170,14 +170,16 @@ function switchView(v) {
   if (!SUBPAGES.has(v) && v !== state.view) state.lastTab = v;
   if (SUBPAGES.has(v) && !SUBPAGES.has(state.view)) state.lastTab = state.view;
   state.view = v;
-  const navView = v === "job-edit" ? "jobs" : v;   // sub-pages keep their module highlighted
+  const navView = ["dag", "dag-edit"].includes(v) ? "jobs" : v;   // sub-pages keep their module highlighted
   $$(".tab").forEach((b) => b.classList.toggle("active", b.dataset.view === navView));
   $$(".view").forEach((s) => s.classList.toggle("active", s.id === `view-${v}`));
   closeProfileMenu();
   closeNav();
   clearInterval(state.drivesTimer);
   if (v === "ai") loadAi();
-  if (v === "jobs") loadJobs();
+  if (v === "jobs" && window.loadDags) loadDags();
+  if (v === "processes" && window.loadProcesses) loadProcesses();
+  if (window.checkProcBanner) checkProcBanner(v);
   if (v === "localai") loadLocalAI();
   if (v === "containers" && window.loadDocker) loadDocker();
   if (v === "network" && window.loadNetwork) loadNetwork();
@@ -2798,134 +2800,6 @@ function fmtWhen(ts) {
   return sameDay ? `today ${d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : d.toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
 }
 
-async function loadJobs() {
-  const list = $("#job-list");
-  let jobsList;
-  try { jobsList = await api("/api/jobs"); } catch (ex) { list.textContent = ex.message; return; }
-  list.innerHTML = "";
-  if (!jobsList.length) {
-    list.append(el("div", { class: "card empty-card" }, el("strong", {}, "No jobs yet"),
-      el("p", { class: "muted small" }, "For example: email me when a disk is over 90% full, check for updates every Monday, or ask the AI to explain a failed service."),
-      el("button", { type: "button", class: "primary", onclick: () => openJobEditor() }, withIcon("plus", "New job"))));
-  }
-  for (const j of jobsList) list.append(jobCard(j));
-}
-
-function jobCard(j) {
-  const tags = [
-    j.enabled ? null : el("span", { class: "tag" }, "Paused"),
-    j.running ? el("span", { class: "tag tag-accent" }, "Running") : null,
-    j.alerting ? el("span", { class: "tag tag-warn" }, "Alert active") : null,
-  ];
-  const last = j.last_run
-    ? el("span", { class: j.last_status === "ok" ? "ok-text" : "error" }, `${j.last_status === "ok" ? "✓" : "✗"} Last run ${fmtWhen(j.last_run)}`)
-    : el("span", { class: "muted" }, "Never run yet");
-  const history = el("div", { class: "job-history", hidden: true });
-  const card = el("div", { class: `card job-card ${j.enabled ? "" : "disabled"}` },
-    el("div", { class: "ai-card-head" },
-      el("span", { class: `icon-tile ${j.alerting ? "accent" : ""}`, html: icon("clock") }),
-      el("div", { class: "ai-card-title" },
-        el("div", {}, el("strong", {}, j.name), " ", tags),
-        j.description ? el("div", { class: "muted small" }, j.description) : null),
-      el("div", { class: "ai-actions" },
-        el("button", { type: "button", class: "small", title: "Run the actions now, as a test", onclick: async (e) => {
-          const b = e.currentTarget; b.disabled = true;
-          try { const r = await api(`/api/jobs/${j.id}/run`, { method: "POST" });
-                toast(r.status === "ok" ? "Job ran successfully." : "The job ran with errors — see History.");
-                loadJobs(); }
-          catch (ex) { toast(ex.message); b.disabled = false; }
-        } }, withIcon("play", "Run now")),
-        el("button", { type: "button", class: "small", onclick: () => openJobEditor(j) }, withIcon("edit", "Edit")),
-        el("button", { type: "button", class: "small ghost", onclick: async () => {
-          history.hidden = !history.hidden;
-          if (!history.hidden) renderJobHistory(j.id, history);
-        } }, withIcon("history", "History")),
-        el("button", { type: "button", class: "small ghost", onclick: async () => {
-          try { await api(`/api/jobs/${j.id}/enabled`, { method: "POST", body: JSON.stringify({ enabled: !j.enabled }) }); loadJobs(); }
-          catch (ex) { toast(ex.message); }
-        } }, j.enabled ? withIcon("pause", "Pause") : withIcon("play", "Resume")),
-        el("button", { type: "button", class: "small ghost danger", onclick: async () => {
-          if (!confirm(`Delete the job “${j.name}” and its history?`)) return;
-          try { await api(`/api/jobs/${j.id}`, { method: "DELETE" }); loadJobs(); } catch (ex) { toast(ex.message); }
-        } }, withIcon("trash", "Delete")))),
-    el("div", { class: "job-flow" },
-      el("div", { class: "flow-col" }, el("div", { class: "flow-label" }, "When"),
-        el("ul", {}, j.trigger_summaries.map((s) => el("li", {}, s)))),
-      el("div", { class: "flow-col" }, el("div", { class: "flow-label" }, "Then"),
-        el("ol", {}, j.action_summaries.map((s) => el("li", {}, s))))),
-    el("div", { class: "job-foot small" }, last,
-      j.next_run ? el("span", { class: "muted" }, ` · Next: ${fmtWhen(j.next_run)}`) : null),
-    history);
-  return card;
-}
-
-async function renderJobHistory(id, box) {
-  box.innerHTML = "";
-  box.append(el("p", { class: "muted small" }, "Loading…"));
-  let runs;
-  try { runs = await api(`/api/jobs/${id}/runs`); } catch (ex) { box.textContent = ex.message; return; }
-  box.innerHTML = "";
-  if (!runs.length) { box.append(el("p", { class: "muted small" }, "No runs yet.")); return; }
-  const dur = (ms) => ms == null ? "" : ms < 1000 ? `${ms} ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms / 60000)} min`;
-  runs.forEach((r, idx) => {
-    const total = r.finished_at ? Math.round((r.finished_at - r.started_at) * 1000) : null;
-    const steps = r.log.filter((x) => typeof x.step === "number" && x.step > 0);
-    const okSteps = steps.filter((x) => x.ok).length;
-    const updateLine = r.log.find((x) => x.action === "Update result");
-    const rows = r.log.map((x) => {
-      const head = el("div", { class: "run-step-head" },
-        el("span", { class: `run-mark ${x.ok ? "ok-text" : "error"}` }, x.step === 0 ? "▶" : x.ok ? "✓" : "✗"),
-        el("div", { class: "run-step-text" },
-          x.action ? el("strong", {}, x.step > 0 ? `${x.step}. ${x.action}` : x.action) : null,
-          x.action ? el("br") : null,
-          el("span", { class: x.ok ? "" : "error" }, x.message)),
-        x.ms != null ? el("span", { class: "muted small run-ms" }, dur(x.ms)) : null);
-      return el("li", { class: `run-step ${x.action === "Update result" ? "run-result" : ""}` }, head,
-        x.details ? el("details", { class: "run-details" }, el("summary", { class: "small muted" }, "Details"),
-          el("pre", { class: "update-notes mono small" }, x.details)) : null);
-    });
-    box.append(el("details", { class: "run", open: idx === 0 && r.status !== "ok" },
-      el("summary", {},
-        el("span", { class: r.status === "ok" ? "ok-text" : r.status === "running" ? "muted" : "error" },
-          r.status === "ok" ? "✓ OK" : r.status === "running" ? "… Running" : "✗ Failed"),
-        ` · ${fmtWhen(r.started_at)}`, total != null ? el("span", { class: "muted" }, ` · took ${dur(total)}`) : null,
-        steps.length ? el("span", { class: "muted" }, ` · ${okSteps}/${steps.length} actions OK`) : null,
-        updateLine ? el("span", { class: updateLine.ok ? "ok-text" : "error" }, updateLine.ok ? " · updated" : " · update failed") : null,
-        el("div", { class: "muted small run-why" }, r.trigger)),
-      el("ol", { class: "run-log" }, rows)));
-  });
-}
-
-// ---- job editor
-async function openJobEditor(job = null) {
-  state.jobCat = await api("/api/jobs/catalog");
-  state.jobEditing = job;
-  const f = $("#job-form");
-  $("#job-edit-title").textContent = job ? `Edit “${job.name}”` : "New job";
-  f.name.value = job ? job.name : "";
-  f.description.value = job ? job.description : "";
-  f.enabled.checked = job ? job.enabled : true;
-  f.stop_on_error.checked = job ? job.options.stop_on_error !== false : true;
-  $("#job-triggers").innerHTML = "";
-  $("#job-actions").innerHTML = "";
-  if (job) {
-    job.triggers.forEach((t) => addJobItem("trigger", t));
-    job.actions.forEach((a) => addJobItem("action", a));
-  } else {
-    addJobItem("trigger", { type: "disk_usage" });
-    addJobItem("action", { type: "send_mail" });
-  }
-  setFormMsg("#job-msg", "");
-  switchView("job-edit");
-  renderPlaceholders();
-  f.name.focus();
-}
-$("#job-add").addEventListener("click", () => openJobEditor());
-$("#job-back").addEventListener("click", () => switchView("jobs"));
-$("#job-cancel").addEventListener("click", () => switchView("jobs"));
-$("#job-add-trigger").addEventListener("click", () => { addJobItem("trigger", { type: "schedule" }); renderPlaceholders(); });
-$("#job-add-action").addEventListener("click", () => { addJobItem("action", { type: "send_mail" }); renderPlaceholders(); });
-
 function addJobItem(kind, item) {
   const cat = kind === "trigger" ? state.jobCat.triggers : state.jobCat.actions;
   const box = $(kind === "trigger" ? "#job-triggers" : "#job-actions");
@@ -3085,35 +2959,6 @@ function applyShowIf(card, spec) {
   }
 }
 
-// Placeholder helper: what can be used in the job's text fields right now.
-function renderPlaceholders() {
-  const cat = state.jobCat, box = $("#ph-groups");
-  if (!cat) return;
-  const groups = [];
-  const trig = new Set();
-  $$("#job-triggers .item-type").forEach((s) => (cat.triggers[s.value]?.placeholders || []).forEach((p) => trig.add(p)));
-  if (trig.size) groups.push(["From the trigger", [...trig]]);
-  const prov = new Set(["steps.1.output"]);
-  $$("#job-actions .item-type").forEach((s) => (cat.actions[s.value]?.provides || []).forEach((p) => prov.add(p)));
-  groups.push(["From earlier actions", [...prov]]);
-  if (cat.variables.length) groups.push(["Your variables", cat.variables.map((v) => `var.${v.name}`)]);
-  const mon = cat.monitor_placeholders || [];
-  const mainMon = mon.filter((m) => !/^mon\.(disk|temp)\./.test(m.key));       // summary values
-  const perItem = mon.filter((m) => /^mon\.(disk|temp)\./.test(m.key));        // per drive / per sensor
-  if (mainMon.length) groups.push(["Monitor values", mainMon.map((m) => [m.key, m.label])]);
-  if (perItem.length) groups.push(["Per drive / sensor", perItem.map((m) => [m.key, m.label]), true]);
-  groups.push(["Built-in", cat.system_placeholders]);
-  box.innerHTML = "";
-  for (const [title, items, collapsed] of groups) {
-    const chips = el("div", { class: "ph-chips" }, items.map((p) => {
-      const [key, label] = Array.isArray(p) ? p : [p, ""];
-      return el("button", { type: "button", class: "ph-chip", title: label || null, onclick: () => insertPlaceholder(key) }, ph(key));
-    }));
-    box.append(collapsed
-      ? el("details", { class: "ph-group" }, el("summary", { class: "flow-label" }, title), chips)
-      : el("div", { class: "ph-group" }, el("div", { class: "flow-label" }, title), chips));
-  }
-}
 document.addEventListener("focusin", (e) => {
   if (e.target.dataset && e.target.dataset.ph) state.phTarget = e.target;
 });
@@ -3125,23 +2970,5 @@ function insertPlaceholder(p) {
   t.focus();
   t.selectionStart = t.selectionEnd = s + ph(p).length;
 }
-
-$("#job-form").addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const f = e.target, j = state.jobEditing;
-  const body = {
-    name: f.name.value.trim(), description: f.description.value.trim(), enabled: f.enabled.checked,
-    triggers: $$("#job-triggers .job-item").map(itemValues),
-    actions: $$("#job-actions .job-item").map(itemValues),
-    options: { stop_on_error: f.stop_on_error.checked },
-  };
-  $("#job-save").disabled = true;
-  try {
-    await api(j ? `/api/jobs/${j.id}` : "/api/jobs", { method: j ? "PUT" : "POST", body: JSON.stringify(body) });
-    toast(j ? "Job saved." : `Job “${body.name}” created.`);
-    switchView("jobs");
-  } catch (ex) { setFormMsg("#job-msg", ex.message, false); }
-  $("#job-save").disabled = false;
-});
 
 boot().catch((e) => console.error(e));

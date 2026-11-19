@@ -21,6 +21,7 @@ from pydantic import BaseModel
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
 from . import containers, firewall, lan_names, local_ai, model_search, network, publish, routers, user_prefs, variables
+from . import dags, procs
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -902,8 +903,8 @@ async def variables_update(name: str, body: VariableBody, request: Request, user
 
 @app.delete("/api/variables/{name}")
 async def variables_delete(name: str, request: Request, user: User = Depends(admin_user)):
-    used = [j["name"] for j in jobs.list_all() if f"var.{name}" in json.dumps(j["actions"])
-            or any(a.get("type") == "set_variable" and a.get("name") == name for a in j["actions"])]
+    used = [d["dag_id"] for d in dags.list_all() if f"var.{name}" in json.dumps(d["tasks"])
+            or any(t["operator"] == "set_variable" and t["params"].get("name") == name for t in d["tasks"])]
     variables.delete(name)
     db.audit("variable_deleted", user.username, auth.client_ip(request), {"name": name})
     return {"ok": True, "used_by": used}
@@ -929,8 +930,8 @@ def _mail_dict(b: MailBody) -> dict:
 
 
 def _jobs_using_mail(acc_id: int) -> list[str]:
-    return [j["name"] for j in jobs.list_all()
-            if any(str(x.get("account")) == str(acc_id) for x in j["triggers"] + j["actions"])]
+    return [d["dag_id"] for d in dags.list_all()
+            if any(str(x.get("account")) == str(acc_id) for x in d["triggers"] + [t["params"] for t in d["tasks"]])]
 
 
 @app.get("/api/mail/accounts")
@@ -988,95 +989,197 @@ async def mail_test(body: MailTestBody, user: User = Depends(admin_user)):
 
 # ---------------------------------------------------------------- jobs (admin)
 
-class JobBody(BaseModel):
-    name: str = ""
+# Jobs are DAGs (app/dags.py): edited here, run by the jobs process.
+class DagBody(BaseModel):
+    dag_id: str = ""
     description: str = ""
-    enabled: bool = True
+    paused: bool = False
     triggers: list = []
-    actions: list = []
+    tasks: list = []
+    layout: dict = {}
     options: dict = {}
+    code: str | None = None          # when saved from the Code view: the code wins over the fields above
 
 
-class EnabledBody(BaseModel):
-    enabled: bool
+class DagCodeBody(BaseModel):
+    code: str
+    layout: dict = {}
 
 
-def _job_dict(b: JobBody) -> dict:
-    return b.model_dump() if hasattr(b, "model_dump") else b.dict()
+class PausedBody(BaseModel):
+    paused: bool
 
 
-@app.get("/api/jobs/catalog")
-async def jobs_catalog(user: User = Depends(admin_user)):
-    return await asyncio.to_thread(jobs.catalog)
+def _dag_data(b: DagBody) -> dict:
+    data = _dump(b)
+    code = data.pop("code", None)
+    if code is not None:
+        parsed = dags.from_code(code)
+        parsed["layout"] = data.get("layout") or {}
+        return parsed
+    return data
 
 
-@app.get("/api/jobs")
-async def jobs_list(user: User = Depends(admin_user)):
-    return [jobs.public(j) | {"running": j["id"] in jobs.ENGINE.running} for j in jobs.list_all()]
-
-
-@app.post("/api/jobs")
-async def jobs_create(body: JobBody, request: Request, user: User = Depends(admin_user)):
+def _dags(fn, *a):
     try:
-        j = jobs.create(_job_dict(body))
-    except jobs.JobError as e:
+        return fn(*a)
+    except jobs.JobError as e:          # DagError is a JobError
         raise HTTPException(400, str(e))
-    db.audit("job_created", user.username, auth.client_ip(request), {"id": j["id"], "name": j["name"]})
-    return jobs.public(j)
 
 
-@app.put("/api/jobs/{jid}")
-async def jobs_update(jid: int, body: JobBody, request: Request, user: User = Depends(admin_user)):
+@app.get("/api/dags/catalog")
+async def dags_catalog(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(dags.catalog)
+
+
+@app.get("/api/dags")
+async def dags_list(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(lambda: [dags.public(d) for d in dags.list_all()])
+
+
+@app.get("/api/dags/{pk}")
+async def dags_get(pk: int, user: User = Depends(admin_user)):
+    d = dags.get(pk)
+    if not d:
+        raise HTTPException(404, "That DAG no longer exists.")
+    return {**dags.public(d), "code": dags.to_code(d)}
+
+
+def _lenient(data: dict) -> tuple[dict, str | None]:
+    """Check a DAG, but let the editor switch views while it isn't valid yet (saving still checks)."""
     try:
-        j = jobs.update(jid, _job_dict(body))
+        return dags.clean_dag(data), None
     except jobs.JobError as e:
-        raise HTTPException(400, str(e))
-    db.audit("job_updated", user.username, auth.client_ip(request), {"id": jid, "name": j["name"]})
-    return jobs.public(j)
+        return dags.normalize(data), str(e)
 
 
-@app.post("/api/jobs/{jid}/enabled")
-async def jobs_enable(jid: int, body: EnabledBody, request: Request, user: User = Depends(admin_user)):
-    if not jobs.get(jid):
+@app.post("/api/dags/code")
+async def dags_from_code(body: DagCodeBody, user: User = Depends(admin_user)):
+    """Code view → Graph: read the code (nothing is saved or run). Syntax errors are refused; settings that aren't
+    valid yet come back as a warning."""
+    parsed = _dags(lambda: dags.from_code(body.code))
+    d, warn = _lenient({**parsed, "layout": body.layout})
+    return {"dag": d, "warning": warn}
+
+
+@app.post("/api/dags/to-code")
+async def dags_to_code(body: DagBody, user: User = Depends(admin_user)):
+    """Graph → Code view."""
+    d, warn = _lenient(_dump(body))
+    return {"code": dags.to_code(d), "dag": d, "warning": warn}
+
+
+@app.post("/api/dags")
+async def dags_create(body: DagBody, request: Request, user: User = Depends(admin_user)):
+    d = _dags(lambda: dags.create(_dag_data(body)))
+    db.audit("dag_created", user.username, auth.client_ip(request), {"id": d["id"], "dag_id": d["dag_id"]})
+    return dags.public(d)
+
+
+@app.put("/api/dags/{pk}")
+async def dags_update(pk: int, body: DagBody, request: Request, user: User = Depends(admin_user)):
+    d = _dags(lambda: dags.update(pk, _dag_data(body)))
+    db.audit("dag_updated", user.username, auth.client_ip(request), {"id": pk, "dag_id": d["dag_id"]})
+    return dags.public(d)
+
+
+@app.post("/api/dags/{pk}/paused")
+async def dags_pause(pk: int, body: PausedBody, request: Request, user: User = Depends(admin_user)):
+    if not dags.get(pk):
         raise HTTPException(404)
-    jobs.set_enabled(jid, body.enabled)
-    db.audit("job_enabled" if body.enabled else "job_disabled", user.username, auth.client_ip(request), {"id": jid})
+    dags.set_paused(pk, body.paused)
+    db.audit("dag_paused" if body.paused else "dag_unpaused", user.username, auth.client_ip(request), {"id": pk})
     return {"ok": True}
 
 
-@app.delete("/api/jobs/{jid}")
-async def jobs_delete(jid: int, request: Request, user: User = Depends(admin_user)):
-    j = jobs.get(jid)
-    if not j:
+@app.delete("/api/dags/{pk}")
+async def dags_delete(pk: int, request: Request, user: User = Depends(admin_user)):
+    d = dags.get(pk)
+    if not d:
         raise HTTPException(404)
-    jobs.delete(jid)
-    db.audit("job_deleted", user.username, auth.client_ip(request), {"id": jid, "name": j["name"]})
+    dags.delete(pk)
+    db.audit("dag_deleted", user.username, auth.client_ip(request), {"id": pk, "dag_id": d["dag_id"]})
     return {"ok": True}
 
 
-@app.post("/api/jobs/{jid}/run")
-async def jobs_run_now(jid: int, user: User = Depends(admin_user)):
-    """Run the actions now (as a test). Trigger placeholders get example values."""
-    j = jobs.get(jid)
-    if not j:
-        raise HTTPException(404)
-    ctx = {"summary": f"Manual test run of “{j['name']}”", "state": "test", "value": "", "threshold": "",
-           "time": time.strftime("%Y-%m-%d %H:%M:%S")}
+@app.post("/api/dags/{pk}/trigger")
+async def dags_trigger(pk: int, request: Request, user: User = Depends(admin_user)):
+    """Queue a manual run; the jobs process starts it within seconds."""
+    r = _dags(dags.trigger, pk, user.username)
+    db.audit("dag_triggered", user.username, auth.client_ip(request), {"id": pk, "run": r["run_id"]})
+    warn = None
     try:
-        return await jobs.ENGINE.run(jid, ctx, f"Run now by {user.username}", user=user.username)
-    except jobs.JobError as e:
+        s = procs.summary()["workers"].get("jobs")
+        if s and not s["ok"]:
+            warn = "The jobs process isn't running, so the run waits until it's started (Server → Processes)."
+    except Exception:  # noqa: BLE001
+        pass
+    return {**r, "warning": warn}
+
+
+@app.post("/api/dags/runs/{run_pk}/stop")
+async def dags_stop_run(run_pk: int, request: Request, user: User = Depends(admin_user)):
+    _dags(dags.stop, run_pk)
+    db.audit("dag_run_stopped", user.username, auth.client_ip(request), {"run": run_pk})
+    return {"ok": True}
+
+
+@app.get("/api/dags/{pk}/runs")
+async def dags_runs(pk: int, limit: int = 25, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(dags.runs, pk, min(max(limit, 1), 100))
+
+
+# ---- processes (Server → Processes)
+@app.get("/api/processes/summary")
+async def processes_summary(user: User = Depends(current_user)):
+    """Which background processes work (for every signed-in user: modules show a notice when theirs is down)."""
+    return {**await asyncio.to_thread(procs.summary), "is_admin": user.is_admin}
+
+
+@app.get("/api/processes")
+async def processes_status(user: User = Depends(admin_user)):
+    try:
+        return await asyncio.to_thread(procs.status)
+    except procs.ProcessError as e:
+        raise HTTPException(503, str(e))
+
+
+@app.post("/api/processes/restart-all")
+async def processes_restart_all(request: Request, user: User = Depends(admin_user)):
+    db.audit("processes_restart_all", user.username, auth.client_ip(request))
+    procs.restart_app(delay=1.0)
+    return {"ok": True}
+
+
+@app.post("/api/processes/{name}/{action}")
+async def processes_control(name: str, action: str, request: Request, user: User = Depends(admin_user)):
+    try:
+        st = await asyncio.to_thread(procs.control, name, action)
+    except procs.ProcessError as e:
         raise HTTPException(400, str(e))
+    db.audit("process_" + action, user.username, auth.client_ip(request), {"process": name})
+    return st
 
 
-@app.get("/api/jobs/{jid}/runs")
-async def jobs_runs(jid: int, user: User = Depends(admin_user)):
-    return jobs.runs(jid)
+@app.get("/api/processes/{name}/logs")
+async def processes_logs(name: str, lines: int = 200, user: User = Depends(admin_user)):
+    try:
+        return await asyncio.to_thread(procs.logs, name, lines)
+    except procs.ProcessError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.on_event("startup")
-async def _start_jobs() -> None:
-    jobs.ENGINE.start()
-    network.ENGINE.start()
+async def _start_background() -> None:
+    """The jobs scheduler and the network watcher run in their own processes (app.supervisor); only in
+    single-process mode (`python -m app --single`) does the web process run them too."""
+    dags.migrate_jobs()
+    if procs.owns("jobs"):
+        dags.SCHEDULER.start()
+    if procs.owns("network"):
+        network.ENGINE.start()
+    if procs.supervised():
+        asyncio.get_running_loop().create_task(procs.heartbeat_loop())
 
 
 # ---------------------------------------------------------------- network (admin)
@@ -1818,9 +1921,9 @@ async def delete_conversation(cid: int, user: User = Depends(admin_user)):
 # ---------------------------------------------------------------- chat websocket
 
 def _schedule_restart() -> None:
-    """Exit cleanly; systemd (Restart=always) starts the new code."""
-    loop = asyncio.get_running_loop()
-    loop.call_later(1.0, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    """Restart every process with the new code: the supervisor stops them all and exits, and systemd
+    (Restart=always) starts it again (new group memberships apply too)."""
+    procs.restart_app(delay=1.0)
 
 
 @app.websocket("/ws/console")

@@ -62,6 +62,8 @@
       <span data-icon="box"></span><span>Containers</span></button>
     <button data-view="network" class="tab nav-item admin-only" id="tab-network" title="Network">
       <span data-icon="network"></span><span>Network</span></button>
+    <button data-view="processes" class="tab nav-item admin-only" id="tab-processes" title="Processes">
+      <span data-icon="chip"></span><span>Processes</span><span class="nav-alert" id="proc-nav-alert" hidden title="A process isn't working"></span></button>
     <div class="nav-group admin-only">Automation</div>
     <button data-view="jobs" class="tab nav-item admin-only" id="tab-jobs" title="Jobs">
       <span data-icon="clock"></span><span>Jobs</span></button>
@@ -85,6 +87,7 @@
   <div class="nav-scrim" id="nav-scrim" hidden></div>
 
   <main class="main">
+  <div class="proc-banner" id="proc-banner" role="alert" hidden></div>
   <!-- ================= CHAT ================= -->
   <section id="view-chat" class="view active">
     <aside class="sidebar chat-sidebar" id="chat-sidebar" aria-label="Chats">
@@ -657,51 +660,96 @@
       <div class="page-head">
         <div>
           <h2>Jobs</h2>
-          <p class="muted small">Automations: <strong>when</strong> something happens (a schedule, a full disk, high temperature, new mail…),
-            <strong>then</strong> do something (send a warning email, run a command, ask the AI, check for updates…).</p>
+          <p class="muted small">Automations as DAGs, like Apache Airflow: <strong>triggers</strong> say when a DAG runs (a schedule,
+            a full disk, a new device, new mail…) and <strong>tasks</strong> say what it does (send an email, run a command, ask the AI…),
+            in the order their connections give. Tasks that don't depend on each other run at the same time.</p>
         </div>
-        <button type="button" class="primary" id="job-add"><span data-icon="plus"></span> New job</button>
+        <button type="button" class="primary" id="dag-add"><span data-icon="plus"></span> New DAG</button>
       </div>
-      <div id="job-list" class="job-list"></div>
+      <div id="dag-list" class="dag-list"></div>
     </div>
   </section>
 
-  <section id="view-job-edit" class="view">
+  <section id="view-dag" class="view">
     <div class="page">
-      <button type="button" class="ghost back-btn" id="job-back"><span data-icon="arrow-left"></span> Jobs</button>
-      <h2 id="job-edit-title">New job</h2>
-      <div class="job-editor">
-        <form id="job-form" class="job-form" autocomplete="off">
-          <div class="card settings-form">
-            <label>Name <input name="name" maxlength="80" required placeholder="e.g. Warn me when a disk is almost full"></label>
-            <label>Description <span class="muted small">(optional)</span><input name="description" maxlength="500"></label>
-            <label class="check"><input type="checkbox" name="enabled" checked> Enabled</label>
-          </div>
-          <div class="job-section">
-            <h3><span class="step-badge">1</span> When <span class="muted small">— the job runs when any of these happens</span></h3>
-            <div id="job-triggers" class="item-list"></div>
-            <button type="button" class="ghost" id="job-add-trigger"><span data-icon="plus"></span> Add a trigger</button>
-          </div>
-          <div class="job-section">
-            <h3><span class="step-badge">2</span> Then <span class="muted small">— these actions run in order</span></h3>
-            <div id="job-actions" class="item-list"></div>
-            <button type="button" class="ghost" id="job-add-action"><span data-icon="plus"></span> Add an action</button>
-          </div>
-          <div class="card settings-form">
-            <label class="check"><input type="checkbox" name="stop_on_error" checked> If an action fails, skip the remaining actions</label>
-          </div>
-          <p class="small" id="job-msg" hidden></p>
-          <div class="row job-buttons">
-            <button class="primary" id="job-save">Save job</button>
-            <button type="button" class="ghost" id="job-cancel">Cancel</button>
-          </div>
-        </form>
-        <aside class="card placeholder-help" id="job-placeholders">
-          <h3>Placeholders</h3>
-          <p class="muted small">Click one to insert it in the text box you were editing. They're replaced with real values when the job runs.</p>
-          <div id="ph-groups"></div>
-        </aside>
+      <button type="button" class="ghost back-btn" id="dag-back"><span data-icon="arrow-left"></span> Jobs</button>
+      <div class="page-head">
+        <div>
+          <h2 id="dag-title" data-no-i18n></h2>
+          <p class="muted small" id="dag-sub"></p>
+        </div>
+        <div class="dag-actions" id="dag-actions"></div>
       </div>
+      <div class="seg dag-tabs" id="dag-tabs" role="tablist">
+        <button type="button" class="seg-btn active" data-tab="graph">Graph</button>
+        <button type="button" class="seg-btn" data-tab="runs">Runs</button>
+        <button type="button" class="seg-btn" data-tab="code">Code</button>
+      </div>
+      <div id="dag-pane"></div>
+    </div>
+  </section>
+
+  <section id="view-dag-edit" class="view">
+    <div class="page dag-edit-page">
+      <div class="dag-edit-head">
+        <button type="button" class="ghost back-btn" id="dag-edit-back"><span data-icon="arrow-left"></span> Jobs</button>
+        <h2 id="dag-edit-title">New DAG</h2>
+        <span class="spacer"></span>
+        <div class="seg" id="dag-mode" role="tablist" aria-label="View">
+          <button type="button" class="seg-btn active" data-mode="graph">Graph</button>
+          <button type="button" class="seg-btn" data-mode="code">Code</button>
+        </div>
+        <button type="button" class="ghost" id="dag-cancel">Cancel</button>
+        <button type="button" class="primary" id="dag-save">Save</button>
+      </div>
+      <p class="small" id="dag-msg" hidden></p>
+      <div id="dag-graph-mode">
+        <div class="card settings-form dag-props">
+          <label>DAG id <input id="dag-id" class="mono" maxlength="64" placeholder="e.g. disk_alert" spellcheck="false" autocomplete="off">
+            <span class="muted small">Lowercase letters, digits and _.</span></label>
+          <label>Description <span class="muted small">(optional)</span><input id="dag-desc" maxlength="500"></label>
+          <label>At most … runs at the same time <input id="dag-mar" type="number" min="1" max="5" value="1"></label>
+          <label class="check"><input type="checkbox" id="dag-paused"> Paused (its triggers don't start it)</label>
+        </div>
+        <details class="card dag-triggers" id="dag-triggers-box" open>
+          <summary><strong>Triggers</strong> <span class="muted small">— when it runs (any of them). None = only when you start it.</span></summary>
+          <div id="job-triggers" class="item-list"></div>
+          <button type="button" class="ghost" id="dag-add-trigger"><span data-icon="plus"></span> Add a trigger</button>
+        </details>
+        <div class="dag-workspace">
+          <aside class="dag-palette card" id="dag-palette" aria-label="Operators"></aside>
+          <div class="dag-canvas-wrap" id="dag-canvas-wrap">
+            <div class="dag-canvas" id="dag-canvas"><svg class="dag-edges" id="dag-edges" aria-hidden="true"></svg></div>
+            <div class="dag-canvas-tools">
+              <button type="button" class="small ghost" id="dag-autolayout" title="Arrange the tasks automatically"><span data-icon="refresh"></span> Arrange</button>
+            </div>
+            <p class="dag-empty muted" id="dag-empty">Drag operators here from the list (or click one) to add tasks. Connect a task's
+              right dot to another task's left dot: the second one runs after the first.</p>
+          </div>
+          <aside class="dag-inspector card" id="dag-inspector"></aside>
+        </div>
+      </div>
+      <div id="dag-code-mode" hidden>
+        <p class="muted small">The DAG as Airflow-style Python. Edit it and switch back to Graph (or save) to apply. It's read, never run:
+          only plain values, <code>tasks.&lt;operator&gt;(…)</code> calls and <code>a &gt;&gt; b</code> dependencies are allowed.</p>
+        <textarea id="dag-code" class="mono dag-code" spellcheck="false" autocomplete="off" wrap="off" aria-label="DAG code"></textarea>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= PROCESSES ================= -->
+  <section id="view-processes" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Processes</h2>
+          <p class="muted small">SysAdmin.IA runs as separate processes, so one part can stop or crash without taking the others down.
+            A crashed process is restarted automatically; one stopped here stays stopped (also after a reboot) until you start it.</p>
+        </div>
+        <button type="button" class="ghost" id="proc-restart-all"><span data-icon="refresh"></span> Restart everything</button>
+      </div>
+      <p class="small muted" id="proc-mode"></p>
+      <div id="proc-list" class="proc-list"></div>
     </div>
   </section>
 
@@ -957,5 +1005,7 @@
   <script src="/static/app.js"></script>
   <script src="/static/containers.js"></script>
   <script src="/static/network.js"></script>
+  <script src="/static/processes.js"></script>
+  <script src="/static/dags.js"></script>
 </body>
 </html>

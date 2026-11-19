@@ -307,6 +307,23 @@ Reserve an address straight from a device (**Reserve address**). The router pass
 
 Anyone on the internet can then open it, so publish only apps with their own login and keep them updated. Publishing SysAdmin.IA itself needs an explicit confirmation. Both ways need Docker (Containers module).
 
+### Processes
+
+SysAdmin.IA runs as separate processes, so one part can stop or crash without taking the others down:
+
+| Process | Does | While it's stopped |
+|---|---|---|
+| Web interface | The pages and API (chat, console, monitor, every module's page) | Nothing to see: start it with `sudo sysadmin-ia process start web` |
+| Jobs scheduler | Checks DAG triggers and runs DAG tasks | No job runs; runs started by hand wait in the queue |
+| Network watcher | Periodic network scans, dynamic DNS updates, announcing `.local` names | The Network pages work, but nothing happens in the background |
+
+A supervisor (the service's main process) starts them.
+- **Crashes:** a process that crashes is restarted after a short pause. After 5 crashes in 2 minutes it's left "failed" until someone starts it.
+- **Hangs:** each process sends a sign of life every 10 seconds; one that stops answering shows as "not responding".
+- **The Processes page** (Server group, admins) shows each process with its state, process id, uptime, CPU, memory, restarts, last exit and recent output. It has **Start**, **Stop** and **Restart** for each, and **Restart everything**. A process stopped there stays stopped, also after a reboot, until it's started again. The web interface can only be restarted from the page; it can be stopped from the command line.
+- **When a process is down:** the modules that depend on it (Jobs, Network) show a notice saying what isn't working. Admins get a link to Processes; other users are asked to contact an admin. A red dot on **Processes** means something isn't running.
+- **Command line:** `sudo sysadmin-ia processes` shows them; `sudo sysadmin-ia process start|stop|restart web|jobs|network` controls them.
+
 ### Local AI (Ollama on this server)
 
 The **Local AI** module (Settings) runs open AI models on the server itself with [Ollama](https://ollama.com). Prompts never leave the server, and there's no per-use cost.
@@ -331,16 +348,42 @@ Existing installations need the updated root helper for install and service cont
 
 ### Jobs, variables and mail accounts (Automation)
 
-**Jobs** are automations: *when* something happens, *then* do something. A job has one or more triggers (it runs when any of them fires) and a list of actions that run in order. **Run now** tests a job straight away.
+**Jobs** are DAGs (directed acyclic graphs), the way Apache Airflow does it:
+- **Triggers** say *when* a DAG runs: a schedule or an event (full disk, new device, new mail… see the table below). It runs when any of them fires. A DAG without triggers only runs when you start it (**Run now**).
+- **Tasks** say *what* it does. Each task is an *operator* (send an email, run a command, ask the AI…) with its settings. Connections between tasks set the order: a task runs once the tasks before it have finished. Tasks that don't depend on each other run at the same time (up to 4 per run).
+- **Per task:** retries (with a wait between tries), a time limit (`execution_timeout`), and a **trigger rule**:
+  - `all_success` (default): all the tasks before it succeeded;
+  - `all_done`: they all finished, whatever the result;
+  - `none_failed`: none of them failed (skipped ones are fine);
+  - `one_success` / `one_failed` / `all_failed`: e.g. `one_failed` runs a "send a warning" task only when something before it failed.
+- **Flow operators:** **Condition** continues only if a value meets a test (not empty, equals, contains, greater than…); when it's false, everything after it is skipped (Airflow's ShortCircuitOperator). **Wait** pauses. **Join** does nothing and is a meeting point for branches.
 
-**History** shows the last 100 runs. Each run shows how long it took and how many actions succeeded, then what triggered it (with the values the trigger saw), then each action's result and duration. Expand **Details** to see:
-- for an email: the full message
-- for a webhook: the request and the response
-- for a command: its full output
-- for Ask the AI: the question and answer
-- for Set a variable: the old and new value
+**The editor** (New DAG or Edit):
+- **Graph:** drag operators from the list on the left onto the canvas (or click one: it's added after the selected task and connected to it). Drag a task to move it. Drag from a task's right dot to another task's left dot to make the second run after the first; loops are refused. Click a connection, then press Delete (or its ×) to remove it. The panel on the right edits the selected task: its id, settings, retries, time limit, trigger rule, and the placeholders it can use. **Arrange** lays the tasks out automatically.
+- **Code:** the same DAG as Airflow-style Python. Edit it and switch back to Graph (or save) to apply. The code is only read, never run: just plain values, `tasks.<operator>(…)`, `triggers.<trigger>(…)` and dependencies (`a >> b`, `a >> [b, c]`, `[a, b] >> c`, `a << b`, `set_downstream`). Mistakes are reported with their line number.
 
-**Check for updates** says whether an update was found (from which version to which, the versions it includes and their release notes) and whether it was installed. When it installs one, the app restarts, and the outcome ("now runs 1.6.0" or "failed and was rolled back") is added to the same run afterwards.
+```python
+from sysadmin_ia import DAG, triggers, tasks
+
+with DAG(dag_id="disk_alert", description="Warn me when a disk is almost full",
+         triggers=[triggers.disk_usage(threshold=90, repeat_minutes=60)]) as dag:
+    biggest = tasks.run_command(task_id="biggest", command="du -xh / --max-depth=2 | sort -rh | head -20")
+    found = tasks.short_circuit(task_id="found", value="{{tasks.biggest.output}}", op="not_empty")
+    explain = tasks.ask_ai(task_id="explain", prompt="What can I delete?\n{{tasks.biggest.output}}", retries=2, retry_delay=30)
+    mail = tasks.send_mail(task_id="mail", account=1, to="{{var.alert_email}}", subject="{{trigger.summary}}",
+                           body="{{tasks.explain.output}}")
+    biggest >> found >> explain >> mail
+```
+
+**The DAG page:**
+- **Graph:** the DAG with each task coloured by its state in the chosen run (success, failed, running, skipped, upstream failed, up for retry). Click a task to see its message, output and details.
+- **Runs:** a grid like Airflow's, with one column per run (newest first) and one row per task. Below it is the list of runs: why each one started, when, and how long it took. Running or queued runs can be stopped.
+- **Code:** read-only.
+- **Controls:** each DAG can be paused (the switch on its card) or started by hand. At most N runs of a DAG happen at once (default 1); later ones wait in the queue. The last 100 runs are kept.
+
+**Check for updates** says whether an update was found and whether it was installed. When it installs one, the processes restart, and the outcome ("now runs 1.6.0" or "failed and was rolled back") is added to the run's note afterwards.
+
+Existing jobs from before were turned into DAGs automatically, once: their triggers stay, their actions became a chain of tasks, and `{{steps.N.output}}` became `{{tasks.<id>.output}}`.
 
 | Triggers (When) | |
 |---|---|
@@ -363,8 +406,9 @@ Existing installations need the updated root helper for install and service cont
 
 Condition triggers (disk, CPU, memory, load, temperature, service, containers, Docker, Local AI, AI usage) fire when the problem starts. They fire again every N minutes while it lasts (0 = only once), and optionally once more when it's back to normal: in actions, `{{trigger.state}}` is `alert` or `recovered`. The engine checks every 20 seconds.
 
-| Actions (Then) | |
+| Operators (tasks) | |
 |---|---|
+| Condition / Wait / Join | Flow control: continue only if…, pause, join branches |
 | Send an email | Through a mail account, with subject and message filled from placeholders |
 | Call a webhook | POST/GET to Slack, Teams, Discord, ntfy or any URL |
 | Run a command | A shell command as the `sysadmin-ia` user; its output is available to later actions |
@@ -379,11 +423,11 @@ Condition triggers (disk, CPU, memory, load, temperature, service, containers, D
 | Check for updates | Optionally install the update |
 | Set a variable | Store a value, e.g. the time of the last alert |
 
-In the editor, the trigger and action lists are grouped by the module they belong to (Server, Containers, AI, Mail, SysAdmin.IA…).
+In the editor, the triggers and the operators are grouped by the module they belong to (Notify, Server, Containers, AI, Network, Flow…).
 
-**Placeholders** in any action text are replaced when the job runs. The editor lists the ones available (click one to insert it):
+**Placeholders** in any task's text are replaced when it runs. The editor lists the ones the selected task can use (click one to insert it):
 - `{{trigger.summary}}`, `{{trigger.value}}`, `{{trigger.mount}}`, `{{mail.subject}}`, … come from the trigger.
-- `{{last.output}}` and `{{steps.2.output}}` come from earlier actions.
+- `{{tasks.<task_id>.output}}` (like Airflow's XCom) is the output of any task before it, and `{{tasks.<task_id>.exit_code}}` is a command's exit code. `{{last.output}}` is the output of the task right before it (the one that finished last).
 - `{{var.NAME}}` inserts one of your variables.
 - `{{sys.hostname}}`, `{{sys.ip}}`, `{{sys.datetime}}`, `{{sys.url}}`, … are built in.
 
@@ -403,7 +447,7 @@ Percentages and temperatures are plain numbers (`CPU {{mon.cpu_percent}}%`), and
 
 **Mail accounts** let jobs send mail (SMTP) and read mail (IMAP). Presets fill in the servers for Gmail, Outlook / Microsoft 365, Yahoo, iCloud and a local mail relay. Use an *app password* where the provider requires one, and use **Test** to check the settings (optionally sending a test message).
 
-Jobs run inside the app, so they only run while it's running. Commands run with the app user's permissions (sudo only with full access). Job changes and runs are recorded in the audit log.
+DAGs run in the **jobs process** (see **Processes**), so they only run while it's running; if it's stopped, the Jobs page says so and runs you start wait in the queue. Commands run with the app user's permissions (sudo only with full access). DAG changes and runs are recorded in the audit log.
 
 ### Console
 
@@ -476,6 +520,8 @@ browser ─HTTP(S)/WebSocket─► FastAPI (app/main.py) ──► AI connection
                        SQLite: users, sessions, conversations, audit log
 ```
 
+- `app/supervisor.py`: the service's main process (`python -m app`). It starts the worker processes (`python -m app.worker web|jobs|network`), restarts them when they crash, and takes start/stop/restart requests from the web interface and the CLI on 127.0.0.1, with a token kept in the data folder. `app/procs.py` is the client side. The processes share the SQLite database (WAL mode). The web interface hands work to the jobs process through it (queued runs, stop requests).
+- `app/dags.py`: jobs as DAGs: the model, the Airflow-style code view (parsed with Python's `ast`, never executed), and the scheduler/executor that runs in the jobs process.
 - `app/agent.py`: the Claude loop. It streams replies (with summarized reasoning), runs tools after approval, and stores full message history, including thinking blocks, so conversations can be resumed.
 - `app/tools.py`: a persistent bash session per conversation (stdin is `/dev/null`, per-command timeout, output truncated to 30 KB), and a text editor with automatic backups.
 - `app/monitor.py`: psutil and systemd metrics.
@@ -488,5 +534,6 @@ python3 -m venv .venv && . .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env   # API keys optional here; add connections in the AI connections module
 python -m app.cli create-user admin
-python -m app          # http://127.0.0.1:8765
+python -m app          # http://127.0.0.1:8765 (supervisor + web, jobs and network processes)
+python -m app --single # everything in one process (simpler to debug; Processes can't control the parts)
 ```

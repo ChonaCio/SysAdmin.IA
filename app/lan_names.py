@@ -102,12 +102,26 @@ def _stop(name: str) -> None:
 
 
 def sync_mdns() -> None:
-    """Make the running avahi-publish processes match the saved .local names (restarting any that stopped)."""
-    if not avahi_available():
+    """Make the running avahi-publish processes match the saved .local names (restarting any that stopped).
+    Only the network watcher process does this (procs.owns("network")); the web interface just saves the names
+    and shows the state the watcher records in the database."""
+    from . import procs
+    if not procs.owns("network") or not avahi_available():
         return
+    try:
+        _sync_mdns()
+    finally:
+        try:
+            state = {n: dict(zip(("state", "error"), _mdns_state(n))) for n in _procs}
+            db.set_setting("lan_mdns_state", json.dumps({"at": time.time(), "names": state}))
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _sync_mdns() -> None:
     with _lock:
         _clean_strays()
-        want ={n["name"]: n["ip"] for n in _load("lan_names")}
+        want = {n["name"]: n["ip"] for n in _load("lan_names")}
         for name in list(_procs):
             if name not in want or _procs[name]["ip"] != want[name]:
                 _stop(name)
@@ -134,6 +148,17 @@ def _avahi_error(text: str) -> str:
 def _mdns_state(name: str) -> tuple[str, str | None]:
     if not avahi_available():
         return "error", "avahi-publish isn't installed (package avahi-utils)."
+    from . import procs
+    if not procs.owns("network"):
+        # another process (the network watcher) announces the names: read what it last recorded
+        try:
+            rec = json.loads(db.get_setting("lan_mdns_state") or "{}")
+        except ValueError:
+            rec = {}
+        if not rec or time.time() - float(rec.get("at") or 0) > 60:
+            return "error", "The network watcher isn't running, so .local names aren't announced. See Server → Processes."
+        n = (rec.get("names") or {}).get(name)
+        return (n["state"], n.get("error")) if n else ("pending", None)
     e = _procs.get(name)
     if not e:
         return "pending", None
