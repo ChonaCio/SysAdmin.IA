@@ -652,6 +652,10 @@ def _clean_items(items: list, catalog_: dict, what: str) -> list[dict]:
                 if f.get("need") == "read" and not acc["config"].get("imap_host"):
                     raise JobError(f"{label}: “{acc['name']}” can't read mail (no incoming server).")
                 v = acc["id"]
+            if ft == "pyenv" and v:
+                from . import pyenvs
+                if not pyenvs.exists(v):
+                    raise JobError(f"{label}: the Python environment “{v}” doesn't exist (Automation → Python environments).")
             if ft == "ai_connection" and v and not ai.get(int(v)):
                 raise JobError(f"{label}: that AI connection no longer exists.")
             if ft == "choice" and v:

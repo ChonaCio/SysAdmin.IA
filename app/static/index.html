@@ -69,6 +69,8 @@
       <span data-icon="clock"></span><span>Jobs</span></button>
     <button data-view="variables" class="tab nav-item admin-only" id="tab-variables" title="Variables">
       <span data-icon="braces"></span><span>Variables</span></button>
+    <button data-view="pyenvs" class="tab nav-item admin-only" id="tab-pyenvs" title="Python environments">
+      <span data-icon="python"></span><span>Python environments</span></button>
     <button data-view="mail" class="tab nav-item admin-only" id="tab-mail" title="Mail accounts">
       <span data-icon="mail"></span><span>Mail accounts</span></button>
     <div class="nav-group admin-only">Settings</div>
@@ -753,6 +755,23 @@
     </div>
   </section>
 
+  <!-- ================= PYTHON ENVIRONMENTS ================= -->
+  <section id="view-pyenvs" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Python environments</h2>
+          <p class="muted small">Separate Python installations for the <strong>Run Python</strong> job task, each with its own
+            packages and, if you like, its own Python version. Pick one in the task's settings.</p>
+        </div>
+        <button type="button" class="primary" id="pyenv-add"><span data-icon="plus"></span> New environment</button>
+      </div>
+      <div class="card" id="pyenv-server"></div>
+      <div class="card" id="pyenv-tasks" hidden></div>
+      <div id="pyenv-list" class="proc-list"></div>
+    </div>
+  </section>
+
   <!-- ================= VARIABLES ================= -->
   <section id="view-variables" class="view">
     <div class="page">
@@ -1007,5 +1026,6 @@
   <script src="/static/network.js"></script>
   <script src="/static/processes.js"></script>
   <script src="/static/dags.js"></script>
+  <script src="/static/pyenvs.js"></script>
 </body>
 </html>

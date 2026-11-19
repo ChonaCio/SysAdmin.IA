@@ -4,7 +4,7 @@
 
 state.net = { tab: "devices", filter: "", kind: "", onlyNew: false };
 const NET_ICON = { router: "router", this_server: "server", computer: "computer", phone: "phone", tv: "tv", media: "media",
-  speaker: "speaker", printer: "printer", nas: "nas", camera: "camera", iot: "iot", home: "home", console: "console",
+  speaker: "speaker", printer: "printer", nas: "nas", camera: "camera", iot: "iot", home: "home", console: "gamepad",
   server: "server", network: "network", unknown: "question" };
 
 function netAgo(ts) {

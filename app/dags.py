@@ -89,11 +89,65 @@ FLOW_OPERATORS: dict[str, dict] = {
         "fields": [],
         "provides": [],
     },
+    "start": {
+        "label": "Start", "icon": "play", "group": "Flow",
+        "description": "Does nothing: marks where the DAG begins (like an EmptyOperator called “start” in Airflow). "
+                       "Connect the first tasks after it.",
+        "fields": [],
+        "provides": [],
+    },
+    "end": {
+        "label": "End", "icon": "flag", "group": "Flow",
+        "description": "Does nothing: marks where the DAG ends. Connect the last tasks to it; with the trigger rule "
+                       "“all_done” it runs even when something before it failed.",
+        "fields": [],
+        "provides": [],
+    },
+}
+
+_CODE_HELP = ("SAI_CONTEXT (an environment variable) holds the run as JSON: trigger values, dag, run, "
+              "and every earlier task's output (tasks.<task_id>.output).")
+CODE_OPERATORS: dict[str, dict] = {
+    "run_python": {
+        "label": "Run Python", "icon": "code", "group": "Code",
+        "description": "Run Python code with the server's Python or one of your Python environments (Automation → Python "
+                       "environments). What it prints is its output for later tasks; an error or a non-zero exit fails the task.",
+        "fields": [
+            {"key": "venv", "label": "Python", "type": "pyenv", "default": "",
+             "help": "Base Python is the server's python3. Environments can have other Python versions and packages."},
+            {"key": "code", "label": "Code", "type": "textarea", "mono": True, "required": True,
+             "default": "import json, os\n\nctx = json.loads(os.environ[\"SAI_CONTEXT\"])   # trigger values, earlier tasks' outputs\n"
+                        "print(f\"Hello from {ctx['dag']['id']}\")\n",
+             "help": _CODE_HELP + " Placeholders like {{var.x}} are filled in as text before it runs."},
+            {"key": "args", "label": "Arguments", "type": "text", "default": "", "placeholder": "optional, e.g. --dry-run {{trigger.mount}}",
+             "help": "Given to the code as sys.argv[1:]."},
+            {"key": "workdir", "label": "Working folder", "type": "text", "default": "", "placeholder": "empty = the app's data folder"},
+            {"key": "timeout", "label": "Time limit (seconds)", "type": "number", "min": 1, "max": 86400, "default": 300},
+        ],
+        "provides": ["last.output", "last.exit_code"],
+    },
+    "run_shell": {
+        "label": "Run console", "icon": "console", "group": "Code",
+        "description": "Run a script of console (shell) commands, several lines like in the Console module, as the app's user. "
+                       "What it prints is its output for later tasks.",
+        "fields": [
+            {"key": "script", "label": "Script", "type": "textarea", "mono": True, "required": True,
+             "default": "echo \"Disk usage:\"\ndf -h /\n", "help": _CODE_HELP},
+            {"key": "shell", "label": "Shell", "type": "select", "default": "bash", "options": [["bash", "bash"], ["sh", "sh"]]},
+            {"key": "stop_on_error", "label": "Stop at the first command that fails", "type": "bool", "default": True,
+             "help": "set -e (and pipefail in bash): the task fails as soon as a command fails."},
+            {"key": "workdir", "label": "Working folder", "type": "text", "default": "", "placeholder": "empty = the app's data folder"},
+            {"key": "env", "label": "Environment variables", "type": "textarea", "mono": True, "default": "",
+             "placeholder": "NAME=value, one per line (placeholders allowed)"},
+            {"key": "timeout", "label": "Time limit (seconds)", "type": "number", "min": 1, "max": 86400, "default": 300},
+        ],
+        "provides": ["last.output", "last.exit_code"],
+    },
 }
 
 
 def operators() -> dict[str, dict]:
-    return {**J.ACTIONS, **FLOW_OPERATORS}
+    return {**J.ACTIONS, **CODE_OPERATORS, **FLOW_OPERATORS}
 
 
 class DagError(J.JobError):
@@ -679,7 +733,110 @@ async def _op_empty(p: dict, ctx: dict) -> tuple[str, str]:
     return "Done.", ""
 
 
-OP_FUNCS = {**J.ACTION_FUNCS, "short_circuit": _op_short_circuit, "wait": _op_wait, "empty": _op_empty}
+# ---------------------------------------------------------------- code operators (Run Python, Run console)
+def _context_json(ctx: dict) -> str:
+    keep = {k: ctx.get(k) for k in ("trigger", "dag", "run", "tasks", "last", "mail", "update", "ai") if k in ctx}
+    return json.dumps(keep, default=str)
+
+
+def _workdir(p: dict, ctx: dict) -> str:
+    from .config import settings
+    w = V.render(p.get("workdir") or "", ctx).strip()
+    if not w:
+        return str(settings.data_dir)
+    from pathlib import Path
+    if not Path(w).is_absolute():
+        raise J.JobError(f"The working folder must be a full path (starting with /), not “{w[:80]}”.")
+    if not Path(w).is_dir():
+        raise J.JobError(f"The working folder {w} doesn't exist.")
+    return w
+
+
+async def _run_process(argv: list[str], ctx: dict, p: dict, shown: str, env: dict | None = None) -> tuple[str, str]:
+    """Run, collect output (≤ 8000 chars kept), fail on a non-zero exit. Output becomes {{last.output}}."""
+    import os
+    timeout = int(p.get("timeout") or 300)
+    proc = await asyncio.create_subprocess_exec(
+        *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL,
+        cwd=_workdir(p, ctx), env={**os.environ, "SAI_CONTEXT": _context_json(ctx), "PYTHONUNBUFFERED": "1", **(env or {})},
+        start_new_session=os.name != "nt")
+    try:
+        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await proc.wait()
+        raise J.JobError(f"It took longer than {timeout} seconds and was stopped.", details=shown)
+    except asyncio.CancelledError:
+        proc.kill()
+        raise
+    text = out.decode("utf-8", "replace").strip()
+    if len(text) > 8000:
+        text = text[:4000] + "\n…\n" + text[-3900:]
+    ctx["last"] = {"output": text, "exit_code": proc.returncode}
+    details = f"{shown}\n\n— Output —\n{text or '(no output)'}\n\n[exit code {proc.returncode}]"
+    if proc.returncode != 0:
+        last_line = (text.splitlines() or [""])[-1][:200]
+        raise J.JobError(f"It failed (exit code {proc.returncode}){': ' + last_line if last_line else ''}", details=details)
+    n = len(text.splitlines())
+    first = (text.splitlines() or [""])[0][:160]
+    return (f"Exit code 0 · {n} line{'s' if n != 1 else ''} of output" + (f": {first}" if first else "")
+            if text else "Exit code 0 (no output)."), details
+
+
+async def _op_run_python(p: dict, ctx: dict) -> tuple[str, str]:
+    import os
+    import shlex
+    import tempfile
+    from . import pyenvs
+    from .config import settings
+    try:
+        py = pyenvs.env_python(p["venv"]) if p.get("venv") else pyenvs.base_python()
+    except pyenvs.PyEnvError as e:
+        raise J.JobError(str(e))
+    code = V.render(p.get("code") or "", ctx)
+    try:
+        args = shlex.split(V.render(p.get("args") or "", ctx))
+    except ValueError as e:
+        raise J.JobError(f"The arguments can't be read: {e}")
+    tmp = settings.data_dir / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    fd, path = tempfile.mkstemp(prefix="dag-", suffix=".py", dir=str(tmp))
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(code)
+    try:
+        where = f"environment “{p['venv']}”" if p.get("venv") else "base Python"
+        return await _run_process([py, "-u", path, *args], ctx, p, f"# {where}: {py}\n{code}")
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+async def _op_run_shell(p: dict, ctx: dict) -> tuple[str, str]:
+    import shutil
+    shell = p.get("shell") if p.get("shell") in ("bash", "sh") else "bash"
+    exe = shutil.which(shell)
+    if not exe:
+        raise J.JobError(f"{shell} isn't installed on this server.")
+    script = V.render(p.get("script") or "", ctx)
+    if p.get("stop_on_error", True):
+        script = ("set -eo pipefail\n" if shell == "bash" else "set -e\n") + script
+    env = {}
+    for i, line in enumerate((p.get("env") or "").splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        k, sep, v = line.partition("=")
+        if not sep or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k.strip()):
+            raise J.JobError(f"Environment variables, line {i}: write NAME=value.")
+        env[k.strip()] = V.render(v, ctx)
+    shown = f"# {shell}" + (f" (+ {', '.join(env)})" if env else "") + f"\n{script}"
+    return await _run_process([exe, "-c", script], ctx, p, shown, env)
+
+
+OP_FUNCS = {**J.ACTION_FUNCS, "short_circuit": _op_short_circuit, "wait": _op_wait, "empty": _op_empty,
+            "start": _op_empty, "end": _op_empty, "run_python": _op_run_python, "run_shell": _op_run_shell}
 
 
 # ---------------------------------------------------------------- scheduler / executor (jobs process)
@@ -964,4 +1121,11 @@ SCHEDULER = DagScheduler()
 def catalog() -> dict:
     """Everything the DAG editor needs: operators (grouped by module), triggers, trigger rules, choices."""
     base = J.catalog()
-    return {**base, "operators": operators(), "trigger_rules": TRIGGER_RULES}
+    from . import pyenvs
+    try:
+        envs = [{"value": e["name"], "label": f"{e['name']} (Python {e['version'] or '?'})"} for e in pyenvs.list_envs(with_size=False) if e["ok"]]
+        bp = pyenvs.base_python()
+        base_label = f"Base Python ({pyenvs._version_of(bp) or 'python3'})"
+    except Exception:  # noqa: BLE001
+        envs, base_label = [], "Base Python"
+    return {**base, "operators": operators(), "trigger_rules": TRIGGER_RULES, "pyenvs": envs, "base_python": base_label}

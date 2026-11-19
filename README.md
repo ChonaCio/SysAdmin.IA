@@ -356,7 +356,8 @@ Existing installations need the updated root helper for install and service cont
   - `all_done`: they all finished, whatever the result;
   - `none_failed`: none of them failed (skipped ones are fine);
   - `one_success` / `one_failed` / `all_failed`: e.g. `one_failed` runs a "send a warning" task only when something before it failed.
-- **Flow operators:** **Condition** continues only if a value meets a test (not empty, equals, contains, greater than…); when it's false, everything after it is skipped (Airflow's ShortCircuitOperator). **Wait** pauses. **Join** does nothing and is a meeting point for branches.
+- **Flow operators:** **Condition** continues only if a value meets a test (not empty, equals, contains, greater than…); when it's false, everything after it is skipped (Airflow's ShortCircuitOperator). **Wait** pauses. **Join** does nothing and is a meeting point for branches. **Start** and **End** do nothing either (Airflow's EmptyOperator): they mark where the DAG begins and ends. Give End the trigger rule `all_done` to have it run whatever happened before it.
+- **Code operators:** **Run Python** runs Python code with the base Python (the server's `python3`) or one of your **Python environments** (below). **Run console** runs a multi-line shell script (bash or sh), by default with `set -e` (and `pipefail` in bash) so it stops at the first failing command, plus optional `NAME=value` environment variables. In both, what the code prints is the task's output (`{{tasks.<id>.output}}`), a non-zero exit fails the task, and the environment variable `SAI_CONTEXT` holds the run as JSON (trigger values, dag, run, and every earlier task's output). You can also set arguments (Python's `sys.argv[1:]`), a working folder (default: the app's data folder) and a time limit.
 
 **The editor** (New DAG or Edit):
 - **Graph:** drag operators from the list on the left onto the canvas (or click one: it's added after the selected task and connected to it). Drag a task to move it. Drag from a task's right dot to another task's left dot to make the second run after the first; loops are refused. Click a connection, then press Delete (or its ×) to remove it. The panel on the right edits the selected task: its id, settings, retries, time limit, trigger rule, and the placeholders it can use. **Arrange** lays the tasks out automatically.
@@ -409,6 +410,9 @@ Condition triggers (disk, CPU, memory, load, temperature, service, containers, D
 | Operators (tasks) | |
 |---|---|
 | Condition / Wait / Join | Flow control: continue only if…, pause, join branches |
+| Start / End | Do nothing; mark where the DAG begins and ends |
+| Run Python | Python code, with the base Python or a Python environment |
+| Run console | A shell script (bash or sh), several lines, with optional environment variables |
 | Send an email | Through a mail account, with subject and message filled from placeholders |
 | Call a webhook | POST/GET to Slack, Teams, Discord, ntfy or any URL |
 | Run a command | A shell command as the `sysadmin-ia` user; its output is available to later actions |
@@ -448,6 +452,14 @@ Percentages and temperatures are plain numbers (`CPU {{mon.cpu_percent}}%`), and
 **Mail accounts** let jobs send mail (SMTP) and read mail (IMAP). Presets fill in the servers for Gmail, Outlook / Microsoft 365, Yahoo, iCloud and a local mail relay. Use an *app password* where the provider requires one, and use **Test** to check the settings (optionally sending a test message).
 
 DAGs run in the **jobs process** (see **Processes**), so they only run while it's running; if it's stopped, the Jobs page says so and runs you start wait in the queue. Commands run with the app user's permissions (sudo only with full access). DAG changes and runs are recorded in the audit log.
+
+**Python environments** (Automation → Python environments, admins only) are virtual environments for the Run Python task, each with its own packages and Python version:
+- **New environment:** a name (tasks refer to it by name, so it can't be renamed), the Python to use, optional packages (like `pip install`: `requests pandas>=2.2`) and a description. Creating it and installing packages run in the background, with their output shown live on the page.
+- **Python versions:** the base Python or any `python3.X` installed on the server work out of the box (`python -m venv`). For other versions, click **Install uv**: [uv](https://github.com/astral-sh/uv) is installed into the app's own folder (not system-wide), and then you can type any version (e.g. `3.9` or `3.13`); it's downloaded the first time into the data folder.
+- **Packages:** list, filter, install (optionally upgrading) and remove. Package options such as `-r` or `--index-url` aren't accepted.
+- **Edit** changes the description. **Delete** removes the environment and its packages, and warns about DAGs that use it (their Run Python tasks fail until you pick another environment).
+
+Environments live in `<data folder>/pyenvs/<name>`; uv lives in `<data folder>/tools/uv` and the Pythons it downloads in `<data folder>/pythons`.
 
 ### Console
 

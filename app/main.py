@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
 from . import containers, firewall, lan_names, local_ai, model_search, network, publish, routers, user_prefs, variables
-from . import dags, procs
+from . import dags, procs, pyenvs
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -1127,6 +1127,93 @@ async def dags_stop_run(run_pk: int, request: Request, user: User = Depends(admi
 @app.get("/api/dags/{pk}/runs")
 async def dags_runs(pk: int, limit: int = 25, user: User = Depends(admin_user)):
     return await asyncio.to_thread(dags.runs, pk, min(max(limit, 1), 100))
+
+
+# ---- Python environments (Automation → Python environments; the "Run Python" operator)
+class PyEnvBody(BaseModel):
+    name: str
+    python: str = ""          # "" = the server's python3, an interpreter path, or a version like 3.12 (uv)
+    packages: str = ""
+    description: str = ""
+
+
+class PyEnvEditBody(BaseModel):
+    description: str = ""
+
+
+class PyEnvPkgBody(BaseModel):
+    packages: str = ""
+    upgrade: bool = False
+
+
+class PyEnvUninstallBody(BaseModel):
+    package: str
+
+
+def _py(fn, *a):
+    try:
+        return fn(*a)
+    except pyenvs.PyEnvError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/pyenvs")
+async def pyenvs_status(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(pyenvs.status)
+
+
+@app.post("/api/pyenvs")
+async def pyenvs_create(body: PyEnvBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_py, pyenvs.create, body.name, body.python, body.packages, body.description)
+    db.audit("pyenv_created", user.username, auth.client_ip(request), {"name": body.name, "python": body.python or "base",
+                                                                      "packages": body.packages[:500]})
+    return t
+
+
+@app.post("/api/pyenvs/uv")
+async def pyenvs_install_uv(request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_py, pyenvs.install_uv)
+    db.audit("uv_installed", user.username, auth.client_ip(request))
+    return t
+
+
+@app.get("/api/pyenvs/tasks/{tid}")
+async def pyenvs_task(tid: str, user: User = Depends(admin_user)):
+    return _py(pyenvs.task, tid)
+
+
+@app.put("/api/pyenvs/{name}")
+async def pyenvs_edit(name: str, body: PyEnvEditBody, request: Request, user: User = Depends(admin_user)):
+    e = await asyncio.to_thread(_py, pyenvs.update, name, body.description)
+    db.audit("pyenv_updated", user.username, auth.client_ip(request), {"name": name})
+    return e
+
+
+@app.delete("/api/pyenvs/{name}")
+async def pyenvs_delete(name: str, request: Request, user: User = Depends(admin_user)):
+    used = pyenvs.used_by(name)
+    await asyncio.to_thread(_py, pyenvs.delete, name)
+    db.audit("pyenv_deleted", user.username, auth.client_ip(request), {"name": name, "used_by": used})
+    return {"ok": True, "used_by": used}
+
+
+@app.get("/api/pyenvs/{name}/packages")
+async def pyenvs_packages(name: str, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_py, pyenvs.packages, name)
+
+
+@app.post("/api/pyenvs/{name}/install")
+async def pyenvs_install(name: str, body: PyEnvPkgBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_py, pyenvs.install, name, body.packages, body.upgrade)
+    db.audit("pyenv_packages_installed", user.username, auth.client_ip(request), {"name": name, "packages": body.packages[:500]})
+    return t
+
+
+@app.post("/api/pyenvs/{name}/uninstall")
+async def pyenvs_uninstall(name: str, body: PyEnvUninstallBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_py, pyenvs.uninstall, name, body.package)
+    db.audit("pyenv_package_removed", user.username, auth.client_ip(request), {"name": name, "package": body.package})
+    return t
 
 
 # ---- processes (Server → Processes)

@@ -52,6 +52,9 @@ const ICON = {
   mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>',
   braces: '<path d="M8 4H7a2 2 0 0 0-2 2v4l-2 2 2 2v4a2 2 0 0 0 2 2h1M16 4h1a2 2 0 0 1 2 2v4l2 2-2 2v4a2 2 0 0 1-2 2h-1"/>',
   play: '<path d="M7 4l13 8-13 8z"/>',
+  code: '<path d="M8 6l-6 6 6 6M16 6l6 6-6 6M14 4l-4 16"/>',
+  flag: '<path d="M5 21V4M5 4h12l-2.5 4.5L17 13H5"/>',
+  python: '<path d="M12 3c-4 0-4 1.8-4 3v2h4.5v1H6c-2 0-3 1.5-3 4s1 4 3 4h2v-2.5c0-1.4 1.1-2.5 2.5-2.5h4c1.4 0 2.5-1.1 2.5-2.5V6c0-1.6-1.6-3-5.5-3z"/><path d="M12 21c4 0 4-1.8 4-3v-2h-4.5v-1H18c2 0 3-1.5 3-4"/><path d="M10.5 5.5h.01M13.5 18.5h.01"/>',
   pause: '<path d="M8 5v14M16 5v14"/>',
   history: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5M12 7v5l3 2"/>',
   "arrow-down": '<path d="M12 5v14M6 13l6 6 6-6"/>',
@@ -76,7 +79,7 @@ const ICON = {
   camera: '<path d="M3 8a2 2 0 0 1 2-2h2l2-2h6l2 2h2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="12.5" r="3.5"/>',
   iot: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z"/>',
   home: '<path d="M3 11l9-7 9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/>',
-  console: '<path d="M6 8h12a4 4 0 0 1 3.8 5.2l-1.3 4A2.5 2.5 0 0 1 16 18l-2-2h-4l-2 2a2.5 2.5 0 0 1-4.5-.8l-1.3-4A4 4 0 0 1 6 8z"/><path d="M7 11v3M5.5 12.5h3M15.5 12h.01M17.5 13.5h.01"/>',
+  gamepad: '<path d="M6 8h12a4 4 0 0 1 3.8 5.2l-1.3 4A2.5 2.5 0 0 1 16 18l-2-2h-4l-2 2a2.5 2.5 0 0 1-4.5-.8l-1.3-4A4 4 0 0 1 6 8z"/><path d="M7 11v3M5.5 12.5h3M15.5 12h.01M17.5 13.5h.01"/>',
   server: '<rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/>',
   question: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14M12 17h.01"/>',
   moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/>',
@@ -179,6 +182,7 @@ function switchView(v) {
   if (v === "ai") loadAi();
   if (v === "jobs" && window.loadDags) loadDags();
   if (v === "processes" && window.loadProcesses) loadProcesses();
+  if (v === "pyenvs" && window.loadPyEnvs) loadPyEnvs();
   if (window.checkProcBanner) checkProcBanner(v);
   if (v === "localai") loadLocalAI();
   if (v === "containers" && window.loadDocker) loadDocker();
@@ -2888,6 +2892,14 @@ function jobField(fd, value) {
       input = el("select", {}, opts(cat.ai_connections.map((c) => [c.value, c.label]), [["", "Default connection"]]));
       input.value = value ? String(value) : "";
       break;
+    case "pyenv": {    // Python environment, or "" = the server's base Python
+      const envs = cat.pyenvs || [];
+      input = el("select", {}, opts(envs.map((e) => [e.value, e.label]), [["", cat.base_python || "Base Python"]]));
+      const v = value || "";
+      if (v && !envs.some((e) => e.value === v)) input.append(el("option", { value: v }, `${v} (not found now)`));
+      input.value = v;
+      break;
+    }
     case "choice": {   // containers, stacks, local models (lists from the server)
       const list = (cat.choices || {})[fd.source] || [];
       const empty = { containers: "No containers yet", stacks: "No stacks yet", local_models: "No models installed" }[fd.source] || "None";

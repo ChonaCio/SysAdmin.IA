@@ -1038,3 +1038,17 @@ svg.dag-edges g.edge-del circle { fill: var(--crit); } svg.dag-edges g.edge-del 
   .dag-palette { position: static; max-height: 240px; }
   .dag-canvas-wrap { min-height: 360px; }
 }
+
+/* ---- Python environments */
+#pyenv-server .proc-facts code { font-size: 12px; word-break: break-all; }
+#pyenv-tasks { display: grid; gap: 8px; }
+#pyenv-tasks .proc-logs summary { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pyenv-pkg-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.pyenv-pkg-head input { max-width: 200px; }
+.pyenv-pkgs { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; }
+.pyenv-pkgs p { margin: 10px 12px; }
+.pyenv-pkg-table { width: 100%; border-collapse: collapse; }
+.pyenv-pkg-table td { padding: 4px 10px; border-bottom: 1px solid var(--border); word-break: break-all; }
+.pyenv-pkg-table tr:last-child td { border-bottom: 0; }
+.pyenv-pkg-table td:last-child { width: 1%; text-align: right; }
+.pyenv-pkg-table button { padding: 2px 6px; min-height: 0; }
