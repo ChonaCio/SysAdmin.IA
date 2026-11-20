@@ -878,18 +878,9 @@ class NetworkEngine:
                 "last_scan": last, "scanning": progress().get("state") == "running"}
 
     async def _loop(self) -> None:
-        from . import lan_names
-        await asyncio.sleep(2)
-        try:
-            await asyncio.to_thread(lan_names.sync_mdns)     # announce the .local names (Network → Names)
-        except Exception:
-            log.exception("publishing .local names failed")
-        await asyncio.sleep(28)
+        # (.local names and websites have their own process: lan_names.NamesEngine)
+        await asyncio.sleep(30)
         while True:
-            try:
-                await asyncio.to_thread(lan_names.sync_mdns)
-            except Exception:
-                log.exception("publishing .local names failed")
             try:
                 s = get_settings()
                 last = float(db.get_setting("network_last_scan") or 0)

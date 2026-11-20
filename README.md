@@ -244,7 +244,7 @@ The **Network** module (Server group) shows what's on your LAN, talks to your ro
   - about 100 common ports (web pages on any port, SSH, mail, databases, file sharing, printers, cameras, media servers…).
 - **Services:** whatever answers on an open port is identified by its reply (web pages and their titles, SSH, MySQL/MariaDB, PostgreSQL, Redis, MongoDB, FTP, mail, VNC…) and shown as a tag on the device:
   - **web pages** open in a new browser tab;
-  - **SSH** opens a new tab in the **Console** with an SSH session to the device (you choose the user name; the password or key passphrase is typed in the Console). The device's key is remembered the first time; if it changes later, ssh refuses to connect;
+  - **SSH** opens a new tab in the **Console** with an SSH session to the device (you choose the user name and whether to sign in with a key from **SSH keys** or the password, which is typed in the Console). The device's key is remembered the first time; if it changes later, ssh refuses to connect;
   - **other services** (databases…) copy their address when clicked.
 - **Scan all ports** checks all 65,535 ports of one device (about a minute) to find services on unusual ports.
 - **Kick and block** (OpenWrt and MikroTik routers): **Kick** disconnects a Wi-Fi device now (it can reconnect after about a minute). **Block** cuts its internet and router access (no address, no DNS) and keeps it off the router's Wi-Fi; **Unblock** lets it back. Blocked devices are listed in **Router & DHCP**. This server, the router and the device you're using can't be blocked. Devices on the same switch or Wi-Fi can still talk to a blocked device directly.
@@ -315,14 +315,15 @@ SysAdmin.IA runs as separate processes, so one part can stop or crash without ta
 |---|---|---|
 | Web interface | The pages and API (chat, console, monitor, every module's page) | Nothing to see: start it with `sudo sysadmin-ia process start web` |
 | Jobs scheduler | Checks DAG triggers and runs DAG tasks | No job runs; runs started by hand wait in the queue |
-| Network watcher | Periodic network scans, dynamic DNS updates, announcing `.local` names | The Network pages work, but nothing happens in the background |
+| Network watcher | Periodic network scans, dynamic DNS updates | The Network pages work, but nothing happens in the background |
+| Names & websites | Announces the `.local` names (Network → Names & websites) and checks every minute that the websites' proxy container runs, starting it again if it stopped | `.local` names stop working on other devices; names and websites can still be edited |
 
 A supervisor (the service's main process) starts them.
 - **Crashes:** a process that crashes is restarted after a short pause. After 5 crashes in 2 minutes it's left "failed" until someone starts it.
 - **Hangs:** each process sends a sign of life every 10 seconds; one that stops answering shows as "not responding".
 - **The Processes page** (Server group, admins) shows each process with its state, process id, uptime, CPU, memory, restarts, last exit and recent output. It has **Start**, **Stop** and **Restart** for each, and **Restart everything**. A process stopped there stays stopped, also after a reboot, until it's started again. The web interface can only be restarted from the page; it can be stopped from the command line.
-- **When a process is down:** the modules that depend on it (Jobs, Network) show a notice saying what isn't working. Admins get a link to Processes; other users are asked to contact an admin. A red dot on **Processes** means something isn't running.
-- **Command line:** `sudo sysadmin-ia processes` shows them; `sudo sysadmin-ia process start|stop|restart web|jobs|network` controls them.
+- **When a process is down:** the modules that depend on it (Jobs, Network, and the Network module's Names & websites tab) show a notice saying what isn't working. Admins get a link to Processes; other users are asked to contact an admin. A red dot on **Processes** means something isn't running.
+- **Command line:** `sudo sysadmin-ia processes` shows them; `sudo sysadmin-ia process start|stop|restart web|jobs|network|names` controls them.
 
 ### Local AI (Ollama on this server)
 
@@ -411,7 +412,7 @@ Condition triggers (disk, CPU, memory, load, temperature, service, containers, D
 |---|---|
 | Condition / Wait / Join | Flow control: continue only if…, pause, join branches |
 | Start / End | Do nothing; mark where the DAG begins and ends |
-| Run Python | Python code, with the base Python or a Python environment |
+| Run Python | Python code written in the task, or a `.py` file on the server (**Browse…** picks it), with the base Python or a Python environment. A file runs in its own folder unless a working folder is set |
 | Run console | A shell script (bash or sh), several lines, with optional environment variables |
 | Send an email | Through a mail account, with subject and message filled from placeholders |
 | Call a webhook | POST/GET to Slack, Teams, Discord, ntfy or any URL |
@@ -455,11 +456,22 @@ DAGs run in the **jobs process** (see **Processes**), so they only run while it'
 
 **Python environments** (Automation → Python environments, admins only) are virtual environments for the Run Python task, each with its own packages and Python version:
 - **New environment:** a name (tasks refer to it by name, so it can't be renamed), the Python to use, optional packages (like `pip install`: `requests pandas>=2.2`) and a description. Creating it and installing packages run in the background, with their output shown live on the page.
-- **Python versions:** the base Python or any `python3.X` installed on the server work out of the box (`python -m venv`). For other versions, click **Install uv**: [uv](https://github.com/astral-sh/uv) is installed into the app's own folder (not system-wide), and then you can type any version (e.g. `3.9` or `3.13`); it's downloaded the first time into the data folder.
+- **Which Python:** the base Python, any `python3.X` installed on the server, or a downloaded version (below). The environment is an ordinary virtual environment (`python -m venv`, with pip). You can also type a version (e.g. `3.9`) and let uv make the environment.
+- **Python versions** (card on the same page): pick a version (the newest release of each 3.x) or type one (`3.11.9`, `3.13t` for the free-threaded build) and click **Download**. [uv](https://github.com/astral-sh/uv) fetches a standalone build (about 30–60 MB) into the app's data folder; uv itself is installed first if needed, into the app's own folder (not system-wide). Downloaded versions show their size and which environments use them; **New environment** starts one with that version, and **Remove** deletes a version no environment uses.
 - **Packages:** list, filter, install (optionally upgrading) and remove. Package options such as `-r` or `--index-url` aren't accepted.
 - **Edit** changes the description. **Delete** removes the environment and its packages, and warns about DAGs that use it (their Run Python tasks fail until you pick another environment).
 
 Environments live in `<data folder>/pyenvs/<name>`; uv lives in `<data folder>/tools/uv` and the Pythons it downloads in `<data folder>/pythons`.
+
+### SSH keys
+
+**Server → SSH keys** (admins) manages the keys this server uses to sign in to other devices over SSH:
+- **New key:** Ed25519 (recommended), RSA 4096 or ECDSA, with an optional comment and description. Keys made here have no passphrase; they're stored in `<data folder>/ssh/keys` readable only by the app's user.
+- **Import a key:** paste a private key or open its file. A key with a passphrase needs its public key too; ssh then asks for the passphrase in the Console.
+- **Install on a device:** opens a Console tab that signs in with the device's password once and adds the public key to `~/.ssh/authorized_keys` there (like `ssh-copy-id`).
+- **Connect** opens an SSH tab that signs in with the key. **Use by default** makes the SSH tags in Network → Devices use that key; their dialog also lets you pick another key or the password.
+- **Copy / download** the public key; **Download private key** (asks first, audited); **Edit** renames a key or changes its description; **Delete**.
+- **Known devices** lists the hosts in the app user's `~/.ssh/known_hosts` with their key fingerprints. When a device is reinstalled its key changes and ssh refuses to connect: **Remove** (or **Forget this device**) and connect again.
 
 ### Console
 

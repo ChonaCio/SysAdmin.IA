@@ -28,7 +28,8 @@ from pathlib import Path
 from .config import settings
 
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,39}$")
-VERSION_RE = re.compile(r"^3\.\d{1,2}(\.\d{1,2})?$")
+VERSION_RE = re.compile(r"^3\.\d{1,2}(\.\d{1,2})?t?$")       # 3.12, 3.12.8, 3.13t (free-threaded)
+KEY_RE = re.compile(r"^[a-z]+-3\.\d{1,2}\.\d{1,2}[a-z0-9+]*-[a-z0-9_]+-[a-z0-9_]+-[a-z0-9_]+$")   # uv's download keys
 PKG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._\-\[\],<>=!~*+;: '\"@/]*$")   # a requirement line (no options)
 
 
@@ -47,15 +48,24 @@ def _bin(env_dir: Path, exe: str) -> Path:
 
 
 # ---------------------------------------------------------------- interpreters and uv
+def _own_uv() -> Path:
+    return settings.data_dir / "tools" / "uv" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
+
+
 def uv_path() -> str | None:
-    own = settings.data_dir / "tools" / "uv" / "bin" / ("uv.exe" if os.name == "nt" else "uv")
+    own = _own_uv()
     if own.is_file():
         return str(own)
     return shutil.which("uv")
 
 
+def pythons_dir() -> Path:
+    """Where downloaded Python versions go (uv's UV_PYTHON_INSTALL_DIR)."""
+    return settings.data_dir / "pythons"
+
+
 def _uv_env() -> dict:
-    return {**os.environ, "UV_PYTHON_INSTALL_DIR": str(settings.data_dir / "pythons"),
+    return {**os.environ, "UV_PYTHON_INSTALL_DIR": str(pythons_dir()),
             "UV_CACHE_DIR": str(settings.data_dir / "cache" / "uv"), "UV_NO_PROGRESS": "1"}
 
 
@@ -117,10 +127,170 @@ def interpreters() -> list[dict]:
             seen.add(real)
             v = _version_of(p)
             if v and v.startswith("3."):
-                out.append({"path": p, "version": v})
+                out.append({"path": p, "version": v, "downloaded": False})
     out.sort(key=lambda x: [int(n) for n in x["version"].split(".")], reverse=True)
+    out = downloaded() + out
     _interp_cache.update(at=time.time(), list=out)
     return out
+
+
+def _forget_interpreters() -> None:
+    _interp_cache["at"] = 0.0
+    _versions_cache["at"] = 0.0
+
+
+def _key_version(key: str) -> tuple[str, str]:
+    """cpython-3.13.1+freethreaded-linux-x86_64-gnu → ("3.13.1", "freethreaded")."""
+    m = re.match(r"^[a-z]+-(3\.\d+\.\d+)([a-z0-9+]*)-", key)
+    if not m:
+        return "", ""
+    return m.group(1), "freethreaded" if m.group(2) in ("t", "+freethreaded") else ""
+
+
+def _managed_exe(d: Path) -> Path | None:
+    for c in (d / "bin" / "python3", d / "python.exe", d / "bin" / "python"):
+        if c.exists():
+            return c
+    return None
+
+
+def downloaded() -> list[dict]:
+    """Python versions downloaded into <data>/pythons (by uv), newest first."""
+    out = []
+    try:
+        dirs = sorted(pythons_dir().iterdir())
+    except OSError:
+        return []
+    for d in dirs:
+        if not d.is_dir() or not d.name.startswith(("cpython-", "pypy-", "graalpy-")):
+            continue
+        exe = _managed_exe(d)
+        version, variant = _key_version(d.name)
+        if exe and version:
+            out.append({"path": str(exe), "version": version, "variant": variant, "key": d.name, "downloaded": True,
+                        "dir": str(d), "implementation": d.name.split("-", 1)[0], "size": None})
+    out.sort(key=lambda x: [int(n) for n in x["version"].split(".")], reverse=True)
+    return out
+
+
+_versions_cache: dict = {"at": 0.0, "data": None}
+
+
+def _uv_list(uv: str) -> list[dict]:
+    """Every Python uv can download for this machine + the ones it already downloaded."""
+    env = {**_uv_env(), "UV_PYTHON_PREFERENCE": "only-managed"}
+    r = subprocess.run([uv, "python", "list", "--output-format", "json"], capture_output=True, text=True, timeout=60, env=env)
+    if r.returncode == 0 and r.stdout.strip().startswith("["):
+        try:
+            return [{"key": e.get("key", ""), "version": e.get("version", ""), "path": e.get("path"),
+                     "implementation": e.get("implementation", ""), "variant": e.get("variant") or ""}
+                    for e in json.loads(r.stdout)]
+        except ValueError:
+            pass
+    # older uv: text lines "cpython-3.12.8-linux-x86_64-gnu    <download available>" or "...    /path/to/python"
+    r = subprocess.run([uv, "python", "list"], capture_output=True, text=True, timeout=60, env=env)
+    if r.returncode != 0:
+        raise PyEnvError(f"uv couldn't list the Python versions: {(r.stderr or r.stdout).strip()[-300:]}")
+    out = []
+    for line in r.stdout.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) != 2 or not parts[0].count("-") >= 4:
+            continue
+        version, variant = _key_version(parts[0])
+        path = None if "download available" in parts[1] else parts[1].split(" -> ")[0].strip()
+        out.append({"key": parts[0], "version": version, "path": path, "implementation": parts[0].split("-", 1)[0],
+                    "variant": variant})
+    return out
+
+
+def python_versions(refresh: bool = False) -> dict:
+    """Python versions: downloaded ones (with the environments that use them) and the ones uv can download
+    (newest patch release of each 3.x, CPython)."""
+    have = downloaded()
+    for h in have:
+        h["size"] = _size(Path(h["dir"]))
+        h["used_by"] = [e["name"] for e in list_envs(with_size=False) if _env_home_in(e["path"], h["dir"])]
+    uv = uv_path()
+    if not uv:
+        return {"downloaded": have, "available": [], "uv": False, "error": None, "dir": str(pythons_dir())}
+    c = _versions_cache
+    if refresh or not c["data"] or time.time() - c["at"] > 600:
+        try:
+            c["data"], c["error"] = _uv_list(uv), None
+        except (PyEnvError, OSError, subprocess.TimeoutExpired) as e:
+            c["data"], c["error"] = [], str(e)
+        c["at"] = time.time()
+    have_keys = {h["key"] for h in have}
+    best: dict[tuple, dict] = {}
+    for e in c["data"] or []:
+        if e["path"] or e["implementation"] != "cpython" or e["key"] in have_keys or not e["version"]:
+            continue
+        parts = e["version"].split(".")
+        if len(parts) < 3 or not all(p.isdigit() for p in parts[:3]) or parts[0] != "3":
+            continue
+        variant = "freethreaded" if "freethreaded" in (e["variant"] or e["key"]) else ("debug" if "debug" in e["key"] else "")
+        if variant == "debug":
+            continue
+        k = (int(parts[1]), variant)
+        if k not in best or [int(x) for x in parts[:3]] > [int(x) for x in best[k]["version"].split(".")[:3]]:
+            best[k] = {"key": e["key"], "version": ".".join(parts[:3]), "variant": variant,
+                       "request": f"{parts[0]}.{parts[1]}.{parts[2]}" + ("t" if variant else "")}
+    avail = sorted(best.values(), key=lambda x: ([int(n) for n in x["version"].split(".")], x["variant"] == ""), reverse=True)
+    return {"downloaded": have, "available": avail, "uv": True, "error": c.get("error"), "dir": str(pythons_dir())}
+
+
+def _env_home_in(env_dir: str, py_dir: str) -> bool:
+    """True if the environment was made from the Python in py_dir (pyvenv.cfg's home is inside it)."""
+    try:
+        for line in (Path(env_dir) / "pyvenv.cfg").read_text(encoding="utf-8").splitlines():
+            k, _, v = line.partition("=")
+            if k.strip() == "home":
+                home = os.path.normcase(os.path.realpath(v.strip()))
+                base = os.path.normcase(os.path.realpath(py_dir))
+                return home == base or home.startswith(base + os.sep)
+    except OSError:
+        pass
+    return False
+
+
+def install_python(version: str) -> dict:
+    """Download a Python version with uv (installing uv first if needed)."""
+    version = (version or "").strip()
+    if not VERSION_RE.fullmatch(version):
+        raise PyEnvError("Write a version such as 3.12 or 3.12.8 (3.13t for the free-threaded build).")
+    if any(t["kind"] == "python" and t["env"] == version and t["state"] == "running" for t in _tasks.values()):
+        raise PyEnvError(f"Python {version} is already being downloaded.")
+    steps = []
+    uv = uv_path()
+    if not uv:
+        if any(t["kind"] == "uv" and t["state"] == "running" for t in _tasks.values()):
+            raise PyEnvError("uv is being installed: wait until it finishes.")
+        steps.append(_uv_install_step())
+        uv = str(_own_uv())
+    pythons_dir().mkdir(parents=True, exist_ok=True)
+    steps.append(([uv, "python", "install", version], _uv_env(), f"Downloading Python {version}"))
+    t = _start("python", version, steps, on_done=_forget_interpreters)
+    return t
+
+
+def uninstall_python(key: str) -> dict:
+    key = (key or "").strip()
+    have = {h["key"]: h for h in downloaded()}
+    if not KEY_RE.fullmatch(key) or key not in have:
+        raise PyEnvError("That Python version isn't downloaded (any more).")
+    users = [e["name"] for e in list_envs(with_size=False) if _env_home_in(e["path"], have[key]["dir"])]
+    if users:
+        raise PyEnvError(f"Python {have[key]['version']} is used by the environment{'s' if len(users) != 1 else ''} "
+                         f"{', '.join(users)}. Delete {'them' if len(users) != 1 else 'it'} first.")
+    uv = uv_path()
+    if uv:
+        steps = [([uv, "python", "uninstall", key], _uv_env(), f"Removing Python {have[key]['version']}")]
+        return _start("python-remove", key, steps, on_done=_forget_interpreters,
+                      on_fail=lambda: (shutil.rmtree(have[key]["dir"], ignore_errors=True), _forget_interpreters()))
+    shutil.rmtree(have[key]["dir"])     # uv is gone: just delete the folder
+    _forget_interpreters()
+    return {"id": "", "kind": "python-remove", "env": key, "state": "done", "started": time.time(), "finished": time.time(),
+            "error": None}
 
 
 def uv_version() -> str | None:
@@ -159,7 +329,7 @@ def _busy(name: str) -> bool:
     return any(t["env"] == name and t["state"] == "running" for t in _tasks.values())
 
 
-def _start(kind: str, env: str, steps, on_fail=None) -> dict:
+def _start(kind: str, env: str, steps, on_fail=None, on_done=None) -> dict:
     """steps: list of (argv, env-or-None, title); run one after the other in a thread, collecting output."""
     tid = uuid.uuid4().hex[:12]
     t = {"id": tid, "kind": kind, "env": env, "state": "running", "log": [], "started": time.time(), "finished": None,
@@ -190,6 +360,11 @@ def _start(kind: str, env: str, steps, on_fail=None) -> dict:
                     pass
             t["state"], t["error"] = "failed", str(e)
         finally:
+            if on_done:
+                try:
+                    on_done()
+                except Exception:  # noqa: BLE001
+                    pass
             t["finished"] = time.time()
 
     threading.Thread(target=run, daemon=True, name=f"pyenv-{kind}-{env}").start()
@@ -200,9 +375,12 @@ def install_uv() -> dict:
     """uv into <data>/tools/uv with the app's own pip (no root)."""
     if any(t["kind"] == "uv" and t["state"] == "running" for t in _tasks.values()):
         raise PyEnvError("uv is already being installed.")
+    return _start("uv", "", [_uv_install_step()], on_done=_forget_interpreters)
+
+
+def _uv_install_step():
     target = settings.data_dir / "tools" / "uv"
-    return _start("uv", "", [([sys.executable, "-m", "pip", "install", "--upgrade", "--target", str(target), "uv"], None,
-                              "Installing uv")])
+    return ([sys.executable, "-m", "pip", "install", "--upgrade", "--target", str(target), "uv"], None, "Installing uv")
 
 
 # ---------------------------------------------------------------- environments
@@ -210,7 +388,7 @@ def _check_name(name: str) -> str:
     name = (name or "").strip().lower()
     if not NAME_RE.fullmatch(name):
         raise PyEnvError("Names use lowercase letters, digits, . _ and - (max 40), e.g. data-tools.")
-    if name in ("uv", "tasks", "base"):
+    if name in ("uv", "tasks", "base", "pythons"):
         raise PyEnvError(f"“{name}” is reserved: pick another name.")
     return name
 
@@ -289,6 +467,7 @@ def list_envs(with_size: bool = True) -> list[dict]:
 def status() -> dict:
     base = base_python()
     return {"envs": list_envs(), "interpreters": interpreters(), "uv": uv_version(), "uv_path": uv_path(),
+            "pythons": python_versions(),
             "base": {"path": base, "version": _version_of(base)}, "tasks": tasks(), "root": str(root())}
 
 

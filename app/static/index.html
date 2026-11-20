@@ -62,6 +62,8 @@
       <span data-icon="box"></span><span>Containers</span></button>
     <button data-view="network" class="tab nav-item admin-only" id="tab-network" title="Network">
       <span data-icon="network"></span><span>Network</span></button>
+    <button data-view="sshkeys" class="tab nav-item admin-only" id="tab-sshkeys" title="SSH keys">
+      <span data-icon="key"></span><span>SSH keys</span></button>
     <button data-view="processes" class="tab nav-item admin-only" id="tab-processes" title="Processes">
       <span data-icon="chip"></span><span>Processes</span><span class="nav-alert" id="proc-nav-alert" hidden title="A process isn't working"></span></button>
     <div class="nav-group admin-only">Automation</div>
@@ -755,6 +757,26 @@
     </div>
   </section>
 
+  <!-- ================= SSH KEYS ================= -->
+  <section id="view-sshkeys" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>SSH keys</h2>
+          <p class="muted small">Keys this server uses to sign in to your other devices over SSH, without typing their password.
+            Install a key on a device once; after that, the Console's SSH tabs use it.</p>
+        </div>
+        <div class="row">
+          <button type="button" class="ghost" id="ssh-import"><span data-icon="upload"></span> Import a key</button>
+          <button type="button" class="primary" id="ssh-add"><span data-icon="plus"></span> New key</button>
+        </div>
+      </div>
+      <div id="ssh-notice"></div>
+      <div id="ssh-list" class="proc-list"></div>
+      <div class="card" id="ssh-hosts"></div>
+    </div>
+  </section>
+
   <!-- ================= PYTHON ENVIRONMENTS ================= -->
   <section id="view-pyenvs" class="view">
     <div class="page">
@@ -767,7 +789,9 @@
         <button type="button" class="primary" id="pyenv-add"><span data-icon="plus"></span> New environment</button>
       </div>
       <div class="card" id="pyenv-server"></div>
+      <div class="card" id="pyenv-pythons"></div>
       <div class="card" id="pyenv-tasks" hidden></div>
+      <h3 class="pyenv-section">Environments</h3>
       <div id="pyenv-list" class="proc-list"></div>
     </div>
   </section>
@@ -855,6 +879,22 @@
         <button class="primary" id="dk-stack-up">Save and start</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="file-pick-dialog" class="dialog">
+    <div class="dk-picker">
+      <h3 id="fp-title">Choose a file on the server</h3>
+      <div class="dk-picker-drives" id="fp-places"></div>
+      <div class="dk-picker-path mono small" id="fp-path"></div>
+      <label class="check small"><input type="checkbox" id="fp-all"> Show every file, not only Python files</label>
+      <div class="dk-picker-list" id="fp-list"></div>
+      <label class="small">Or type the file's full path
+        <input id="fp-input" class="mono" spellcheck="false"></label>
+      <div class="dialog-actions">
+        <button type="button" class="ghost" id="fp-cancel">Cancel</button>
+        <button type="button" class="primary" id="fp-ok">Use this file</button>
+      </div>
+    </div>
   </dialog>
 
   <dialog id="dk-folder-dialog" class="dialog">
@@ -1027,5 +1067,6 @@
   <script src="/static/processes.js"></script>
   <script src="/static/dags.js"></script>
   <script src="/static/pyenvs.js"></script>
+  <script src="/static/sshkeys.js"></script>
 </body>
 </html>

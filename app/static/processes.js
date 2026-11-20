@@ -1,5 +1,5 @@
 // ------------------------------------------------------------ Processes (Server → Processes)
-// SysAdmin.IA runs as separate processes (web interface, jobs scheduler, network watcher) under a supervisor.
+// SysAdmin.IA runs as separate processes (web interface, jobs scheduler, network watcher, names & websites) under a supervisor.
 // This page shows each one and starts / stops / restarts it; modules whose process is down show a notice.
 
 const PROC_STATES = {
@@ -9,9 +9,17 @@ const PROC_STATES = {
 // what stops working in each module when its process is down
 const PROC_IMPACT = {
   jobs: "No job (DAG) runs until it's running again; runs you start wait in the queue.",
-  network: "Periodic network scans, dynamic DNS updates and .local names are paused. The pages still work.",
+  network: "Periodic network scans and dynamic DNS updates are paused. The pages still work.",
+  names: ".local names aren't announced and the websites' proxy isn't watched. You can still edit names and websites.",
 };
 const VIEW_MODULE = { jobs: "jobs", dag: "jobs", "dag-edit": "jobs", network: "network" };
+// the Network module's Names & websites tab depends on its own process
+function viewModule(view) {
+  if (view === "network" && state.net?.tab === "names") return "names";
+  return VIEW_MODULE[view];
+}
+const PROXY_STATE = { none: "not needed (no websites)", running: "running", restarted: "was stopped: started again",
+  "no docker": "Docker isn't available", unknown: "not checked yet" };
 
 function fmtUptime(sec) {
   if (sec == null) return "–";
@@ -70,6 +78,11 @@ function procCard(w, supervised, logsOpen) {
   if (w.name === "network" && "watching" in info) {
     facts.push(["Watching", info.watching ? `every ${info.interval_min} min` : "off (Network → Settings)"]);
     if (info.last_scan) facts.push(["Last scan", fmtWhen(info.last_scan)]);
+  }
+  if (w.name === "names" && "names" in info) {
+    facts.push([".local names", info.avahi === false ? "avahi-publish isn't installed" : `${info.announced} of ${info.names} announced`]);
+    facts.push(["Websites", String(info.websites)]);
+    facts.push(["Proxy", PROXY_STATE[info.proxy] || info.proxy || "–"]);
   }
   const act = async (action, btn) => {
     if (action === "stop" && !confirm(`Stop the ${w.label.toLowerCase()}?\n\n${PROC_IMPACT[w.name] || ""}\n\nIt stays stopped until you start it again.`)) return;
@@ -148,7 +161,7 @@ async function procSummary(force = false) {
 
 async function checkProcBanner(view) {
   const b = $("#proc-banner");
-  const mod = VIEW_MODULE[view];
+  const mod = viewModule(view);
   if (!mod) { b.hidden = true; return; }
   const s = await procSummary();
   if (state.view !== view) return;

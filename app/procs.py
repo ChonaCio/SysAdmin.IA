@@ -5,7 +5,8 @@ SysAdmin.IA runs as several independent processes, started and watched by app.su
 
   web      – the web interface and API (uvicorn): pages, chat, console, monitor, on-demand actions
   jobs     – the jobs scheduler: checks DAG triggers and runs DAG tasks
-  network  – the network watcher: periodic scans, dynamic DNS, announcing .local names
+  network  – the network watcher: periodic scans, dynamic DNS
+  names    – names & websites: announcing .local names (avahi-publish), watching the websites' proxy
 
 SAI_PROCESS tells a process which one it is. Without a supervisor (`python -m app --single`, tests,
 development) one process does everything: role "all".
@@ -35,11 +36,14 @@ WORKERS: dict[str, dict] = {
     "jobs": {"label": "Jobs scheduler", "icon": "clock",
              "description": "Checks the triggers of the Jobs (DAGs) and runs their tasks. While it's stopped, no job runs."},
     "network": {"label": "Network watcher", "icon": "network",
-                "description": "Periodic network scans, dynamic DNS updates and announcing .local names. The Network pages "
-                               "still work while it's stopped, but nothing happens in the background."},
+                "description": "Periodic network scans and dynamic DNS updates. The Network pages still work while it's "
+                               "stopped, but nothing happens in the background."},
+    "names": {"label": "Names & websites", "icon": "globe",
+              "description": "Announces the .local names of Network → Names & websites and keeps the websites' proxy "
+                             "running. While it's stopped, .local names stop working on other devices."},
 }
 # which module of the interface depends on which background process
-MODULE_PROCESS = {"jobs": "jobs", "network": "network"}
+MODULE_PROCESS = {"jobs": "jobs", "network": "network", "names": "names"}
 
 
 class ProcessError(RuntimeError):

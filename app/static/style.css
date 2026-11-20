@@ -1052,3 +1052,38 @@ svg.dag-edges g.edge-del circle { fill: var(--crit); } svg.dag-edges g.edge-del 
 .pyenv-pkg-table tr:last-child td { border-bottom: 0; }
 .pyenv-pkg-table td:last-child { width: 1%; text-align: right; }
 .pyenv-pkg-table button { padding: 2px 6px; min-height: 0; }
+/* file picker (Run Python → Browse…) */
+.pick-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.pick-row input { flex: 1; min-width: 0; }
+.pick-row button { flex: none; }
+.dk-pick-row.active { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+/* Python versions card */
+.pyenv-section { margin: 18px 0 8px; font-size: 1rem; }
+.pyenv-ver-table { width: 100%; border-collapse: collapse; margin: 10px 0; }
+.pyenv-ver-table th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 8px 4px 0; }
+.pyenv-ver-table td { padding: 6px 8px 6px 0; border-top: 1px solid var(--grid); vertical-align: middle; }
+.pyenv-ver-table .tag { margin-left: 6px; }
+.pyenv-ver-actions { text-align: right; white-space: nowrap; }
+.pyenv-ver-actions button { margin-left: 4px; }
+.pyenv-dl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.pyenv-dl select, .pyenv-dl input { width: auto; min-width: 0; max-width: 100%; }
+@media (max-width: 760px) {
+  .pyenv-ver-table thead { display: none; }
+  .pyenv-ver-table tr { display: grid; grid-template-columns: 1fr auto; border-top: 1px solid var(--grid); padding: 6px 0; }
+  .pyenv-ver-table td { border: 0; padding: 2px 0; }
+  .pyenv-ver-actions { grid-column: 1 / -1; text-align: left; white-space: normal; }
+  .pyenv-ver-actions button { margin: 4px 4px 0 0; }
+}
+/* SSH keys */
+.ssh-pub { width: 100%; resize: vertical; word-break: break-all; }
+.ssh-pub-row { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; }
+.ssh-key-actions { flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ssh-target-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.ssh-target-row > label:first-child { flex: 1 1 200px; }
+.ssh-target-row > label:last-child { flex: 0 1 110px; }
+#ssh-notice .card { margin-bottom: 12px; }
+#ssh-hosts { margin-top: 16px; }
+.proc-facts dd { min-width: 0; }
+.proc-facts dd.mono { overflow-wrap: anywhere; }
+.pyenv-ver-table td.mono { overflow-wrap: anywhere; word-break: break-all; }
+.pyenv-ver-table td { min-width: 0; }

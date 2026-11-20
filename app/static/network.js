@@ -81,6 +81,7 @@ function showNetTab(tab) {
   if (sn && pane.contains(sn)) $("#net-names-holder").append(sn);   // keep the Server name card (and its handlers)
   pane.innerHTML = '<p class="muted small"><span class="spinner" aria-hidden="true"></span> Loading…</p>';
   ({ devices: netDevicesTab, names: netNamesTab, ports: netPortsTab, router: netRouterTab, publish: netPublishTab, settings: netSettingsTab })[tab](pane);
+  if (window.checkProcBanner) checkProcBanner("network");   // Names & websites has its own process
 }
 
 // ------------------------------------------------------------ Names & websites
@@ -634,18 +635,27 @@ function netServiceTags(d) {
   });
 }
 
-function netSsh(d, port) {
+async function netSsh(d, port) {
   const key = `sai.ssh.${d.mac}`;
-  let saved = "";
-  try { saved = localStorage.getItem(key) || localStorage.getItem("sai.ssh.last") || ""; } catch { /* private mode */ }
+  let saved = "", savedKey = null;
+  try { saved = localStorage.getItem(key) || localStorage.getItem("sai.ssh.last") || ""; savedKey = localStorage.getItem(`${key}.key`); } catch { /* private mode */ }
   const user = el("input", { required: true, value: saved || "root", spellcheck: "false", autocomplete: "off", class: "mono" });
+  const keys = window.sshKeyChoices ? await sshKeyChoices() : { keys: [], default: "" };
+  const keySel = el("select", {}, el("option", { value: "" }, "Password (no key)"),
+    ...keys.keys.map((k) => el("option", { value: k }, `Key: ${k}`)));
+  keySel.value = savedKey != null && (savedKey === "" || keys.keys.includes(savedKey)) ? savedKey : keys.default || "";
   netDialog(`SSH to ${d.name || d.ip}`, [
     field("User name on the device", user, "You type the password (or key passphrase) in the Console."),
+    keys.keys.length ? field("Sign in with", keySel, "Keys are managed in Server → SSH keys. If the key isn't installed on the device, ssh asks for the password.")
+      : el("p", { class: "muted small" }, "Tip: make an SSH key in Server → SSH keys to sign in without a password."),
     el("p", { class: "muted small mono" }, `${d.ip}:${port}`),
   ], async () => {
     if (!/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(user.value.trim())) throw new Error("Invalid user name.");
-    try { localStorage.setItem(key, user.value.trim()); localStorage.setItem("sai.ssh.last", user.value.trim()); } catch { /* private mode */ }
-    openSshConsole(d.ip, port, user.value.trim(), d.name || d.ip);
+    try {
+      localStorage.setItem(key, user.value.trim()); localStorage.setItem("sai.ssh.last", user.value.trim());
+      localStorage.setItem(`${key}.key`, keySel.value);
+    } catch { /* private mode */ }
+    openSshConsole(d.ip, port, user.value.trim(), d.name || d.ip, keySel.value);
   }, "Connect");
 }
 

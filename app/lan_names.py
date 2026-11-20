@@ -103,10 +103,10 @@ def _stop(name: str) -> None:
 
 def sync_mdns() -> None:
     """Make the running avahi-publish processes match the saved .local names (restarting any that stopped).
-    Only the network watcher process does this (procs.owns("network")); the web interface just saves the names
-    and shows the state the watcher records in the database."""
+    Only the names process does this (procs.owns("names")); the web interface just saves the names and shows
+    the state that process records in the database."""
     from . import procs
-    if not procs.owns("network") or not avahi_available():
+    if not procs.owns("names") or not avahi_available():
         return
     try:
         _sync_mdns()
@@ -149,14 +149,14 @@ def _mdns_state(name: str) -> tuple[str, str | None]:
     if not avahi_available():
         return "error", "avahi-publish isn't installed (package avahi-utils)."
     from . import procs
-    if not procs.owns("network"):
-        # another process (the network watcher) announces the names: read what it last recorded
+    if not procs.owns("names"):
+        # another process (Names & websites) announces the names: read what it last recorded
         try:
             rec = json.loads(db.get_setting("lan_mdns_state") or "{}")
         except ValueError:
             rec = {}
         if not rec or time.time() - float(rec.get("at") or 0) > 60:
-            return "error", "The network watcher isn't running, so .local names aren't announced. See Server → Processes."
+            return "error", "The Names & websites process isn't running, so .local names aren't announced. See Server → Processes."
         n = (rec.get("names") or {}).get(name)
         return (n["state"], n.get("error")) if n else ("pending", None)
     e = _procs.get(name)
@@ -192,6 +192,72 @@ def stop_all() -> None:
     with _lock:
         for name in list(_procs):
             _stop(name)
+
+
+# ---------------------------------------------------------------- the Names & websites process
+def check_proxy() -> str:
+    """Websites need the Caddy proxy container: start it again if it stopped or was removed. Returns its state
+    (none = no websites and no publishing, so no proxy is needed)."""
+    if not publish.proxy_wanted():
+        return "none"
+    if not publish._docker_ok():
+        return "no docker"
+    c = publish._container(publish.CADDY_CONTAINER)
+    if c and c.get("state") == "running":
+        return "running"
+    with publish._lock:
+        publish._write_caddy(restart=True)      # rewrites the Caddyfile, starts or recreates the container
+    return "restarted"
+
+
+class NamesEngine:
+    """Runs in the names process: keeps the .local names announced (checked every 5 s, so changes saved in the
+    web interface are picked up quickly) and the websites' proxy running (checked every minute)."""
+    def __init__(self) -> None:
+        self.task = None
+        self.proxy = "unknown"
+        self.proxy_checked: float | None = None
+
+    def start(self) -> None:
+        import asyncio
+        if self.task is None:
+            self.task = asyncio.get_running_loop().create_task(self._loop())
+
+    def info(self) -> dict:
+        try:
+            names = _load("lan_names")
+            sites = list_sites()
+        except Exception:  # noqa: BLE001
+            names, sites = [], []
+        ok = sum(1 for n in names if _mdns_state(n["name"])[0] == "ok")
+        return {"names": len(names), "announced": ok, "websites": len(sites), "proxy": self.proxy,
+                "proxy_checked": self.proxy_checked, "avahi": avahi_available()}
+
+    async def _loop(self) -> None:
+        import asyncio
+        import logging
+        log = logging.getLogger("sysadmin-ia.names")
+        last_proxy = 0.0
+        await asyncio.sleep(1)
+        while True:
+            try:
+                await asyncio.to_thread(sync_mdns)
+            except Exception:  # noqa: BLE001
+                log.exception("publishing .local names failed")
+            if time.time() - last_proxy >= 60:
+                last_proxy = time.time()
+                try:
+                    self.proxy = await asyncio.to_thread(check_proxy)
+                    if self.proxy == "restarted":
+                        log.warning("the websites' proxy (%s) wasn't running: started it again", publish.CADDY_CONTAINER)
+                except Exception as e:  # noqa: BLE001
+                    self.proxy = f"error: {e}"[:200]
+                    log.exception("checking the websites' proxy failed")
+                self.proxy_checked = time.time()
+            await asyncio.sleep(5)
+
+
+ENGINE = NamesEngine()
 
 
 # ---------------------------------------------------------------- names

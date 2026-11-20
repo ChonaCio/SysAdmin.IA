@@ -21,7 +21,7 @@ from pydantic import BaseModel
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
 from . import containers, firewall, lan_names, local_ai, model_search, network, publish, routers, user_prefs, variables
-from . import dags, procs, pyenvs
+from . import dags, procs, pyenvs, ssh_keys
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -1177,6 +1177,33 @@ async def pyenvs_install_uv(request: Request, user: User = Depends(admin_user)):
     return t
 
 
+class PythonVersionBody(BaseModel):
+    version: str
+
+
+class PythonKeyBody(BaseModel):
+    key: str
+
+
+@app.get("/api/pyenvs/pythons")
+async def pyenvs_pythons(refresh: bool = False, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(pyenvs.python_versions, refresh)
+
+
+@app.post("/api/pyenvs/pythons")
+async def pyenvs_python_install(body: PythonVersionBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_py, pyenvs.install_python, body.version)
+    db.audit("python_downloaded", user.username, auth.client_ip(request), {"version": body.version})
+    return t
+
+
+@app.post("/api/pyenvs/pythons/remove")
+async def pyenvs_python_remove(body: PythonKeyBody, request: Request, user: User = Depends(admin_user)):
+    t = await asyncio.to_thread(_py, pyenvs.uninstall_python, body.key)
+    db.audit("python_removed", user.username, auth.client_ip(request), {"key": body.key})
+    return t
+
+
 @app.get("/api/pyenvs/tasks/{tid}")
 async def pyenvs_task(tid: str, user: User = Depends(admin_user)):
     return _py(pyenvs.task, tid)
@@ -1214,6 +1241,104 @@ async def pyenvs_uninstall(name: str, body: PyEnvUninstallBody, request: Request
     t = await asyncio.to_thread(_py, pyenvs.uninstall, name, body.package)
     db.audit("pyenv_package_removed", user.username, auth.client_ip(request), {"name": name, "package": body.package})
     return t
+
+
+# ---- SSH keys (Server → SSH keys)
+class SshKeyBody(BaseModel):
+    name: str
+    type: str = "ed25519"
+    comment: str = ""
+    description: str = ""
+
+
+class SshImportBody(BaseModel):
+    name: str
+    private_key: str
+    public_key: str = ""
+    description: str = ""
+
+
+class SshEditBody(BaseModel):
+    new_name: str = ""
+    description: str | None = None
+
+
+class SshDefaultBody(BaseModel):
+    name: str = ""
+
+
+class SshHostBody(BaseModel):
+    host: str
+
+
+def _ssh(fn, *a):
+    try:
+        return fn(*a)
+    except ssh_keys.SshKeyError as e:
+        raise HTTPException(400, str(e))
+
+
+@app.get("/api/ssh")
+async def ssh_status(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(ssh_keys.status)
+
+
+@app.post("/api/ssh/keys")
+async def ssh_generate(body: SshKeyBody, request: Request, user: User = Depends(admin_user)):
+    k = await asyncio.to_thread(_ssh, ssh_keys.generate, body.name, body.type, body.comment, body.description)
+    db.audit("ssh_key_created", user.username, auth.client_ip(request), {"name": k["name"], "type": body.type,
+                                                                         "fingerprint": k.get("fingerprint")})
+    return k
+
+
+@app.post("/api/ssh/keys/import")
+async def ssh_import(body: SshImportBody, request: Request, user: User = Depends(admin_user)):
+    k = await asyncio.to_thread(_ssh, ssh_keys.import_key, body.name, body.private_key, body.public_key, body.description)
+    db.audit("ssh_key_imported", user.username, auth.client_ip(request), {"name": k["name"], "fingerprint": k.get("fingerprint")})
+    return k
+
+
+@app.put("/api/ssh/default")
+async def ssh_default(body: SshDefaultBody, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_ssh, ssh_keys.set_default, body.name)
+    db.audit("ssh_key_default", user.username, auth.client_ip(request), {"name": body.name})
+    return {"ok": True, "default": body.name}
+
+
+@app.post("/api/ssh/known-hosts/remove")
+async def ssh_forget_host(body: SshHostBody, request: Request, user: User = Depends(admin_user)):
+    n = await asyncio.to_thread(_ssh, ssh_keys.forget_host, body.host)
+    db.audit("ssh_known_host_removed", user.username, auth.client_ip(request), {"host": body.host})
+    return {"ok": True, "removed": n}
+
+
+@app.put("/api/ssh/keys/{name}")
+async def ssh_edit(name: str, body: SshEditBody, request: Request, user: User = Depends(admin_user)):
+    k = await asyncio.to_thread(_ssh, ssh_keys.update, name, body.new_name, body.description)
+    db.audit("ssh_key_updated", user.username, auth.client_ip(request), {"name": name, "new_name": body.new_name or None})
+    return k
+
+
+@app.delete("/api/ssh/keys/{name}")
+async def ssh_delete(name: str, request: Request, user: User = Depends(admin_user)):
+    await asyncio.to_thread(_ssh, ssh_keys.delete, name)
+    db.audit("ssh_key_deleted", user.username, auth.client_ip(request), {"name": name})
+    return {"ok": True}
+
+
+@app.get("/api/ssh/keys/{name}/public")
+async def ssh_public(name: str, user: User = Depends(admin_user)):
+    text = _ssh(ssh_keys.public_key, name)
+    return Response(text + "\n", media_type="text/plain",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.pub"'})
+
+
+@app.get("/api/ssh/keys/{name}/private")
+async def ssh_private(name: str, request: Request, user: User = Depends(admin_user)):
+    text = _ssh(ssh_keys.private_key, name)
+    db.audit("ssh_key_downloaded", user.username, auth.client_ip(request), {"name": name})
+    return Response(text, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
 
 # ---- processes (Server → Processes)
@@ -1265,6 +1390,8 @@ async def _start_background() -> None:
         dags.SCHEDULER.start()
     if procs.owns("network"):
         network.ENGINE.start()
+    if procs.owns("names"):
+        lan_names.ENGINE.start()
     if procs.supervised():
         asyncio.get_running_loop().create_task(procs.heartbeat_loop())
 
@@ -2014,7 +2141,8 @@ def _schedule_restart() -> None:
 
 
 @app.websocket("/ws/console")
-async def console_ws(ws: WebSocket, mode: str = "shell", id: str = "", host: str = "", port: int = 22, user_name: str = ""):
+async def console_ws(ws: WebSocket, mode: str = "shell", id: str = "", host: str = "", port: int = 22, user_name: str = "",
+                     key: str = "", install_key: str = ""):
     user = auth.websocket_user(ws)
     if not user or not user.is_admin or not settings.allow_console:
         await ws.close(code=4401 if not user else 4403)
@@ -2023,20 +2151,28 @@ async def console_ws(ws: WebSocket, mode: str = "shell", id: str = "", host: str
     if mode == "container" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", id):
         await ws.close(code=4400)
         return
-    ssh = None
+    ssh = key_path = ssh_cmd = None
     if mode == "ssh":
         try:
             ssh = console.ssh_target(host, port, user_name)
-        except ValueError:
+            if key:
+                key_path = ssh_keys.private_path(key)
+            if install_key:
+                ssh_cmd = ssh_keys.install_command(install_key)
+        except (ValueError, ssh_keys.SshKeyError):
             await ws.close(code=4400)
             return
     await ws.accept()
     ip = auth.client_ip(ws)
     started = time.time()
     detail = {"container": id} if mode == "container" else {"ssh": f"{ssh[2]}@{ssh[0]}:{ssh[1]}"} if ssh else None
+    if detail and key:
+        detail["key"] = key
+    if detail and install_key:
+        detail["install_key"] = install_key
     if mode != "update":
-        db.audit("console_open", user.username, ip, detail)
-    code = await console.run(ws, mode, id, ssh)
+        db.audit("ssh_key_install" if install_key else "console_open", user.username, ip, detail)
+    code = await console.run(ws, mode, id, ssh, key_path, ssh_cmd)
     if mode != "update":
         db.audit("console_close", user.username, ip, {"exit_code": code, "seconds": round(time.time() - started), **(detail or {})})
     with contextlib.suppress(Exception):

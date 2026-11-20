@@ -115,13 +115,20 @@ CODE_OPERATORS: dict[str, dict] = {
         "fields": [
             {"key": "venv", "label": "Python", "type": "pyenv", "default": "",
              "help": "Base Python is the server's python3. Environments can have other Python versions and packages."},
-            {"key": "code", "label": "Code", "type": "textarea", "mono": True, "required": True,
+            {"key": "source", "label": "What to run", "type": "select", "default": "code",
+             "options": [["code", "Code written here"], ["file", "A Python file on the server"]]},
+            {"key": "file", "label": "Python file", "type": "pyfile", "required": True, "show_if": {"source": ["file"]},
+             "placeholder": "/home/me/scripts/report.py",
+             "help": "A .py file on this server (Browse… to pick it). It runs as the app's user, so that user must be "
+                     "able to read it. " + _CODE_HELP},
+            {"key": "code", "label": "Code", "type": "textarea", "mono": True, "required": True, "show_if": {"source": ["code"]},
              "default": "import json, os\n\nctx = json.loads(os.environ[\"SAI_CONTEXT\"])   # trigger values, earlier tasks' outputs\n"
                         "print(f\"Hello from {ctx['dag']['id']}\")\n",
              "help": _CODE_HELP + " Placeholders like {{var.x}} are filled in as text before it runs."},
             {"key": "args", "label": "Arguments", "type": "text", "default": "", "placeholder": "optional, e.g. --dry-run {{trigger.mount}}",
              "help": "Given to the code as sys.argv[1:]."},
-            {"key": "workdir", "label": "Working folder", "type": "text", "default": "", "placeholder": "empty = the app's data folder"},
+            {"key": "workdir", "label": "Working folder", "type": "text", "default": "",
+             "placeholder": "empty = the file's folder, or the app's data folder for code"},
             {"key": "timeout", "label": "Time limit (seconds)", "type": "number", "min": 1, "max": 86400, "default": 300},
         ],
         "provides": ["last.output", "last.exit_code"],
@@ -739,11 +746,11 @@ def _context_json(ctx: dict) -> str:
     return json.dumps(keep, default=str)
 
 
-def _workdir(p: dict, ctx: dict) -> str:
+def _workdir(p: dict, ctx: dict, default: str | None = None) -> str:
     from .config import settings
     w = V.render(p.get("workdir") or "", ctx).strip()
     if not w:
-        return str(settings.data_dir)
+        return default or str(settings.data_dir)
     from pathlib import Path
     if not Path(w).is_absolute():
         raise J.JobError(f"The working folder must be a full path (starting with /), not “{w[:80]}”.")
@@ -752,13 +759,14 @@ def _workdir(p: dict, ctx: dict) -> str:
     return w
 
 
-async def _run_process(argv: list[str], ctx: dict, p: dict, shown: str, env: dict | None = None) -> tuple[str, str]:
+async def _run_process(argv: list[str], ctx: dict, p: dict, shown: str, env: dict | None = None,
+                       cwd: str | None = None) -> tuple[str, str]:
     """Run, collect output (≤ 8000 chars kept), fail on a non-zero exit. Output becomes {{last.output}}."""
     import os
     timeout = int(p.get("timeout") or 300)
     proc = await asyncio.create_subprocess_exec(
         *argv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, stdin=asyncio.subprocess.DEVNULL,
-        cwd=_workdir(p, ctx), env={**os.environ, "SAI_CONTEXT": _context_json(ctx), "PYTHONUNBUFFERED": "1", **(env or {})},
+        cwd=_workdir(p, ctx, cwd), env={**os.environ, "SAI_CONTEXT": _context_json(ctx), "PYTHONUNBUFFERED": "1", **(env or {})},
         start_new_session=os.name != "nt")
     try:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
@@ -793,18 +801,29 @@ async def _op_run_python(p: dict, ctx: dict) -> tuple[str, str]:
         py = pyenvs.env_python(p["venv"]) if p.get("venv") else pyenvs.base_python()
     except pyenvs.PyEnvError as e:
         raise J.JobError(str(e))
-    code = V.render(p.get("code") or "", ctx)
     try:
         args = shlex.split(V.render(p.get("args") or "", ctx))
     except ValueError as e:
         raise J.JobError(f"The arguments can't be read: {e}")
+    where = f"environment “{p['venv']}”" if p.get("venv") else "base Python"
+    if p.get("source") == "file":
+        from pathlib import Path
+        f = V.render(p.get("file") or "", ctx).strip()
+        if not f or not Path(f).is_absolute():
+            raise J.JobError(f"The Python file must be a full path (starting with /), not “{f[:80]}”.")
+        if not Path(f).is_file():
+            raise J.JobError(f"The Python file {f} doesn't exist (or the app's user can't see it).")
+        if not os.access(f, os.R_OK):
+            raise J.JobError(f"The app's user isn't allowed to read {f}.")
+        return await _run_process([py, "-u", f, *args], ctx, p, f"# {where}: {py}\n# file: {f} {' '.join(args)}".rstrip(),
+                                  cwd=str(Path(f).parent))
+    code = V.render(p.get("code") or "", ctx)
     tmp = settings.data_dir / "tmp"
     tmp.mkdir(parents=True, exist_ok=True)
     fd, path = tempfile.mkstemp(prefix="dag-", suffix=".py", dir=str(tmp))
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         f.write(code)
     try:
-        where = f"environment “{p['venv']}”" if p.get("venv") else "base Python"
         return await _run_process([py, "-u", path, *args], ctx, p, f"# {where}: {py}\n{code}")
     finally:
         try:

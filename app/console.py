@@ -8,7 +8,9 @@ Two kinds of session:
   * "container" – a shell inside a Docker container (docker exec -it ID bash|sh), opened
                from the Containers module.
   * "ssh"    – an SSH session to a device (ssh -p PORT -l USER HOST), opened from Network →
-               Devices; the password or key passphrase is typed into the terminal as usual.
+               Devices or Server → SSH keys; optionally with a saved key (-i, see ssh_keys.py) or running
+               only the command that installs a key on the device. The password or key passphrase is
+               typed into the terminal as usual.
 
 Protocol: the server sends terminal output as binary frames and status as JSON text frames
 ({"type": "exit", "code": N} / {"type": "error", "message": ...}); the client sends JSON:
@@ -70,13 +72,22 @@ def ssh_target(host: str, port, user: str) -> tuple[str, int, str]:
     return host, port, user
 
 
-def _argv(mode: str, container: str = "", ssh: tuple[str, int, str] | None = None) -> list[str]:
+def _argv(mode: str, container: str = "", ssh: tuple[str, int, str] | None = None, ssh_key: str | None = None,
+          ssh_cmd: str | None = None) -> list[str]:
     if mode == "ssh" and ssh:
         host, port, user = ssh
         # First connection to a device: its key is accepted and remembered (~/.ssh/known_hosts of the
         # app's user); if it changes later, ssh refuses and says so. "--" ends the options.
-        return [shutil.which("ssh") or "/usr/bin/ssh", "-o", "StrictHostKeyChecking=accept-new",
-                "-o", "ServerAliveInterval=30", "-p", str(port), "-l", user, "--", host]
+        # ssh_key: a key from Server → SSH keys (only that key is offered; the password still works as a fallback).
+        # ssh_cmd: run one command instead of a shell (used to install a key on the device).
+        argv = [shutil.which("ssh") or "/usr/bin/ssh", "-o", "StrictHostKeyChecking=accept-new",
+                "-o", "ServerAliveInterval=30", "-p", str(port), "-l", user]
+        if ssh_key:
+            argv += ["-i", ssh_key, "-o", "IdentitiesOnly=yes"]
+        argv += ["--", host]
+        if ssh_cmd:
+            argv.append(ssh_cmd)
+        return argv
     if mode == "container":
         docker = shutil.which("docker") or "/usr/bin/docker"
         # A shell inside the container: bash if it has one, else sh.
@@ -116,7 +127,8 @@ def _make_controlling_tty() -> None:  # runs in the child before exec
     fcntl.ioctl(0, termios.TIOCSCTTY, 0)
 
 
-async def run(ws: WebSocket, mode: str, container: str = "", ssh: tuple[str, int, str] | None = None) -> int | None:
+async def run(ws: WebSocket, mode: str, container: str = "", ssh: tuple[str, int, str] | None = None,
+              ssh_key: str | None = None, ssh_cmd: str | None = None) -> int | None:
     """Serve one console session on an accepted WebSocket. Returns the exit code."""
     if not AVAILABLE:
         await ws.send_json({"type": "error", "message": "The console is only available when the app runs on Linux."})
@@ -130,7 +142,7 @@ async def run(ws: WebSocket, mode: str, container: str = "", ssh: tuple[str, int
         _set_size(slave, 120, 32)
         env = _env()
         proc = await asyncio.create_subprocess_exec(
-            *_argv(mode, container, ssh), stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env["HOME"],
+            *_argv(mode, container, ssh, ssh_key, ssh_cmd), stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env["HOME"],
             start_new_session=True, preexec_fn=_make_controlling_tty,
         )
     except Exception as e:

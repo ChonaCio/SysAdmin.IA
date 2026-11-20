@@ -656,6 +656,11 @@ def _clean_items(items: list, catalog_: dict, what: str) -> list[dict]:
                 from . import pyenvs
                 if not pyenvs.exists(v):
                     raise JobError(f"{label}: the Python environment “{v}” doesn't exist (Automation → Python environments).")
+            if ft == "pyfile" and v and "{{" not in v:
+                if not (v.startswith("/") or re.match(r"^[A-Za-z]:[\\/]", v)):
+                    raise JobError(f"{label}: the Python file must be a full path, starting with /.")
+                if not v.lower().endswith((".py", ".pyw")):
+                    raise JobError(f"{label}: pick a Python file (ending in .py).")
             if ft == "ai_connection" and v and not ai.get(int(v)):
                 raise JobError(f"{label}: that AI connection no longer exists.")
             if ft == "choice" and v:

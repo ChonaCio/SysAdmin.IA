@@ -45,6 +45,8 @@ const ICON = {
   "arrow-left": '<path d="M19 12H5M11 6l-6 6 6 6"/>',
   "arrow-up": '<path d="M12 19V5M6 11l6-6 6 6"/>',
   download: '<path d="M12 4v11M7 10l5 5 5-5M5 20h14"/>',
+  upload: '<path d="M12 16V5M7 10l5-5 5 5M5 20h14"/>',
+  star: '<path d="M12 3l2.7 5.6 6.1.8-4.5 4.2 1.1 6.1L12 16.8l-5.4 2.9 1.1-6.1-4.5-4.2 6.1-.8z"/>',
   check: '<path d="M5 12l5 5 9-10"/>',
   trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>',
   test: '<path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.7 3h10.6a2 2 0 0 0 1.7-3l-5-9V3"/>',
@@ -183,6 +185,7 @@ function switchView(v) {
   if (v === "jobs" && window.loadDags) loadDags();
   if (v === "processes" && window.loadProcesses) loadProcesses();
   if (v === "pyenvs" && window.loadPyEnvs) loadPyEnvs();
+  if (v === "sshkeys" && window.loadSshKeys) loadSshKeys();
   if (window.checkProcBanner) checkProcBanner(v);
   if (v === "localai") loadLocalAI();
   if (v === "containers" && window.loadDocker) loadDocker();
@@ -1755,7 +1758,8 @@ function connectConsole(name) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ssh = state.sshSessions[name];
   const extra = name === "container" ? `&id=${encodeURIComponent(state.consoleContainer?.id || "")}`
-    : ssh ? `&host=${encodeURIComponent(ssh.host)}&port=${ssh.port}&user_name=${encodeURIComponent(ssh.user)}` : "";
+    : ssh ? `&host=${encodeURIComponent(ssh.host)}&port=${ssh.port}&user_name=${encodeURIComponent(ssh.user)}`
+      + (ssh.key ? `&key=${encodeURIComponent(ssh.key)}` : "") + (ssh.install ? `&install_key=${encodeURIComponent(ssh.install)}` : "") : "";
   const mode = ssh ? "ssh" : name.startsWith("sh-") ? "shell" : name;   // every shell tab is its own session
   const ws = new WebSocket(`${proto}://${location.host}/ws/console?mode=${mode}${extra}`);
   ws.binaryType = "arraybuffer";
@@ -1853,11 +1857,12 @@ function newShellConsole() {
 }
 
 // An SSH session to a device, in a new tab (opened from Network → Devices). Each click opens a new tab.
-function openSshConsole(host, port, user, label) {
+// key: a saved key from Server → SSH keys to sign in with; install: a key to add to the device's authorized_keys
+function openSshConsole(host, port, user, label, key = "", install = "") {
   state.sshCount = (state.sshCount || 0) + 1;
   const name = `ssh-${state.sshCount}`;
-  state.sshSessions[name] = { host, port: Number(port) || 22, user, label };
-  addConsoleTab(name, `SSH: ${label || host}`, `${user}@${host}:${port}`);
+  state.sshSessions[name] = { host, port: Number(port) || 22, user, label, key, install };
+  addConsoleTab(name, `SSH: ${label || host}`, `${user}@${host}:${port}${key ? ` · key ${key}` : ""}`);
   openConsole(name);
 }
 
@@ -2892,6 +2897,11 @@ function jobField(fd, value) {
       input = el("select", {}, opts(cat.ai_connections.map((c) => [c.value, c.label]), [["", "Default connection"]]));
       input.value = value ? String(value) : "";
       break;
+    case "pyfile": {   // a .py file on the server: text box + Browse…
+      input = el("input", { type: "text", spellcheck: "false", class: "mono", placeholder: fd.placeholder || "" });
+      input.value = value ?? "";
+      break;
+    }
     case "pyenv": {    // Python environment, or "" = the server's base Python
       const envs = cat.pyenvs || [];
       input = el("select", {}, opts(envs.map((e) => [e.value, e.label]), [["", cat.base_python || "Base Python"]]));
@@ -2939,13 +2949,79 @@ function jobField(fd, value) {
   }
   input.dataset.key = fd.key;
   input.dataset.ftype = fd.type;
-  if (["text", "textarea"].includes(fd.type)) input.dataset.ph = "1";
+  if (["text", "textarea", "pyfile"].includes(fd.type)) input.dataset.ph = "1";
+  let shown = input;
+  if (fd.type === "pyfile") {
+    const browse = el("button", { type: "button", class: "small ghost", onclick: (ev) => {
+      ev.preventDefault();
+      pickServerFile(input.value.trim(), { exts: [".py", ".pyw"], title: "Choose a Python file on the server" }, (p) => {
+        input.value = p;
+        input.dispatchEvent(new Event("input", { bubbles: true }));
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+      });
+    } }, withIcon("folder", "Browse…"));
+    shown = el("span", { class: "pick-row" }, input, browse);
+  }
   const label = fd.type === "bool"
     ? el("label", { class: "check field" }, input, fd.label)
-    : el("label", { class: "field" }, fd.label, fd.required ? null : (["bool", "select", "mount", "sensor", "ai_connection", "weekdays", "number", "time", "choice"].includes(fd.type) ? null : el("span", { class: "muted small" }, " (optional)")), input);
+    : el("label", { class: "field" }, fd.label, fd.required ? null : (["bool", "select", "mount", "sensor", "ai_connection", "weekdays", "number", "time", "choice"].includes(fd.type) ? null : el("span", { class: "muted small" }, " (optional)")), shown);
   label.dataset.key = fd.key;
   if (fd.help) label.append(el("span", { class: "muted small" }, fd.help));
   return label;
+}
+
+// ---- file picker: browse the server's folders (as the app's user) and pick a file
+function pickServerFile(start, opts, done) {
+  const d = $("#file-pick-dialog");
+  const exts = (opts && opts.exts) || [];
+  const input = $("#fp-input"), list = $("#fp-list"), all = $("#fp-all");
+  $("#fp-title").textContent = (opts && opts.title) || "Choose a file on the server";
+  all.closest("label").hidden = !exts.length;
+  all.checked = false;
+  let cur = "/";
+  const matches = (n) => !exts.length || all.checked || exts.some((x) => n.toLowerCase().endsWith(x));
+  const join = (dir, n) => `${dir === "/" ? "" : dir}/${n}`;
+  const go = async (path) => {
+    list.innerHTML = "";
+    $("#fp-path").textContent = path;
+    try {
+      const r = await api(`/api/files?path=${encodeURIComponent(path)}&hidden=false`);
+      cur = r.path;
+      $("#fp-path").textContent = r.path;
+      if (r.parent) list.append(el("button", { type: "button", class: "dk-pick-row", onclick: () => go(r.parent) }, iconEl("arrow-up"), " .."));
+      const shown = r.entries.filter((x) => x.dir || matches(x.name));
+      if (!shown.length) list.append(el("p", { class: "small muted" }, exts.length && !all.checked ? "No folders or Python files here." : "This folder is empty."));
+      for (const x of shown) {
+        const full = join(r.path, x.name);
+        list.append(el("button", { type: "button", class: "dk-pick-row" + (input.value === full ? " active" : ""),
+          onclick: (ev) => {
+            if (x.dir) { go(full); return; }
+            input.value = full;
+            list.querySelectorAll(".dk-pick-row.active").forEach((b) => b.classList.remove("active"));
+            ev.currentTarget.classList.add("active");
+          },
+          ondblclick: () => { if (!x.dir) { input.value = full; finish(); } } }, iconEl(x.dir ? "folder" : "file"), ` ${x.name}`,
+          !x.dir && x.size != null ? el("span", { class: "muted small" }, `  ${fmtBytes(x.size)}`) : null));
+      }
+      if (r.truncated) list.append(el("p", { class: "small muted" }, "Only the first 3000 entries are shown."));
+    } catch (ex) { list.append(el("p", { class: "small muted" }, ex.message)); }
+  };
+  const finish = () => {
+    const p = input.value.trim();
+    if (!p.startsWith("/")) { toast("Use a full path, starting with /."); return; }
+    if (p.endsWith("/")) { toast("That's a folder: pick a file in it."); return; }
+    d.close(); done(p);
+  };
+  const places = $("#fp-places");
+  places.innerHTML = "";
+  for (const p of ["/", "/home", "/opt", "/srv", "/mnt", "/media"])
+    places.append(el("button", { type: "button", class: "small ghost", onclick: () => go(p) }, iconEl("folder"), ` ${p}`));
+  all.onchange = () => go(cur);
+  $("#fp-ok").onclick = finish;
+  $("#fp-cancel").onclick = () => d.close();
+  input.value = start || "";
+  d.showModal();
+  go(start && start.startsWith("/") ? start.replace(/\/[^/]*$/, "") || "/" : "/");
 }
 
 function itemValues(card) {

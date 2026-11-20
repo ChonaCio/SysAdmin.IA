@@ -17,6 +17,7 @@ async function loadPyEnvs() {
   if (state.view !== "pyenvs") return;
   state.pyenvs = st;
   renderPyServer(st);
+  renderPyVersions(st.pythons || { downloaded: [], available: [] }, st);
   renderPyTasks(st.tasks || []);
   list.innerHTML = "";
   if (!st.envs.length) {
@@ -64,14 +65,78 @@ function renderPyServer(st) {
       el("dt", { class: "muted" }, "Base Python"),
       el("dd", {}, st.base?.version ? `${st.base.version} · ` : "", el("code", { "data-no-i18n": "" }, st.base?.path || "–")),
       el("dt", { class: "muted" }, "Installed versions"),
-      el("dd", { "data-no-i18n": "" }, interp.length ? interp.map((i) => i.version).join(" · ") : "–"),
+      el("dd", { "data-no-i18n": "" }, interp.filter((i) => !i.downloaded).map((i) => i.version).join(" · ") || "–"),
       el("dt", { class: "muted" }, "uv"),
       el("dd", {}, st.uv ? `${st.uv} · ` : "Not installed", st.uv ? el("span", { class: "muted" }, "any Python version can be used") : null),
       el("dt", { class: "muted" }, "Stored in"),
       el("dd", {}, el("code", { "data-no-i18n": "" }, st.root || "–"))),
-    st.uv ? null : el("p", { class: "muted small" },
+    st.uv ? "" : el("p", { class: "muted small" },
       "uv is a small tool (installed in SysAdmin.IA's own folder, not system-wide) that downloads any Python version for an environment, e.g. 3.9 or 3.13. "
       + "Without it, environments can only use the versions installed above."));
+}
+
+// ---- Python versions downloaded by the app (uv), and the ones that can be downloaded
+function pyVariant(v) { return v.variant === "freethreaded" ? "free-threaded" : ""; }
+
+function renderPyVersions(pv, st) {
+  const box = $("#pyenv-pythons");
+  box.innerHTML = "";
+  const running = new Set((st.tasks || []).filter((t) => t.state === "running" && t.kind === "python").map((t) => t.env));
+  const avail = pv.available || [];
+  const sel = el("select", { "aria-label": "Version to download" },
+    ...avail.map((a) => el("option", { value: a.request }, `Python ${a.version}${a.variant ? " (free-threaded)" : ""}`)),
+    el("option", { value: "@other" }, "Another version…"));
+  const other = el("input", { class: "mono", placeholder: "3.11.9", spellcheck: "false", inputmode: "decimal", "aria-label": "Version" });
+  other.hidden = !!avail.length;
+  if (!avail.length) sel.value = "@other";
+  sel.addEventListener("change", () => { other.hidden = sel.value !== "@other"; if (!other.hidden) other.focus(); });
+  const go = el("button", { type: "submit", class: "small primary" }, withIcon("download", pv.uv ? "Download" : "Install uv and download"));
+  const form = el("form", { class: "pyenv-dl", onsubmit: async (ev) => {
+    ev.preventDefault();
+    const v = sel.value === "@other" ? other.value.trim() : sel.value;
+    if (!v) { toast("Type a version, e.g. 3.12."); return; }
+    go.disabled = true;
+    try {
+      await api("/api/pyenvs/pythons", { method: "POST", body: JSON.stringify({ version: v }) });
+      toast(`Downloading Python ${v}…`);
+    } catch (ex) { toast(ex.message, 6000); }
+    loadPyEnvs();
+  } }, sel, other, go);
+  const have = pv.downloaded || [];
+  box.append(...[
+    el("div", { class: "ai-card-head" },
+      el("span", { class: "icon-tile", html: icon("download") }),
+      el("div", { class: "ai-card-title" },
+        el("b", {}, "Python versions"),
+        el("div", { class: "muted small" }, "Download other Python versions for your environments. They're kept in SysAdmin.IA's own folder and don't change the server's Python."))),
+    have.length ? el("table", { class: "pyenv-ver-table small" },
+      el("thead", {}, el("tr", {}, el("th", {}, "Version"), el("th", {}, "Size"), el("th", {}, "Used by"), el("th", {}, ""))),
+      el("tbody", {}, ...have.map((h) => el("tr", {},
+        el("td", {}, el("strong", { "data-no-i18n": "" }, `Python ${h.version}`), pyVariant(h) ? el("span", { class: "tag" }, pyVariant(h)) : null),
+        el("td", { class: "muted", "data-no-i18n": "" }, h.size != null ? fmtBytes(h.size) : "–"),
+        el("td", {}, h.used_by?.length ? el("span", { "data-no-i18n": "" }, h.used_by.join(", ")) : el("span", { class: "muted" }, "No environment")),
+        el("td", { class: "pyenv-ver-actions" },
+          el("button", { type: "button", class: "small ghost", onclick: () => pyNewDialog(h.path) }, withIcon("plus", "New environment")),
+          el("button", { type: "button", class: "small ghost danger", disabled: !!h.used_by?.length,
+            title: h.used_by?.length ? "Delete the environments that use it first" : "Remove", onclick: () => pyRemoveVersion(h) },
+            withIcon("trash", "Remove")))))))
+      : el("p", { class: "muted small" }, "No Python versions downloaded yet."),
+    [...running].length ? el("p", { class: "small" }, `Downloading: ${[...running].join(", ")}…`) : null,
+    form,
+    pv.error ? el("p", { class: "small error" }, pv.error) : null,
+    el("p", { class: "muted small" }, pv.uv
+      ? "Downloads use uv's standalone Python builds (python-build-standalone, about 30–60 MB each). Environments made from them are ordinary virtual environments (python -m venv), with pip."
+      : "Downloading uses uv, which is installed first (in SysAdmin.IA's own folder). Then about 30–60 MB per version."),
+  ].filter(Boolean));
+}
+
+async function pyRemoveVersion(h) {
+  if (!confirm(`Remove the downloaded Python ${h.version}?`)) return;
+  try {
+    await api("/api/pyenvs/pythons/remove", { method: "POST", body: JSON.stringify({ key: h.key }) });
+    toast(`Removing Python ${h.version}…`);
+  } catch (ex) { toast(ex.message, 6000); }
+  loadPyEnvs();
 }
 
 function renderPyTasks(tasks) {
@@ -83,6 +148,7 @@ function renderPyTasks(tasks) {
   for (const t of recent) {
     const what = {
       create: `Creating ${t.env}`, install: `Installing packages in ${t.env}`, uninstall: `Removing a package from ${t.env}`, uv: "Installing uv",
+      python: `Downloading Python ${t.env}`, "python-remove": "Removing a Python version",
     }[t.kind] || t.kind;
     const [label, cls] = { running: ["running…", ""], done: ["done", "ok"], failed: ["failed", "crit"] }[t.state] || [t.state, ""];
     const pre = el("pre", { class: "update-notes mono small", "data-no-i18n": "" }, (t.log || []).join("\n") || "…");
@@ -128,12 +194,17 @@ async function installUv(btn) {
 }
 
 // ---- new environment
-function pyNewDialog() {
+function pyNewDialog(pre) {
   const st = state.pyenvs || {};
+  const interp = (st.interpreters || []).filter((i) => i.path !== st.base?.path);
+  const dl = interp.filter((i) => i.downloaded), sys = interp.filter((i) => !i.downloaded);
   const sel = el("select", { name: "python" },
     el("option", { value: "" }, `Base Python${st.base?.version ? ` (${st.base.version})` : ""}`),
-    ...(st.interpreters || []).filter((i) => i.path !== st.base?.path).map((i) => el("option", { value: i.path }, `Python ${i.version} · ${i.path}`)),
+    dl.length ? el("optgroup", { label: "Downloaded" }, ...dl.map((i) => el("option", { value: i.path },
+      `Python ${i.version}${i.variant === "freethreaded" ? " (free-threaded)" : ""}`))) : null,
+    sys.length ? el("optgroup", { label: "Installed on the server" }, ...sys.map((i) => el("option", { value: i.path }, `Python ${i.version} · ${i.path}`))) : null,
     el("option", { value: "@version" }, st.uv ? "Another version (downloaded with uv)…" : "Another version (needs uv)…"));
+  if (typeof pre === "string" && interp.some((i) => i.path === pre)) sel.value = pre;
   const ver = el("input", { name: "version", placeholder: "3.12", spellcheck: "false", class: "mono", inputmode: "decimal" });
   const verRow = field("Python version", ver, st.uv ? "e.g. 3.9, 3.12 or 3.13.1. uv downloads it the first time (a few MB)."
     : "Install uv first (on this page), then any version can be used.");

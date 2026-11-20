@@ -36,25 +36,23 @@ async def run_jobs() -> None:
 
 
 async def run_network() -> None:
-    from . import lan_names, network
+    from . import network
     eng = network.ENGINE
-
-    async def mdns() -> None:      # keep the .local names announced (picks up changes within seconds)
-        while True:
-            try:
-                await asyncio.to_thread(lan_names.sync_mdns)
-            except Exception:  # noqa: BLE001
-                log.exception("publishing .local names failed")
-            await asyncio.sleep(5)
-
     eng.start()
-    tasks = [asyncio.create_task(mdns()), asyncio.create_task(procs.heartbeat_loop(eng.info))]
+    tasks = [asyncio.create_task(procs.heartbeat_loop(eng.info))]
     if eng.task:
         tasks.append(eng.task)
+    await _until_stopped(*tasks)
+
+
+async def run_names() -> None:
+    from . import lan_names
+    eng = lan_names.ENGINE
+    eng.start()
     try:
-        await _until_stopped(*tasks)
+        await _until_stopped(eng.task, asyncio.create_task(procs.heartbeat_loop(eng.info)))
     finally:
-        lan_names.stop_all()
+        lan_names.stop_all()     # the .local names stop being announced with this process
 
 
 def main() -> None:
@@ -68,6 +66,8 @@ def main() -> None:
         asyncio.run(serve_web())
     elif name == "jobs":
         asyncio.run(run_jobs())
+    elif name == "names":
+        asyncio.run(run_names())
     else:
         asyncio.run(run_network())
 
