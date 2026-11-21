@@ -105,7 +105,7 @@ function deviceProblem(d) {
   const box = el("div", { class: "note warn dev-problem" }, el("p", { class: "small" }, d.last_error));
   const acts = el("div", { class: "row" });
   if (d.last_state === "auth" && state.me?.console) acts.append(el("button", { type: "button", class: "small primary",
-    onclick: () => deviceInstallKey(d) }, withIcon("upload", "Install the key on the device")));
+    onclick: () => deviceInstallKey(d, "setup") }, withIcon("upload", "Install the key on the device")));
   if (d.last_state === "hostkey") acts.append(el("button", { type: "button", class: "small", onclick: async () => {
     if (!confirm(`Forget the old identity of ${d.host}?\n\nDo this only if you know the device was reinstalled or replaced: the next connection accepts the key it shows then.`)) return;
     try { await api("/api/ssh/known-hosts/remove", { method: "POST", body: JSON.stringify({ host: d.port === 22 ? d.host : `[${d.host}]:${d.port}` }) }); }
@@ -137,6 +137,20 @@ function deviceModules(d, data) {
       onclick: () => deviceInstallModule(d.id, m.id) }, withIcon("download", m.id === "docker_access" ? "Give access" : "Install")));
     if (ok && m.id === "docker") chip.append(el("button", { type: "button", class: "small ghost", onclick: () => deviceOpenModule(d.id, "containers") }, withIcon("box", "Containers")));
     if (ok && m.id === "ollama") chip.append(el("button", { type: "button", class: "small ghost", onclick: () => deviceOpenModule(d.id, "localai") }, withIcon("chip", "Local AI")));
+    box.append(chip);
+  }
+  // sudo: set up once (password typed in a Console tab), then installs don't ask for it
+  const sudo = (d.info || {}).sudo;
+  if (known && sudo && sudo !== "none") {
+    const free = devSudoFree(d);
+    const chip = el("div", { class: `dev-mod ${free ? "ok" : ""}`, title: "Installs on the device use sudo." },
+      el("span", { class: "dev-mod-icon", html: icon("shield") }),
+      el("span", { class: "dev-mod-text" }, el("strong", { class: "small" }, "sudo"),
+        el("span", { class: "muted small" }, sudo === "root" ? "signed in as root" : free ? "no password needed" : "asks for the password")));
+    if (!free && d.last_state === "online" && state.me?.console) chip.append(el("button", { type: "button", class: "small",
+      onclick: () => {
+        if (confirm(`Let SysAdmin.IA use sudo on ${d.name} without a password?\n\nInstalls then never ask for the password. This gives SysAdmin.IA's admins root on the device.\n\nA Console tab opens: type the password of ${d.user} once when sudo asks for it.`)) deviceInstallKey(d, "sudo");
+      } }, withIcon("shield", "Set up without a password")));
     box.append(chip);
   }
   return box;
@@ -223,18 +237,26 @@ async function deviceDialog(d = null) {
     field("SSH key", key, "SysAdmin.IA signs in with this key, never with a password. If the key isn't on the device yet, you can install it after saving (the device's password is asked once)."),
     field("Description", el("input", { name: "description", maxlength: "300", value: d ? d.description : "", placeholder: "What it is or where it is" })),
     el("div", { class: "row" }, test), result,
-    el("p", { class: "muted small" }, "Tasks and installs run as this user. Installing Docker or Ollama needs sudo on the device (the password is typed in the Console tab)."),
+    d ? null : el("label", { class: "check" }, el("input", { type: "checkbox", name: "sudo_setup", checked: true }),
+      el("span", {}, "Let SysAdmin.IA use sudo on the device without a password"),
+      el("span", { class: "muted small" }, "Set up together with the key (the password is typed once), so installing Docker, Ollama or Python never asks for it. This gives SysAdmin.IA's admins root on the device.")),
+    el("p", { class: "muted small" }, "Tasks and installs run as this user."),
   ], async (f) => {
     const body = deviceForm(f);
+    const sudo = !d && f.sudo_setup?.checked;
     const saved = await api(d ? `/api/devices/${d.id}` : "/api/devices", { method: d ? "PUT" : "POST", body: JSON.stringify(body) });
     toast(d ? "Saved." : `${saved.name} added. Connecting…`);
     state.devices.data = null;
     devTargetCache = null;
     const fresh = await api(`/api/devices/${saved.id}`).catch(() => null);
     await loadDevices(false);
-    if (fresh && fresh.last_state === "auth" && state.me?.console
-        && confirm(`${fresh.name} didn't accept the key ${fresh.key_name} yet.\n\nInstall it now? A Console tab opens: type the password of ${fresh.user} on the device once.`)) {
-      deviceInstallKey(fresh);
+    if (!fresh || !state.me?.console) return;
+    if (fresh.last_state === "auth"
+        && confirm(`${fresh.name} didn't accept the key ${fresh.key_name} yet.\n\nInstall it now${sudo ? " and set up sudo without a password" : ""}? A Console tab opens: type the password of ${fresh.user} on the device when asked.`)) {
+      deviceInstallKey(fresh, sudo ? "setup" : "key");
+    } else if (sudo && fresh.last_state === "online" && !devSudoFree(fresh)
+        && confirm(`The key works. Set up sudo without a password on ${fresh.name} now?\n\nA Console tab opens: type the password of ${fresh.user} once when sudo asks for it.`)) {
+      deviceInstallKey(fresh, "sudo");
     }
   }, d ? "Save" : "Add");
 }
@@ -248,17 +270,22 @@ async function deviceDelete(d) {
   if (!confirm(`Remove ${d.name} from SysAdmin.IA?\n\nNothing on the device changes: its containers, models and files stay, and the key stays in its authorized_keys.`)) return;
   try { await api(`/api/devices/${d.id}`, { method: "DELETE" }); toast(`${d.name} removed.`); }
   catch (ex) { toast(ex.message, 7000); }
-  for (const m of ["docker", "localai"]) if (String((state.target || {})[m]) === String(d.id)) setTarget(m, "");
+  for (const m of Object.keys(TARGET_BARS)) if (String((state.target || {})[m]) === String(d.id)) setTarget(m, "");
   state.devices.data = null;
   devTargetCache = null;
   loadDevices(false);
 }
 
-// ---- console actions: install the key, install a module, reconnect
-function deviceInstallKey(d) {
-  openSshConsole(d.host, d.port, d.user, `${d.name} (install ${d.key_name})`, "", d.key_name);
-  toast("When the key is installed, come back to Devices and click Try again.", 7000);
+// ---- console actions: install the key (+ passwordless sudo), install a module, reconnect
+// step: "setup" = key + sudo without a password, "key" = key only, "sudo" = sudo only (the key already works)
+function deviceInstallKey(d, step = "setup") {
+  const label = { setup: "Install the key and set up sudo", key: "Install the key", sudo: "Set up sudo" }[step];
+  openDeviceConsole(d, step, label);
+  toast(step === "sudo" ? `Type the password of ${d.user} once when sudo asks for it.`
+    : `Type the password of ${d.user} on the device when asked${step === "setup" ? " (to sign in, then once more for sudo)" : ""}.`, 8000);
 }
+
+const devSudoFree = (d) => ["nopasswd", "root"].includes((d.info || {}).sudo);
 
 function deviceInstallModule(id, module) {
   const d = (state.devices.data?.devices || []).find((x) => x.id === id) || (devTargetCache || []).find((x) => x.id === id);
@@ -268,14 +295,18 @@ function deviceInstallModule(id, module) {
                 docker_access: "The user is added to the docker group (root-equivalent on the device).",
                 ollama: "Ollama's official installer (ollama.com/install.sh) runs; it uses sudo.",
                 python: "Python 3 is installed with the device's package manager (sudo)." }[module] || "";
-  if (!confirm(`Install ${m.label} on ${d.name}?\n\n${why}\n\nA Console tab opens: if sudo asks for the password of ${d.user}, type it there.`)) return;
+  const pw = devSudoFree(d) ? "A Console tab opens and shows the install. No password is needed: sudo is set up for SysAdmin.IA on the device."
+    : `A Console tab opens: if sudo asks for the password of ${d.user}, type it there. (Set up sudo without a password on the device card to skip this next time.)`;
+  if (!confirm(`Install ${m.label} on ${d.name}?\n\n${why}\n\n${pw}`)) return;
   openDeviceConsole(d, module, m.label);
 }
 
-// Called by the console when a module install session ends (app.js).
+// Called by the console when a module install or setup session ends (app.js).
 async function deviceAfterModule(id, module, code) {
   try { await api(`/api/devices/${id}/refresh`, { method: "POST" }); } catch { /* shown on the Devices page */ }
-  toast(code === 0 ? "Installed. SysAdmin.IA reconnected to the device." : "The install didn't finish: see the Console tab.", 6000);
+  const setup = ["key", "setup", "sudo"].includes(module);
+  toast(code === 0 ? (setup ? "Done. SysAdmin.IA reconnected to the device." : "Installed. SysAdmin.IA reconnected to the device.")
+    : setup ? "The setup didn't finish: see the Console tab." : "The install didn't finish: see the Console tab.", 6000);
   state.devices.data = null;
   if (state.view === "devices") loadDevices(false);
 }
@@ -309,8 +340,19 @@ function setTarget(module, id) {
   try { localStorage.setItem("sai.target", JSON.stringify(state.target)); } catch { /* private mode */ }
 }
 
+// module → [bar element, what to do when the device changes]. The view names map to these in app.js switchView.
+const TARGET_BARS = {
+  docker: ["#dk-target", () => resetDockerView()],
+  localai: ["#lai-target", () => resetLaiView()],
+  drives: ["#drv-target", () => { state.drives = null; if (state.fb) { state.fb.path = "/"; state.fb.listing = null; } if (state.view === "drives") openDrives(); }],
+  pyenvs: ["#pye-target", () => { if (state.view === "pyenvs" && window.loadPyEnvs) loadPyEnvs(); }],
+  processes: ["#proc-target", () => { if (state.view === "processes" && window.loadProcesses) loadProcesses(); }],
+};
+const TARGET_VIEWS = { containers: "docker", localai: "localai", drives: "drives", pyenvs: "pyenvs", processes: "processes" };
+
 async function renderTargetBar(module) {
-  const box = $(module === "docker" ? "#dk-target" : "#lai-target");
+  const [sel_, reset] = TARGET_BARS[module] || [];
+  const box = sel_ && $(sel_);
   if (!box) return;
   if (!devTargetCache) {
     try { devTargetCache = (await api("/api/devices")).devices; } catch { devTargetCache = []; }
@@ -318,7 +360,7 @@ async function renderTargetBar(module) {
   const cur = String((state.target || {})[module] || "");
   if (cur && !devTargetCache.some((d) => String(d.id) === cur)) {   // the device was removed
     setTarget(module, "");
-    module === "docker" ? resetDockerView() : resetLaiView();
+    reset();
   }
   box.innerHTML = "";
   box.hidden = !devTargetCache.length;
@@ -328,9 +370,16 @@ async function renderTargetBar(module) {
   sel.value = String((state.target || {})[module] || "");
   sel.addEventListener("change", () => {
     setTarget(module, sel.value);
-    module === "docker" ? resetDockerView() : resetLaiView();
+    reset();
   });
-  box.append(el("label", { class: "dev-target" }, el("span", { class: "small muted" }, "Runs on"), sel));
+  box.append(el("label", { class: "dev-target" }, el("span", { class: "small muted" }, module === "drives" ? "Drives of" : "Runs on"), sel));
+}
+
+// The device a page works on (null = this server), with its saved data when known.
+function targetDevice(module) {
+  const id = String((state.target || {})[module] || "");
+  if (!id) return null;
+  return (devTargetCache || []).find((d) => String(d.id) === id) || { id: Number(id), name: `#${id}` };
 }
 
 function resetDockerView() {
@@ -349,4 +398,4 @@ function resetLaiView() {
 loadTargets();
 $("#dev-add").addEventListener("click", () => deviceDialog());
 $("#dev-refresh").addEventListener("click", () => loadDevices(true));
-Object.assign(window, { loadDevices, renderTargetBar, deviceInstallModule, deviceAfterModule, deviceReconnect });
+Object.assign(window, { loadDevices, renderTargetBar, deviceInstallModule, deviceAfterModule, deviceReconnect, targetDevice, TARGET_VIEWS });

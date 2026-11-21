@@ -5,6 +5,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import functools
 import os
 import re
 import shutil
@@ -12,17 +13,19 @@ import signal
 import json
 import logging
 import time
+import urllib.parse
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
+from starlette.concurrency import iterate_in_threadpool
 from pydantic import BaseModel
 
 
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
 from . import containers, firewall, lan_names, local_ai, model_search, network, publish, routers, user_prefs, variables
-from . import dags, devices, procs, pyenvs, ssh_keys
+from . import dags, device_pyenvs, devices, procs, pyenvs, ssh_keys
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -43,8 +46,12 @@ async def unexpected_error(request: Request, exc: Exception):
     return JSONResponse({"detail": f"Unexpected error ({type(exc).__name__}): {exc}"[:500]}, status_code=500)
 
 
+DEVICE_PATHS = ("/api/docker/", "/api/localai/", "/api/drives", "/api/files", "/api/pyenvs", "/api/sysprocs")
+
+
 class DeviceTarget:
-    """`?device=ID` on /api/docker/… and /api/localai/…: the request is for a device from Server → Devices
+    """`?device=ID` on /api/docker/…, /api/localai/… (and Drives, files, Python environments, the Processes page's
+    system processes): the request is for a device from Server → Devices
     (containers.py / local_ai.py then talk to it through an SSH tunnel). Pure ASGI, so the context variable
     reaches the endpoint and the threads it starts with asyncio.to_thread."""
 
@@ -52,7 +59,7 @@ class DeviceTarget:
         self.app = app
 
     async def __call__(self, scope, receive, send):
-        if scope["type"] == "http" and scope["path"].startswith(("/api/docker/", "/api/localai/")):
+        if scope["type"] == "http" and scope["path"].startswith(DEVICE_PATHS):
             from urllib.parse import parse_qs
             dev = (parse_qs(scope.get("query_string", b"").decode("latin-1")).get("device") or [""])[0]
             if dev.isdigit() and int(dev) > 0:
@@ -733,7 +740,7 @@ async def docker_container_remove(cid: str, body: DockerRemoveBody, request: Req
 async def docker_container_create(body: DockerSpecBody, request: Request, user: User = Depends(admin_user)):
     t = await asyncio.to_thread(_dk, containers.create_container, body.spec)
     db.audit("docker_container_create", user.username, auth.client_ip(request),
-             {"name": body.spec.get("name"), "image": body.spec.get("image")})
+             {"name": body.spec.get("name"), "image": body.spec.get("image"), "device": devices.current_id()})
     return t
 
 
@@ -766,8 +773,45 @@ async def docker_host(user: User = Depends(admin_user)):
 
 
 @app.get("/api/docker/tasks")
-async def docker_tasks(user: User = Depends(admin_user)):
-    return containers.tasks()
+async def docker_tasks(all: bool = False, user: User = Depends(admin_user)):
+    return containers.tasks(all)
+
+
+@app.get("/api/docker/hosts")
+async def docker_hosts(user: User = Depends(admin_user)):
+    """Where containers can run: this server + devices with Docker (no connection is made)."""
+    return await asyncio.to_thread(containers.hosts)
+
+
+@app.get("/api/docker/everywhere")
+async def docker_everywhere(stats: bool = False, user: User = Depends(admin_user)):
+    """Containers of this server and of every device with Docker, each tagged with where it runs."""
+    return await asyncio.to_thread(_dk, containers.list_everywhere, stats)
+
+
+@app.get("/api/docker/images/where")
+async def docker_image_where(name: str, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.image_everywhere, name)
+
+
+@app.get("/api/docker/images/everywhere")
+async def docker_images_everywhere(user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dk, containers.images_everywhere)
+
+
+class ImageCopyBody(BaseModel):
+    name: str
+    source: int = 0
+    target: int = 0
+
+
+@app.post("/api/docker/images/copy")
+async def docker_image_copy(body: ImageCopyBody, request: Request, user: User = Depends(admin_user)):
+    """Copy an image from one computer to another (docker save → docker load through the app)."""
+    t = await asyncio.to_thread(_dk, containers.copy_image, body.name, body.source, body.target)
+    db.audit("docker_image_copy", user.username, auth.client_ip(request),
+             {"image": body.name, "from": body.source or "this server", "to": body.target or "this server"})
+    return t
 
 
 @app.get("/api/docker/images")
@@ -1189,22 +1233,28 @@ def _py(fn, *a):
         raise HTTPException(400, str(e))
 
 
+def _pyx(fn: str):
+    """pyenvs.<fn> for this server, or device_pyenvs.<fn> for the device of the request (`?device=ID`)."""
+    dev = devices.current_id()
+    return functools.partial(getattr(device_pyenvs, fn), dev) if dev else getattr(pyenvs, fn)
+
+
 @app.get("/api/pyenvs")
 async def pyenvs_status(user: User = Depends(admin_user)):
-    return await asyncio.to_thread(pyenvs.status)
+    return await asyncio.to_thread(_py, _pyx("status"))
 
 
 @app.post("/api/pyenvs")
 async def pyenvs_create(body: PyEnvBody, request: Request, user: User = Depends(admin_user)):
-    t = await asyncio.to_thread(_py, pyenvs.create, body.name, body.python, body.packages, body.description)
-    db.audit("pyenv_created", user.username, auth.client_ip(request), {"name": body.name, "python": body.python or "base",
+    t = await asyncio.to_thread(_py, _pyx("create"), body.name, body.python, body.packages, body.description)
+    db.audit("pyenv_created", user.username, auth.client_ip(request), {"name": body.name, "python": body.python or "base", "device": devices.current_id(),
                                                                       "packages": body.packages[:500]})
     return t
 
 
 @app.post("/api/pyenvs/uv")
 async def pyenvs_install_uv(request: Request, user: User = Depends(admin_user)):
-    t = await asyncio.to_thread(_py, pyenvs.install_uv)
+    t = await asyncio.to_thread(_py, _pyx("install_uv"))
     db.audit("uv_installed", user.username, auth.client_ip(request))
     return t
 
@@ -1219,19 +1269,19 @@ class PythonKeyBody(BaseModel):
 
 @app.get("/api/pyenvs/pythons")
 async def pyenvs_pythons(refresh: bool = False, user: User = Depends(admin_user)):
-    return await asyncio.to_thread(pyenvs.python_versions, refresh)
+    return await asyncio.to_thread(_py, _pyx("python_versions"), refresh)
 
 
 @app.post("/api/pyenvs/pythons")
 async def pyenvs_python_install(body: PythonVersionBody, request: Request, user: User = Depends(admin_user)):
-    t = await asyncio.to_thread(_py, pyenvs.install_python, body.version)
+    t = await asyncio.to_thread(_py, _pyx("install_python"), body.version)
     db.audit("python_downloaded", user.username, auth.client_ip(request), {"version": body.version})
     return t
 
 
 @app.post("/api/pyenvs/pythons/remove")
 async def pyenvs_python_remove(body: PythonKeyBody, request: Request, user: User = Depends(admin_user)):
-    t = await asyncio.to_thread(_py, pyenvs.uninstall_python, body.key)
+    t = await asyncio.to_thread(_py, _pyx("uninstall_python"), body.key)
     db.audit("python_removed", user.username, auth.client_ip(request), {"key": body.key})
     return t
 
@@ -1243,34 +1293,34 @@ async def pyenvs_task(tid: str, user: User = Depends(admin_user)):
 
 @app.put("/api/pyenvs/{name}")
 async def pyenvs_edit(name: str, body: PyEnvEditBody, request: Request, user: User = Depends(admin_user)):
-    e = await asyncio.to_thread(_py, pyenvs.update, name, body.description)
+    e = await asyncio.to_thread(_py, _pyx("update"), name, body.description)
     db.audit("pyenv_updated", user.username, auth.client_ip(request), {"name": name})
     return e
 
 
 @app.delete("/api/pyenvs/{name}")
 async def pyenvs_delete(name: str, request: Request, user: User = Depends(admin_user)):
-    used = pyenvs.used_by(name)
-    await asyncio.to_thread(_py, pyenvs.delete, name)
+    used = device_pyenvs.used_by(devices.current_id(), name) if devices.current_id() else pyenvs.used_by(name)
+    await asyncio.to_thread(_py, _pyx("delete"), name)
     db.audit("pyenv_deleted", user.username, auth.client_ip(request), {"name": name, "used_by": used})
     return {"ok": True, "used_by": used}
 
 
 @app.get("/api/pyenvs/{name}/packages")
 async def pyenvs_packages(name: str, user: User = Depends(admin_user)):
-    return await asyncio.to_thread(_py, pyenvs.packages, name)
+    return await asyncio.to_thread(_py, _pyx("packages"), name)
 
 
 @app.post("/api/pyenvs/{name}/install")
 async def pyenvs_install(name: str, body: PyEnvPkgBody, request: Request, user: User = Depends(admin_user)):
-    t = await asyncio.to_thread(_py, pyenvs.install, name, body.packages, body.upgrade)
+    t = await asyncio.to_thread(_py, _pyx("install"), name, body.packages, body.upgrade)
     db.audit("pyenv_packages_installed", user.username, auth.client_ip(request), {"name": name, "packages": body.packages[:500]})
     return t
 
 
 @app.post("/api/pyenvs/{name}/uninstall")
 async def pyenvs_uninstall(name: str, body: PyEnvUninstallBody, request: Request, user: User = Depends(admin_user)):
-    t = await asyncio.to_thread(_py, pyenvs.uninstall, name, body.package)
+    t = await asyncio.to_thread(_py, _pyx("uninstall"), name, body.package)
     db.audit("pyenv_package_removed", user.username, auth.client_ip(request), {"name": name, "package": body.package})
     return t
 
@@ -1982,8 +2032,12 @@ class UnmountBody(BaseModel):
     forget: bool = True
 
 
+# Drives and files: this server, or a device (`?device=ID`, see DeviceTarget) through its agent over SSH.
 @app.get("/api/drives")
 async def get_drives(user: User = Depends(admin_user)):
+    dev = devices.current_id()
+    if dev:
+        return await asyncio.to_thread(_dev, devices.drives, dev)
     try:
         return await asyncio.to_thread(drives.list_drives)
     except drives.DriveError as e:
@@ -1992,28 +2046,39 @@ async def get_drives(user: User = Depends(admin_user)):
 
 @app.post("/api/drives/mount")
 async def mount_drive(body: MountBody, request: Request, user: User = Depends(admin_user)):
+    dev = devices.current_id()
     try:
-        r = await asyncio.to_thread(drives.mount, body.device, body.name, body.persist, body.readonly)
+        if dev:
+            r = await asyncio.to_thread(devices.mount, dev, body.device, body.name, body.persist, body.readonly)
+        else:
+            r = await asyncio.to_thread(drives.mount, body.device, body.name, body.persist, body.readonly)
     except (ValueError, RuntimeError) as e:
-        db.audit("drive_mount_failed", user.username, auth.client_ip(request), {"device": body.device, "error": str(e)})
+        db.audit("drive_mount_failed", user.username, auth.client_ip(request), {"device": body.device, "error": str(e), "on": dev})
         raise HTTPException(400, str(e))
     db.audit("drive_mount", user.username, auth.client_ip(request),
-             {"device": body.device, "mountpoint": r["mountpoint"], "persist": body.persist, "readonly": body.readonly})
+             {"device": body.device, "mountpoint": r["mountpoint"], "persist": body.persist, "readonly": body.readonly, "on": dev})
     return r
 
 
 @app.post("/api/drives/unmount")
 async def unmount_drive(body: UnmountBody, request: Request, user: User = Depends(admin_user)):
+    dev = devices.current_id()
     try:
-        r = await asyncio.to_thread(drives.unmount, body.mountpoint, body.forget)
+        if dev:
+            r = await asyncio.to_thread(devices.unmount, dev, body.mountpoint, body.forget)
+        else:
+            r = await asyncio.to_thread(drives.unmount, body.mountpoint, body.forget)
     except (ValueError, RuntimeError) as e:
         raise HTTPException(400, str(e))
-    db.audit("drive_unmount", user.username, auth.client_ip(request), {"mountpoint": r["mountpoint"], "forget": body.forget})
+    db.audit("drive_unmount", user.username, auth.client_ip(request), {"mountpoint": r["mountpoint"], "forget": body.forget, "on": dev})
     return r
 
 
 @app.get("/api/files")
 async def list_files(path: str = "/", hidden: bool = False, user: User = Depends(admin_user)):
+    dev = devices.current_id()
+    if dev:
+        return await asyncio.to_thread(_dev, devices.list_dir, dev, path, hidden)
     try:
         return await asyncio.to_thread(drives.list_dir, path, hidden)
     except drives.DriveError as e:
@@ -2022,6 +2087,9 @@ async def list_files(path: str = "/", hidden: bool = False, user: User = Depends
 
 @app.post("/api/files/sizes")
 async def file_sizes(path: str, user: User = Depends(admin_user)):
+    dev = devices.current_id()
+    if dev:
+        return await asyncio.to_thread(_dev, devices.folder_sizes, dev, path)
     try:
         return await asyncio.to_thread(drives.folder_sizes, path)
     except drives.DriveError as e:
@@ -2030,6 +2098,12 @@ async def file_sizes(path: str, user: User = Depends(admin_user)):
 
 @app.get("/api/files/download")
 async def download_file(path: str, request: Request, user: User = Depends(admin_user)):
+    dev = devices.current_id()
+    if dev:
+        name, chunks = await asyncio.to_thread(_dev, devices.file_stream, dev, path)
+        db.audit("file_download", user.username, auth.client_ip(request), {"path": path, "device": dev})
+        return StreamingResponse(iterate_in_threadpool(chunks), media_type="application/octet-stream",
+                                 headers={"Content-Disposition": "attachment; filename*=UTF-8''" + urllib.parse.quote(name)})
     try:
         p = drives.file_for_download(path)
     except drives.DriveError as e:
@@ -2196,6 +2270,30 @@ async def services(user: User = Depends(current_user)):
     return await monitor.services()
 
 
+# System processes (Server → Processes, "Runs on"): this server's, or a device's (`?device=ID`) over SSH.
+@app.get("/api/sysprocs")
+async def system_processes(sort: str = "cpu", limit: int = 60, user: User = Depends(admin_user)):
+    dev = devices.current_id()
+    if dev:
+        return await asyncio.to_thread(_dev, devices.processes, dev, sort, limit)
+    return await asyncio.to_thread(monitor.system_processes, sort, limit)
+
+
+class SignalBody(BaseModel):
+    signal: str = "TERM"
+
+
+@app.post("/api/sysprocs/{pid}/signal")
+async def system_process_signal(pid: int, body: SignalBody, request: Request, user: User = Depends(admin_user)):
+    dev = devices.current_id()
+    try:
+        r = await asyncio.to_thread(devices.signal if dev else monitor.signal_process, *((dev,) if dev else ()), pid, body.signal)
+    except (ValueError, devices.DeviceError) as e:
+        raise HTTPException(400, str(e))
+    db.audit("process_signal", user.username, auth.client_ip(request), {"pid": pid, "signal": body.signal.upper(), "device": dev})
+    return r
+
+
 # ---------------------------------------------------------------- conversations
 
 class ConvBody(BaseModel):
@@ -2266,7 +2364,8 @@ async def console_ws(ws: WebSocket, mode: str = "shell", id: str = "", host: str
         ip, started = auth.client_ip(ws), time.time()
         detail = {"device": d["name"], "ssh": f"{d['user']}@{d['host']}:{d['port']}"}
         detail.update({"module": module} if module else {"container": id} if mode == "container" else {})
-        db.audit("device_module_install" if module else "console_open", user.username, ip, detail)
+        db.audit(("device_setup" if module in devices.SETUP_STEPS else "device_module_install") if module else "console_open",
+                 user.username, ip, detail)
         code = await console.run(ws, "ssh", argv_override=argv)
         db.audit("console_close", user.username, ip, {"exit_code": code, "seconds": round(time.time() - started), **detail})
         with contextlib.suppress(Exception):

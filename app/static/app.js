@@ -110,12 +110,18 @@ hydrateIcons();
 // ------------------------------------------------------------ helpers
 // Containers and Local AI can work on a device from Server → Devices: their requests then carry ?device=ID
 // (state.target is set by the "Runs on" picker at the top of those pages, see devices.js).
+// Pages with a "Runs on" picker (Server → Devices) send their requests to that device. A path that already
+// names a device (…device=N, 0 = this server) is left alone: e.g. a container row of another device.
+const DEVICE_PAGES = [["/api/docker/", "docker"], ["/api/localai/", "localai"], ["/api/drives", "drives"], ["/api/files", "drives"],
+                      ["/api/pyenvs", "pyenvs"], ["/api/sysprocs", "processes"]];
 function withDeviceTarget(path) {
-  const t = state.target || {};
-  const dev = path.startsWith("/api/docker/") ? t.docker
-    : path.startsWith("/api/localai/") && !path.startsWith("/api/localai/search") ? t.localai : null;
+  if (/[?&]device=/.test(path) || path.startsWith("/api/localai/search")) return path;
+  const hit = DEVICE_PAGES.find(([p]) => path.startsWith(p));
+  const dev = hit ? (state.target || {})[hit[1]] : null;
   return dev ? `${path}${path.includes("?") ? "&" : "?"}device=${encodeURIComponent(dev)}` : path;
 }
+// The same path for a given computer ("" / 0 = this server, else a device id).
+function onDevice(path, dev) { return `${path}${path.includes("?") ? "&" : "?"}device=${encodeURIComponent(dev || 0)}`; }
 
 async function api(path, opts = {}) {
   path = withDeviceTarget(path);
@@ -197,7 +203,7 @@ function switchView(v) {
   if (v === "pyenvs" && window.loadPyEnvs) loadPyEnvs();
   if (v === "sshkeys" && window.loadSshKeys) loadSshKeys();
   if (v === "devices" && window.loadDevices) loadDevices();
-  if ((v === "containers" || v === "localai") && window.renderTargetBar) renderTargetBar(v === "containers" ? "docker" : "localai");
+  if (window.TARGET_VIEWS && TARGET_VIEWS[v] && window.renderTargetBar) renderTargetBar(TARGET_VIEWS[v]);   // "Runs on" (Server → Devices)
   if (window.checkProcBanner) checkProcBanner(v);
   if (v === "localai") loadLocalAI();
   if (v === "containers" && window.loadDocker) loadDocker();
@@ -1816,22 +1822,22 @@ function showConsoleSession(name) {
   if (name.startsWith("sh-") && !state.extraShells[name]) name = "shell";
   state.consoleSession = name;
   if (name === "update") $("#console-update-tab").hidden = false;
+  const c = makeConsole(name);   // before showing/hiding: a new tab's terminal must exist to be shown
   $$("#console-sessions .seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.session === name));
   $$(".console-term").forEach((t) => { t.hidden = t.id !== `console-term-${name}`; });
-  const c = makeConsole(name);
   requestAnimationFrame(() => { c.fit.fit(); if (name !== "update") c.term.focus(); });
   if (name !== "update" || state.updateConsole !== "local") connectConsole(name);
   setConsoleStatus(name, name === "update" && state.updateConsole === "local" ? "update output" : (c.status || ""));
 }
 
 function openConsole(name) {
+  state.consoleSession = name;   // switchView("console") shows this tab (not the base shell first)
   switchView("console");
-  showConsoleSession(name);
 }
 
 // A shell inside a Docker container (opened from the Containers module).
-function openContainerConsole(id, name) {
-  const device = (state.target || {}).docker || "";   // a container on a device (Server → Devices)
+function openContainerConsole(id, name, dev = null) {
+  const device = dev != null ? dev : (state.target || {}).docker || "";   // a container on a device (Server → Devices)
   const c = makeConsole("container");
   if (state.consoleContainer?.id !== id || (state.consoleContainer?.device || "") !== device) {
     if (c.ws) { c.ws.onclose = null; c.ws.close(); c.ws = null; }
@@ -2042,8 +2048,10 @@ $$("#drives-seg .seg-btn").forEach((b) => b.addEventListener("click", () => show
 $("#drives-refresh").addEventListener("click", () => loadDrives());
 
 async function loadDrives(quiet = false) {
+  const want = String((state.target || {}).drives || "");
   try {
     const d = await api("/api/drives");
+    if (want !== String((state.target || {}).drives || "")) return;   // the device was changed meanwhile
     state.drives = d;
     renderDrives(d);
     renderPlaces();
@@ -2062,7 +2070,8 @@ function renderDrives(d) {
     return;
   }
   setup.hidden = d.can_manage;
-  if (!d.can_manage) {
+  if (!d.can_manage && d.device) { setup.innerHTML = ""; setup.append(d.message || ""); }   // a device: needs sudo without a password
+  else if (!d.can_manage) {
     setup.innerHTML = "";
     setup.append("Mounting and unmounting need a one-time setup on the server. Run this as root, then click Refresh: ",
                  el("code", {}, d.setup_command || ""));
@@ -2136,7 +2145,7 @@ function volumeRow(v, d) {
     : el("div", { class: "vol-status small muted" }, el("span", { class: "dot" }), " Not mounted");
 
   const actions = el("div", { class: "vol-actions" });
-  const noManage = !d.can_manage ? "Needs the one-time setup shown above" : null;
+  const noManage = !d.can_manage ? (d.device ? "Needs sudo without a password on the device (see above)" : "Needs the one-time setup shown above") : null;
   if (v.mountpoint && !v.swap) {
     actions.append(el("button", { type: "button", class: "small", onclick: () => { showDrivesSub("files"); browse(v.mountpoint); } }, withIcon("folder", "Open")));
   }
@@ -2286,7 +2295,7 @@ function renderBrowser() {
     const sizeCell = el("td", { class: "num nowrap" }, sz == null ? (e.dir ? "—" : "") : fmtBytes(sz));
     if (sizes && sz) sizeCell.prepend(el("span", { class: "size-bar", style: `width:${Math.max(2, 60 * sz / max)}px` }));
     const actions = el("td", { class: "num" });
-    if (!e.dir) actions.append(el("a", { class: "small", href: `/api/files/download?path=${encodeURIComponent(full)}`, download: e.name }, withIcon("download", "Download")));
+    if (!e.dir) actions.append(el("a", { class: "small", href: withDeviceTarget(`/api/files/download?path=${encodeURIComponent(full)}`), download: e.name }, withIcon("download", "Download")));
     tbody.append(el("tr", {}, el("td", {}, name), sizeCell,
       el("td", { class: "small muted nowrap hide-sm" }, e.mtime ? new Date(e.mtime * 1000).toLocaleString() : ""), actions));
   }
@@ -2940,9 +2949,10 @@ function jobField(fd, value) {
       input.value = value ?? "";
       break;
     }
-    case "pyenv": {    // Python environment, or "" = the server's base Python
-      const envs = cat.pyenvs || [];
-      input = el("select", {}, opts(envs.map((e) => [e.value, e.label]), [["", cat.base_python || "Base Python"]]));
+    case "pyenv": {    // Python environment, or "" = the server's base Python (a task on a device: the device's)
+      const dev = state.jobFieldDevice;
+      const envs = dev ? ((cat.device_pyenvs || {})[String(dev)] || []).map((n) => ({ value: n, label: n })) : cat.pyenvs || [];
+      input = el("select", {}, opts(envs.map((e) => [e.value, e.label]), [["", dev ? "The device's python3" : cat.base_python || "Base Python"]]));
       const v = value || "";
       if (v && !envs.some((e) => e.value === v)) input.append(el("option", { value: v }, `${v} (not found now)`));
       input.value = v;

@@ -603,7 +603,9 @@ function renderInspector() {
     renderEditor();
   });
   const fields = el("div", { class: "item-fields" });
+  state.jobFieldDevice = t.device || null;    // fields that list things (Python environments) show the device's
   for (const fd of spec.fields) fields.append(jobField(fd, t.params[fd.key] ?? fd.default));
+  state.jobFieldDevice = null;
   const sync = () => { Object.assign(t.params, collectFields(fields)); showIf(fields, spec); };
   fields.addEventListener("input", sync);
   fields.addEventListener("change", sync);
@@ -628,7 +630,7 @@ function renderInspector() {
     sel.addEventListener("change", () => { t.device = sel.value ? (Number(sel.value) || sel.value) : null; renderEditor(); });
     runOn = el("label", { class: "field" }, "Runs on", sel,
       el("span", { class: "muted small" }, t.device
-        ? (t.operator === "run_python" ? "Runs over SSH with the device's python3; a Python file must be on the device." : "Runs over SSH on the device, with the device's user.")
+        ? (t.operator === "run_python" ? "Runs over SSH with the device's python3 or one of its Python environments (Automation → Python environments, Runs on the device); a Python file must be on the device." : "Runs over SSH on the device, with the device's user.")
         : "Pick a device to run this task there instead (Server → Devices)."));
   }
   box.append(

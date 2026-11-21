@@ -210,8 +210,9 @@ def _clean_device(ref, tid: str, op: str, params: dict) -> int | None:
     except devices.DeviceError as e:
         raise DagError(f"Task “{tid}”: {e}")
     if op == "run_python" and params.get("venv"):
-        raise DagError(f"Task “{tid}”: Python environments are on this server. On a device the task uses the device's "
-                       "python3: set Environment to the base Python.")
+        from . import pyenvs
+        if not pyenvs.NAME_RE.fullmatch(str(params["venv"])):   # an environment on the device (device_pyenvs)
+            raise DagError(f"Task “{tid}”: “{str(params['venv'])[:40]}” isn't a Python environment name.")
     return dev
 
 
@@ -915,27 +916,36 @@ async def _op_run_python(p: dict, ctx: dict) -> tuple[str, str]:
 
 
 async def _run_python_remote(dev: dict, p: dict, ctx: dict) -> tuple[str, str]:
-    """Run Python on a device with its python3: the code is sent on stdin, a file must be on the device."""
+    """Run Python on a device with its python3, or one of its Python environments (~/.sysadmin-ia/pyenvs, see
+    device_pyenvs): the code is sent on stdin, a file must be on the device."""
     import shlex
-    from . import devices
-    if p.get("venv"):
-        raise J.JobError("Python environments are on this server. On a device the task uses the device's python3.")
+    from . import device_pyenvs, devices, pyenvs
     try:
         args = shlex.split(V.render(p.get("args") or "", ctx))
     except ValueError as e:
         raise J.JobError(f"The arguments can't be read: {e}")
     env = devices.remote_env(_remote_context(ctx))
     qargs = " ".join(shlex.quote(a) for a in args)
+    venv = p.get("venv") or ""
+    if venv:
+        if not pyenvs.NAME_RE.fullmatch(venv):
+            raise J.JobError(f"“{venv[:40]}” isn't a Python environment name.")
+        py = device_pyenvs.env_python(venv)
+        check = (f'[ -x {py} ] || {{ echo "The Python environment {venv} doesn\'t exist on this device (any more): '
+                 f'make it in Automation → Python environments with Runs on set to the device." >&2; exit 127; }}; ')
+        where = f"environment “{venv}” on the device"
+    else:
+        py, check, where = "python3", "", "python3 on the device"
     if p.get("source") == "file":
         f = V.render(p.get("file") or "", ctx).strip()
         if not f.startswith("/"):
             raise J.JobError(f"The Python file must be a full path (starting with /), not “{f[:80]}”.")
         folder = f.rsplit("/", 1)[0] or "/"
-        cmd = (_remote_workdir(p, ctx, folder) + f"{env}python3 -u {shlex.quote(f)} {qargs}").rstrip()
-        return await _run_remote(dev, cmd, ctx, p, f"# python3 on the device\n# file: {f} {' '.join(args)}".rstrip())
+        cmd = (_remote_workdir(p, ctx, folder) + "{ " + check + f"{env}{py} -u {shlex.quote(f)} {qargs}".rstrip() + "; }")
+        return await _run_remote(dev, cmd, ctx, p, f"# {where}\n# file: {f} {' '.join(args)}".rstrip())
     code = V.render(p.get("code") or "", ctx)
-    cmd = (_remote_workdir(p, ctx) + f"{env}python3 -u - {qargs}").rstrip()
-    return await _run_remote(dev, cmd, ctx, p, f"# python3 on the device\n{code}", stdin=code.encode("utf-8"))
+    cmd = (_remote_workdir(p, ctx) + "{ " + check + f"{env}{py} -u - {qargs}".rstrip() + "; }")
+    return await _run_remote(dev, cmd, ctx, p, f"# {where}\n{code}", stdin=code.encode("utf-8"))
 
 
 async def _op_run_shell(p: dict, ctx: dict) -> tuple[str, str]:
@@ -1269,10 +1279,12 @@ def catalog() -> dict:
         base_label = f"Base Python ({pyenvs._version_of(bp) or 'python3'})"
     except Exception:  # noqa: BLE001
         envs, base_label = [], "Base Python"
-    from . import devices
+    from . import device_pyenvs, devices
     try:
         devs = [{"value": d["id"], "label": d["name"], "host": d["host"]} for d in devices.list_devices()]
     except Exception:  # noqa: BLE001
         devs = []
+    # environments on each device, as last seen by Automation → Python environments (no SSH here)
+    dev_envs = {str(d["value"]): device_pyenvs.known(d["value"]) for d in devs}
     return {**base, "operators": operators(), "trigger_rules": TRIGGER_RULES, "pyenvs": envs, "base_python": base_label,
-            "devices": devs, "remote_operators": list(devices.REMOTE_OPERATORS)}
+            "devices": devs, "remote_operators": list(devices.REMOTE_OPERATORS), "device_pyenvs": dev_envs}

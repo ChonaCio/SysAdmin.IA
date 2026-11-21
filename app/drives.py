@@ -78,7 +78,7 @@ def _usage(mountpoint: str) -> dict | None:
     return {"total": u.total, "used": u.used, "free": u.free, "percent": u.percent}
 
 
-def _volume(dev: dict) -> dict:
+def _volume(dev: dict, usage_fn=None) -> dict:
     mounts = _mounts(dev)
     primary = sorted(mounts, key=len)[0] if mounts else None
     fstype = dev.get("fstype") or ""
@@ -96,7 +96,7 @@ def _volume(dev: dict) -> dict:
         "readonly": _flag(dev.get("ro")),
         "mountpoints": mounts,
         "mountpoint": primary,
-        "usage": _usage(primary) if primary else None,
+        "usage": (usage_fn or _usage)(primary) if primary else None,
         "system": system or fstype == "swap",
         "swap": fstype == "swap",
         "can_mount": not mounts and fstype in MOUNTABLE_FS,
@@ -132,12 +132,12 @@ def default_mount_name(dev: dict, label: str = "") -> str:
     return base[:64] or "disk"
 
 
-def _walk_volumes(dev: dict, out: list[dict], parent_model: str = "") -> None:
+def _walk_volumes(dev: dict, out: list[dict], parent_model: str = "", usage_fn=None) -> None:
     for child in dev.get("children") or []:
         child.setdefault("model", parent_model)
         if child.get("fstype") or child.get("type") in ("part", "lvm", "crypt", "raid1", "raid5", "md"):
-            out.append(_volume(child))
-        _walk_volumes(child, out, parent_model)
+            out.append(_volume(child, usage_fn))
+        _walk_volumes(child, out, parent_model, usage_fn)
 
 
 def _io_rates() -> dict[str, dict]:
@@ -177,9 +177,16 @@ def list_drives() -> dict:
     if not available():
         return {"available": False, "disks": [], "summary": None, "can_manage": False,
                 "setup_command": None, "message": "Drive management is only available when the app runs on Linux."}
-    io = _io_rates()
+    out = build_drives(_lsblk(), _io_rates())
+    can_manage = _can_manage()
+    out.update(can_manage=can_manage, setup_command=None if can_manage else server_name.setup_command(), mount_base=MOUNT_BASE)
+    return out
+
+
+def build_drives(blockdevices: list[dict], io: dict, usage_fn=None) -> dict:
+    """Disks and volumes from lsblk JSON (also a device's, from devices.drives with its own usage lookup)."""
     disks = []
-    for dev in _lsblk():
+    for dev in blockdevices:
         dtype = dev.get("type")
         name = dev.get("name") or ""
         if dtype in ("loop", "ram") or name.startswith(("zram", "loop", "ram")):
@@ -190,8 +197,8 @@ def list_drives() -> dict:
         external = tran in EXTERNAL_TRANSPORTS or _flag(dev.get("rm")) or _flag(dev.get("hotplug"))
         volumes: list[dict] = []
         if dev.get("fstype"):  # filesystem directly on the disk (e.g. a USB stick without partitions)
-            volumes.append(_volume(dev))
-        _walk_volumes(dev, volumes, dev.get("model") or "")
+            volumes.append(_volume(dev, usage_fn))
+        _walk_volumes(dev, volumes, dev.get("model") or "", usage_fn)
         disks.append({
             "name": name,
             "path": dev.get("path") or f"/dev/{name}",
@@ -218,7 +225,6 @@ def list_drives() -> dict:
             if u and key not in seen:
                 seen.add(key)
                 total += u["total"]; used += u["used"]
-    can_manage = _can_manage()
     return {
         "available": True,
         "disks": disks,
@@ -229,9 +235,6 @@ def list_drives() -> dict:
             "capacity": sum(d["size"] for d in disks),
             "mounted_total": total, "mounted_used": used, "mounted_free": max(0, total - used),
         },
-        "can_manage": can_manage,
-        "setup_command": None if can_manage else server_name.setup_command(),
-        "mount_base": MOUNT_BASE,
     }
 
 

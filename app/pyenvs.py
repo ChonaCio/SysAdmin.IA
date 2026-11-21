@@ -182,17 +182,24 @@ def _uv_list(uv: str) -> list[dict]:
     r = subprocess.run([uv, "python", "list", "--output-format", "json"], capture_output=True, text=True, timeout=60, env=env)
     if r.returncode == 0 and r.stdout.strip().startswith("["):
         try:
-            return [{"key": e.get("key", ""), "version": e.get("version", ""), "path": e.get("path"),
-                     "implementation": e.get("implementation", ""), "variant": e.get("variant") or ""}
-                    for e in json.loads(r.stdout)]
+            return parse_uv_json(r.stdout)
         except ValueError:
             pass
     # older uv: text lines "cpython-3.12.8-linux-x86_64-gnu    <download available>" or "...    /path/to/python"
     r = subprocess.run([uv, "python", "list"], capture_output=True, text=True, timeout=60, env=env)
     if r.returncode != 0:
         raise PyEnvError(f"uv couldn't list the Python versions: {(r.stderr or r.stdout).strip()[-300:]}")
+    return parse_uv_text(r.stdout)
+
+
+def parse_uv_json(text: str) -> list[dict]:
+    return [{"key": e.get("key", ""), "version": e.get("version", ""), "path": e.get("path"),
+             "implementation": e.get("implementation", ""), "variant": e.get("variant") or ""} for e in json.loads(text)]
+
+
+def parse_uv_text(text: str) -> list[dict]:
     out = []
-    for line in r.stdout.splitlines():
+    for line in text.splitlines():
         parts = line.split(None, 1)
         if len(parts) != 2 or not parts[0].count("-") >= 4:
             continue
@@ -220,9 +227,14 @@ def python_versions(refresh: bool = False) -> dict:
         except (PyEnvError, OSError, subprocess.TimeoutExpired) as e:
             c["data"], c["error"] = [], str(e)
         c["at"] = time.time()
-    have_keys = {h["key"] for h in have}
+    return {"downloaded": have, "available": pick_available(c["data"] or [], {h["key"] for h in have}), "uv": True,
+            "error": c.get("error"), "dir": str(pythons_dir())}
+
+
+def pick_available(data: list[dict], have_keys: set) -> list[dict]:
+    """The newest patch release of each CPython 3.x uv can download (default and free-threaded builds)."""
     best: dict[tuple, dict] = {}
-    for e in c["data"] or []:
+    for e in data:
         if e["path"] or e["implementation"] != "cpython" or e["key"] in have_keys or not e["version"]:
             continue
         parts = e["version"].split(".")
@@ -235,8 +247,7 @@ def python_versions(refresh: bool = False) -> dict:
         if k not in best or [int(x) for x in parts[:3]] > [int(x) for x in best[k]["version"].split(".")[:3]]:
             best[k] = {"key": e["key"], "version": ".".join(parts[:3]), "variant": variant,
                        "request": f"{parts[0]}.{parts[1]}.{parts[2]}" + ("t" if variant else "")}
-    avail = sorted(best.values(), key=lambda x: ([int(n) for n in x["version"].split(".")], x["variant"] == ""), reverse=True)
-    return {"downloaded": have, "available": avail, "uv": True, "error": c.get("error"), "dir": str(pythons_dir())}
+    return sorted(best.values(), key=lambda x: ([int(n) for n in x["version"].split(".")], x["variant"] == ""), reverse=True)
 
 
 def _env_home_in(env_dir: str, py_dir: str) -> bool:
@@ -309,12 +320,14 @@ _tasks: dict[str, dict] = {}
 _lock = threading.RLock()
 
 
-def tasks() -> list[dict]:
+def tasks(device: int | None = None) -> list[dict]:
+    """Tasks of this server (device=None) or of a device (device_pyenvs)."""
     with _lock:
         cutoff = time.time() - 3600
         for k in [k for k, t in _tasks.items() if t["finished"] and t["finished"] < cutoff]:
             _tasks.pop(k)
-        return [{**t, "log": t["log"][-400:]} for t in sorted(_tasks.values(), key=lambda t: t["started"], reverse=True)]
+        return [{**t, "log": t["log"][-400:]} for t in sorted(_tasks.values(), key=lambda t: t["started"], reverse=True)
+                if t.get("device") == device]
 
 
 def task(tid: str) -> dict:
@@ -325,23 +338,25 @@ def task(tid: str) -> dict:
         return {**t, "log": t["log"][-400:]}
 
 
-def _busy(name: str) -> bool:
-    return any(t["env"] == name and t["state"] == "running" for t in _tasks.values())
+def _busy(name: str, device: int | None = None) -> bool:
+    return any(t["env"] == name and t["state"] == "running" and t.get("device") == device for t in _tasks.values())
 
 
-def _start(kind: str, env: str, steps, on_fail=None, on_done=None) -> dict:
-    """steps: list of (argv, env-or-None, title); run one after the other in a thread, collecting output."""
+def _start(kind: str, env: str, steps, on_fail=None, on_done=None, device: int | None = None) -> dict:
+    """steps: list of (argv, env-or-None, title[, shown command]); run one after the other in a thread, collecting
+    output. device: the device the steps run on (their argv is ssh …), for tasks() and _busy()."""
     tid = uuid.uuid4().hex[:12]
     t = {"id": tid, "kind": kind, "env": env, "state": "running", "log": [], "started": time.time(), "finished": None,
-         "error": None}
+         "error": None, "device": device}
     with _lock:
         _tasks[tid] = t
 
     def run():
         try:
-            for argv, env_vars, title in steps:
+            for step in steps:
+                argv, env_vars, title = step[:3]
                 t["log"].append(f"==> {title}")
-                t["log"].append("$ " + " ".join(str(a) for a in argv))
+                t["log"].append("$ " + (step[3] if len(step) > 3 else " ".join(str(a) for a in argv)))
                 p = subprocess.Popen([str(a) for a in argv], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
                                      env=env_vars, cwd=str(settings.data_dir), stdin=subprocess.DEVNULL, errors="replace")
                 for line in p.stdout:     # type: ignore[union-attr]

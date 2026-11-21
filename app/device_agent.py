@@ -11,6 +11,10 @@ Commands:
   stats  – CPU % (sampled over ~0.5 s), load, memory, swap, network and disk rates, temperatures,
            and the mounted drives with their usage
   ports  – TCP ports listening on the device (from /proc/net/tcp*)
+  ls PATH HIDDEN / sizes PATH – a folder's entries / the size of each item (Drives → browse)
+  blockdevs – lsblk + usage + disk I/O counters (the Drives page on a device)
+  procs SORT LIMIT – processes with CPU %, memory, user and command line (the Processes page)
+  pyenvs WITH_SIZE – Python environments in ~/.sysadmin-ia/pyenvs, Python versions, uv
 """
 import json
 import os
@@ -315,13 +319,331 @@ def ports():
     return {"ports": sorted(found)}
 
 
+# ---------------------------------------------------------------- files (Drives → browse on a device)
+
+MAX_ENTRIES = 3000
+
+
+def _clean_path(path):
+    return os.path.normpath("/" + (path or "/").lstrip("/"))
+
+
+def _statvfs_usage(path):
+    try:
+        st = os.statvfs(path)
+    except (OSError, AttributeError):
+        return None
+    total = st.f_blocks * st.f_frsize
+    if not total:
+        return None
+    free = st.f_bavail * st.f_frsize
+    used = total - st.f_bfree * st.f_frsize
+    return {"total": total, "used": used, "free": free, "percent": round(used * 100.0 / max(1, used + free), 1)}
+
+
+def ls(path="/", hidden="0"):
+    import stat as st_
+    path = _clean_path(path)
+    if not os.path.exists(path):
+        return {"error": "That folder doesn't exist."}
+    if not os.path.isdir(path):
+        return {"error": "That's not a folder."}
+    entries, truncated = [], False
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return {"error": "Permission denied: the device's user can't read this folder."}
+    for n in names:
+        if hidden != "1" and n.startswith("."):
+            continue
+        if len(entries) >= MAX_ENTRIES:
+            truncated = True
+            break
+        p = os.path.join(path, n)
+        try:
+            s = os.stat(p)
+            is_dir = st_.S_ISDIR(s.st_mode)
+            size, mtime = (None if is_dir else s.st_size), s.st_mtime
+        except OSError:
+            is_dir, size, mtime = os.path.isdir(p), None, None
+        entries.append({"name": n, "dir": is_dir, "link": os.path.islink(p), "size": size, "mtime": mtime})
+    entries.sort(key=lambda x: (not x["dir"], x["name"].lower()))
+    return {"path": path, "parent": None if path == "/" else os.path.dirname(path), "entries": entries,
+            "truncated": truncated, "usage": _statvfs_usage(path)}
+
+
+def sizes(path="/"):
+    import stat as st_
+    path = _clean_path(path)
+    if not os.path.isdir(path):
+        return {"error": "That's not a folder."}
+    dev = os.stat(path).st_dev
+    deadline = time.time() + 15
+    out, complete = {}, True
+
+    def du(top):
+        total, stack = 0, [top]
+        while stack:
+            if time.time() > deadline:
+                return total, False
+            cur = stack.pop()
+            try:
+                names = os.listdir(cur)
+            except OSError:
+                continue
+            for n in names:
+                p = os.path.join(cur, n)
+                try:
+                    s = os.lstat(p)
+                except OSError:
+                    continue
+                if st_.S_ISDIR(s.st_mode):
+                    if s.st_dev == dev:
+                        stack.append(p)
+                else:
+                    total += getattr(s, "st_blocks", 0) * 512 or s.st_size
+        return total, True
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return {"error": "Permission denied: the device's user can't read this folder."}
+    for n in names:
+        if time.time() > deadline:
+            complete = False
+            break
+        p = os.path.join(path, n)
+        try:
+            s = os.lstat(p)
+        except OSError:
+            continue
+        if st_.S_ISDIR(s.st_mode):
+            if s.st_dev == dev:
+                out[n], ok = du(p)
+                complete = complete and ok
+            else:
+                out[n] = 0
+        else:
+            out[n] = s.st_size
+    return {"path": path, "sizes": out, "complete": complete}
+
+
+# ---------------------------------------------------------------- drives (Drives page on a device)
+
+def blockdevs():
+    """lsblk's JSON (same columns as the app's Drives page, with fallbacks for old util-linux), the usage of every
+    mount point, and disk I/O counters."""
+    exe = _which("lsblk") or ("/bin/lsblk" if os.path.exists("/bin/lsblk") else None)
+    full = ("NAME,KNAME,PATH,SIZE,TYPE,FSTYPE,FSVER,LABEL,PARTLABEL,UUID,MOUNTPOINTS,MODEL,VENDOR,SERIAL,TRAN,RM,"
+            "HOTPLUG,RO,ROTA,PKNAME")
+    devs, err = None, "lsblk isn't installed on the device (package util-linux)."
+    if exe:
+        for cols in (full, full.replace("MOUNTPOINTS", "MOUNTPOINT"),
+                     "NAME,KNAME,SIZE,TYPE,FSTYPE,LABEL,UUID,MOUNTPOINT,MODEL,VENDOR,SERIAL,TRAN,RM,RO,ROTA"):
+            try:
+                p = subprocess.run([exe, "-J", "-b", "-o", cols], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   universal_newlines=True, timeout=15)
+            except Exception as e:  # noqa: BLE001
+                err = str(e)
+                break
+            if p.returncode == 0:
+                try:
+                    devs = json.loads(p.stdout).get("blockdevices", [])
+                    break
+                except ValueError:
+                    err = "lsblk's answer can't be read."
+            else:
+                err = (p.stderr or "").strip()[-300:] or "lsblk failed."
+    usage = {}
+
+    def walk(items):
+        for d in items or []:
+            mps = d.get("mountpoints")
+            if mps is None:
+                mps = [d.get("mountpoint")]
+            for m in mps:
+                if m and m != "[SWAP]" and m not in usage:
+                    usage[m] = _statvfs_usage(m)
+            walk(d.get("children"))
+    walk(devs)
+    io = {}
+    for line in _read("/proc/diskstats").splitlines():
+        f = line.split()
+        if len(f) >= 10:
+            io[f[2]] = [int(f[5]) * 512, int(f[9]) * 512]
+    return {"blockdevices": devs, "error": None if devs is not None else err, "usage": usage, "io": io,
+            "time": time.time()}
+
+
+# ---------------------------------------------------------------- processes (Processes page on a device)
+
+def _proc_user(uid, cache={}):  # noqa: B006 - small per-run cache
+    if uid not in cache:
+        try:
+            import pwd
+            cache[uid] = pwd.getpwuid(uid).pw_name
+        except (KeyError, ImportError):
+            cache[uid] = str(uid)
+    return cache[uid]
+
+
+def _proc_sample():
+    out = {}
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        raw = _read("/proc/" + pid + "/stat")
+        r = raw.rfind(")")
+        if r < 0:
+            continue
+        f = raw[r + 2:].split()
+        try:
+            out[int(pid)] = (int(f[11]) + int(f[12]), raw[raw.find("(") + 1:r], f[0], int(f[19]), int(f[21]))
+        except (IndexError, ValueError):
+            continue
+    return out
+
+
+def procs(sort="cpu", limit="60"):
+    """The device's processes: CPU % over ~0.5 s, memory, user, command line (like the app's Monitor)."""
+    hz = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
+    page = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
+    c1, _i = _cpu_times()
+    a = _proc_sample()
+    time.sleep(0.5)
+    c2, _i = _cpu_times()
+    b = _proc_sample()
+    total_ticks = max(1, c2 - c1)
+    ncpu = os.cpu_count() or 1
+    mem_total = _meminfo().get("MemTotal", 1)
+    boot = time.time() - (_uptime() or 0)
+    me = os.getpid()
+    rows = []
+    for pid, (ticks, name, state, threads, start) in b.items():
+        if pid == me or pid == os.getppid():
+            continue
+        prev = a.get(pid)
+        cpu = (ticks - prev[0]) * 100.0 * ncpu / total_ticks if prev else 0.0
+        rss = 0
+        try:
+            rss = int(_read("/proc/%d/statm" % pid).split()[1]) * page
+        except (IndexError, ValueError):
+            pass
+        try:
+            uid = os.stat("/proc/%d" % pid).st_uid
+        except OSError:
+            continue
+        cmd = _read("/proc/%d/cmdline" % pid).replace("\x00", " ").strip()
+        rows.append({"pid": pid, "name": name, "user": _proc_user(uid), "uid": uid, "cpu": round(cpu, 1), "mem": rss,
+                     "mem_percent": round(rss * 100.0 / mem_total, 1), "state": state, "threads": threads,
+                     "started": boot + start / float(hz), "cmd": cmd[:400] or "[" + name + "]"})
+    key = {"cpu": lambda r: -r["cpu"], "mem": lambda r: -r["mem"], "name": lambda r: r["name"].lower(),
+           "pid": lambda r: r["pid"]}.get(sort, lambda r: -r["cpu"])
+    rows.sort(key=key)
+    try:
+        n = max(1, min(500, int(limit)))
+    except ValueError:
+        n = 60
+    return {"procs": rows[:n], "total": len(rows), "uid": os.getuid(), "time": time.time()}
+
+
+# ---------------------------------------------------------------- Python environments (on a device)
+
+SAI_HOME = "~/.sysadmin-ia"
+ENV_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,39}$")
+
+
+def _py_version(exe):
+    code, out = _run([exe, "-c", "import sys; print('.'.join(map(str, sys.version_info[:3])))"], 10)
+    return out if code == 0 and re.match(r"^\d+\.\d+\.\d+$", out or "") else None
+
+
+def _cfg(d):
+    out = {}
+    for line in _read(os.path.join(d, "pyvenv.cfg")).splitlines():
+        k, _, v = line.partition("=")
+        out[k.strip()] = v.strip()
+    return out
+
+
+def _du(d):
+    total = 0
+    for dirpath, _dirs, files in os.walk(d):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(dirpath, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def pyenvs(with_size="1"):
+    base = os.path.expanduser(SAI_HOME)
+    root, pyd = os.path.join(base, "pyenvs"), os.path.join(base, "pythons")
+    own_uv = os.path.join(base, "tools", "uv", "bin", "uv")
+    envs = []
+    for n in sorted(os.listdir(root)) if os.path.isdir(root) else []:
+        d = os.path.join(root, n)
+        if not ENV_NAME_RE.match(n) or not os.path.isdir(d):
+            continue
+        try:
+            with open(os.path.join(d, "meta.json")) as f:
+                meta = json.load(f)
+        except (OSError, IOError, ValueError):
+            meta = {}
+        cfg = _cfg(d)
+        py = os.path.join(d, "bin", "python")
+        envs.append({"name": n, "version": cfg.get("version") or cfg.get("version_info"), "path": d, "python": py,
+                     "ok": os.path.exists(py), "description": meta.get("description", ""), "created": meta.get("created"),
+                     "requested": meta.get("python", ""), "tool": meta.get("tool", ""), "home": cfg.get("home", ""),
+                     "size": _du(d) if with_size == "1" else None})
+    downloaded = []
+    for n in sorted(os.listdir(pyd)) if os.path.isdir(pyd) else []:
+        d = os.path.join(pyd, n)
+        m = re.match(r"^[a-z]+-(3\.\d+\.\d+)([a-z0-9+]*)-", n)
+        exe = next((x for x in (os.path.join(d, "bin", "python3"), os.path.join(d, "bin", "python")) if os.path.exists(x)), None)
+        if os.path.isdir(d) and m and exe and n.startswith(("cpython-", "pypy-", "graalpy-")):
+            downloaded.append({"path": exe, "version": m.group(1), "key": n, "dir": d, "downloaded": True,
+                               "variant": "freethreaded" if m.group(2) in ("t", "+freethreaded") else "",
+                               "implementation": n.split("-", 1)[0], "size": _du(d) if with_size == "1" else None,
+                               "used_by": [e["name"] for e in envs if e["home"] and os.path.realpath(e["home"]).startswith(os.path.realpath(d))]})
+    seen, interps = set(), []
+    dirs = [x for x in os.environ.get("PATH", "").split(os.pathsep) if x] + ["/usr/bin", "/usr/local/bin"]
+    for d in dirs:
+        try:
+            names = sorted(os.listdir(d))
+        except OSError:
+            continue
+        for n in names:
+            if not re.match(r"^python3(\.\d{1,2})?$", n):
+                continue
+            p = os.path.join(d, n)
+            real = os.path.realpath(p)
+            if real in seen or not os.access(p, os.X_OK):
+                continue
+            seen.add(real)
+            v = _py_version(p)
+            if v:
+                interps.append({"path": p, "version": v, "downloaded": False})
+    interps.sort(key=lambda x: [int(i) for i in x["version"].split(".")], reverse=True)
+    uv = own_uv if os.path.exists(own_uv) else _which("uv")
+    uv_version = None
+    if uv:
+        code, out = _run([uv, "--version"], 10)
+        uv_version = out.split()[-1] if code == 0 and out else None
+    venv_ok = _run([sys.executable, "-c", "import ensurepip, venv"], 10)[0] == 0
+    return {"root": root, "pythons_dir": pyd, "envs": envs, "downloaded": downloaded,
+            "interpreters": downloaded + interps, "uv": uv_version, "uv_path": uv, "venv": venv_ok,
+            "base": {"path": sys.executable, "version": platform.python_version()}}
+
+
 def main():
     cmd = sys.argv[1] if len(sys.argv) > 1 else "info"
-    fn = {"info": info, "stats": stats, "ports": ports}.get(cmd)
+    fn = {"info": info, "stats": stats, "ports": ports, "ls": ls, "sizes": sizes, "blockdevs": blockdevs,
+          "procs": procs, "pyenvs": pyenvs}.get(cmd)
     if not fn:
         print(json.dumps({"error": "unknown command " + cmd}))
         sys.exit(2)
-    print(json.dumps(fn(), default=str))
+    print(json.dumps(fn(*sys.argv[2:4]), default=str))
 
 
 if __name__ == "__main__":

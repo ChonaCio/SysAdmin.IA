@@ -8,13 +8,20 @@ async function loadPyEnvs() {
   clearTimeout(state.pyenvTimer);
   const list = $("#pyenv-list");
   let st;
+  const want = String((state.target || {}).pyenvs || "");   // "Runs on" a device (Server → Devices): its environments
+  if (want && !(state.pyenvs && String(state.pyenvs.device?.id || "") === want)) {
+    list.innerHTML = "";
+    list.append(el("p", { class: "muted small busy" }, el("span", { class: "spinner", "aria-hidden": "true" }), " Reading the device…"));
+  }
   try { st = await api("/api/pyenvs"); }
   catch (ex) {
     list.innerHTML = "";
-    list.append(el("div", { class: "card" }, el("p", { class: "error" }, ex.message)));
+    $("#pyenv-server").innerHTML = ""; $("#pyenv-pythons").innerHTML = "";
+    list.append(el("div", { class: "card" }, el("p", { class: "error" }, ex.message),
+      want && window.deviceReconnect ? el("button", { type: "button", class: "small", onclick: () => deviceReconnect(Number(want), loadPyEnvs) }, withIcon("refresh", "Reconnect")) : null));
     return;
   }
-  if (state.view !== "pyenvs") return;
+  if (state.view !== "pyenvs" || want !== String((state.target || {}).pyenvs || "")) return;
   state.pyenvs = st;
   renderPyServer(st);
   renderPyVersions(st.pythons || { downloaded: [], available: [] }, st);
@@ -57,8 +64,9 @@ function renderPyServer(st) {
     el("div", { class: "ai-card-head" },
       el("span", { class: "icon-tile accent", html: icon("python") }),
       el("div", { class: "ai-card-title" },
-        el("b", {}, "Python on this server"),
-        el("div", { class: "muted small" }, "Run Python tasks without an environment use the base Python.")),
+        el("b", {}, st.device ? `Python on ${st.device.name}` : "Python on this server"),
+        el("div", { class: "muted small" }, st.device ? "Run Python tasks on this device without an environment use its python3. Everything here runs as its user, with no sudo."
+          : "Run Python tasks without an environment use the base Python.")),
       el("div", { class: "ai-actions" },
         st.uv ? null : el("button", { type: "button", class: "small", onclick: (e) => installUv(e.currentTarget) }, withIcon("download", "Install uv")))),
     el("dl", { class: "proc-facts small" },
@@ -70,9 +78,12 @@ function renderPyServer(st) {
       el("dd", {}, st.uv ? `${st.uv} · ` : "Not installed", st.uv ? el("span", { class: "muted" }, "any Python version can be used") : null),
       el("dt", { class: "muted" }, "Stored in"),
       el("dd", {}, el("code", { "data-no-i18n": "" }, st.root || "–"))),
-    st.uv ? "" : el("p", { class: "muted small" },
-      "uv is a small tool (installed in SysAdmin.IA's own folder, not system-wide) that downloads any Python version for an environment, e.g. 3.9 or 3.13. "
-      + "Without it, environments can only use the versions installed above."));
+    st.uv ? "" : el("p", { class: "muted small" }, st.device
+      ? "uv is a small tool (installed in ~/.sysadmin-ia on the device, not system-wide) that downloads any Python version for an environment, e.g. 3.9 or 3.13. Without it, environments can only use the versions installed above."
+      : "uv is a small tool (installed in SysAdmin.IA's own folder, not system-wide) that downloads any Python version for an environment, e.g. 3.9 or 3.13. "
+      + "Without it, environments can only use the versions installed above."),
+    st.device && st.venv === false && !st.uv ? el("p", { class: "note warn small" },
+      "The device's Python can't make environments yet (the python3-venv package is missing). Install it on the device (sudo apt install python3-venv), or install uv above.") : "");
 }
 
 // ---- Python versions downloaded by the app (uv), and the ones that can be downloaded
@@ -183,7 +194,7 @@ function pyEnvCard(e) {
         el("button", { type: "button", class: "small ghost danger", disabled: busy, onclick: () => pyDelete(e) }, withIcon("trash", "Delete")))),
     el("dl", { class: "proc-facts small" }, ...facts.flatMap(([k, v]) => [el("dt", { class: "muted" }, k),
       el("dd", { "data-no-i18n": ["Python", "Size", "Used by"].includes(k) && v !== "No DAG yet" ? "" : null }, String(v))])),
-    !e.ok && !busy ? el("p", { class: "small error" }, "Its Python doesn't start (it may have been removed from the server). Delete it and create it again.") : null);
+    !e.ok && !busy ? el("p", { class: "small error" }, (state.pyenvs?.device ? "Its Python doesn't start (it may have been removed from the device). Delete it and create it again." : "Its Python doesn't start (it may have been removed from the server). Delete it and create it again.")) : null);
 }
 
 async function installUv(btn) {
@@ -202,7 +213,7 @@ function pyNewDialog(pre) {
     el("option", { value: "" }, `Base Python${st.base?.version ? ` (${st.base.version})` : ""}`),
     dl.length ? el("optgroup", { label: "Downloaded" }, ...dl.map((i) => el("option", { value: i.path },
       `Python ${i.version}${i.variant === "freethreaded" ? " (free-threaded)" : ""}`))) : null,
-    sys.length ? el("optgroup", { label: "Installed on the server" }, ...sys.map((i) => el("option", { value: i.path }, `Python ${i.version} · ${i.path}`))) : null,
+    sys.length ? el("optgroup", { label: st.device ? "Installed on the device" : "Installed on the server" }, ...sys.map((i) => el("option", { value: i.path }, `Python ${i.version} · ${i.path}`))) : null,
     el("option", { value: "@version" }, st.uv ? "Another version (downloaded with uv)…" : "Another version (needs uv)…"));
   if (typeof pre === "string" && interp.some((i) => i.path === pre)) sel.value = pre;
   const ver = el("input", { name: "version", placeholder: "3.12", spellcheck: "false", class: "mono", inputmode: "decimal" });

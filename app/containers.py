@@ -111,14 +111,14 @@ def _conn(timeout: float) -> http.client.HTTPConnection:
 
 
 def _open(method: str, path: str, query: dict | None = None, body=None, timeout: float = 30,
-          headers: dict | None = None):
+          headers: dict | None = None, chunked: bool = False):
     url = path + ("?" + urllib.parse.urlencode({k: v for k, v in query.items() if v is not None}) if query else "")
     data = json.dumps(body).encode() if isinstance(body, (dict, list)) else body
     hdrs = {"Content-Type": "application/json", "Host": "docker"}
     hdrs.update(headers or {})
     c = _conn(timeout)
     try:
-        c.request(method, url, body=data, headers=hdrs)
+        c.request(method, url, body=data, headers=hdrs, encode_chunked=chunked)
         r = c.getresponse()
     except PermissionError:
         c.close()
@@ -838,14 +838,15 @@ _tasks: dict[str, dict] = {}
 _tlock = threading.RLock()
 
 
-def tasks() -> list[dict]:
+def tasks(all_devices: bool = False) -> list[dict]:
+    """Background tasks of the current computer (or of every one, with the computer's name)."""
     from . import devices
     dev = devices.current_id()
     with _tlock:
         now = time.time()
         for k in [k for k, v in _tasks.items() if v.get("finished") and now - v["finished"] > 900]:
             _tasks.pop(k)
-        return sorted((dict(v) for v in _tasks.values() if v.get("device") == dev), key=lambda t: -t["started"])
+        return sorted((dict(v) for v in _tasks.values() if all_devices or v.get("device") == dev), key=lambda t: -t["started"])
 
 
 def _task(kind: str, title: str, target) -> dict:
@@ -857,6 +858,7 @@ def _task(kind: str, title: str, target) -> dict:
         if any(t["title"] == title and t["state"] == "running" and t.get("device") == dev for t in _tasks.values()):
             raise DockerError(f"“{title}” is already running.")
         _tasks[tid] = {"id": tid, "kind": kind, "title": title, "state": "running", "status": "Starting…", "device": dev,
+                       "device_name": devices.current()["name"] if dev else None,
                        "progress": None, "log": [], "started": time.time(), "finished": None, "error": None, "result": None}
 
     def upd(**kw):
@@ -1030,6 +1032,125 @@ def remove_image(iid: str, force: bool = False) -> None:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_./:@-]{0,254}", iid or ""):
         raise DockerError("Invalid image.")
     _call(_req, "DELETE", f"/images/{urllib.parse.quote(iid, safe='')}", {"force": "1" if force else "0"}, timeout=120)
+
+
+# ---------------------------------------------------------------- every computer at once (this server + devices)
+
+def hosts() -> list[dict]:
+    """Where containers can run: this server and the devices (Server → Devices) with Docker installed."""
+    from . import devices
+    out = [{"id": 0, "name": "This server", "state": "online"}]
+    for d in devices.list_devices():
+        if devices.modules_state(d.get("info"))["docker"]["installed"]:
+            out.append({"id": d["id"], "name": d["name"], "host": d["host"], "state": d.get("last_state")})
+    return out
+
+
+def everywhere(fn) -> list[dict]:
+    """fn() on this server and on every device with Docker, in parallel: [{device, name, result | error}].
+    Devices known to be offline are reported, not contacted (that would wait for the SSH timeout)."""
+    from concurrent.futures import ThreadPoolExecutor
+    from . import devices
+    targets = [None] + [d for d in devices.list_devices() if devices.modules_state(d.get("info"))["docker"]["installed"]]
+
+    def one(d):
+        base = {"device": d["id"] if d else 0, "name": d["name"] if d else "This server", "host": d["host"] if d else None}
+        if d and d.get("last_state") not in ("online", None):
+            return {**base, "offline": True, "error": d.get("last_error") or f"{d['name']} isn't reachable."}
+        with devices.use(d["id"] if d else None):
+            try:
+                return {**base, "result": fn()}
+            except DockerError as e:
+                return {**base, "error": _err_text(e)}
+            except devices.DeviceError as e:
+                return {**base, "error": str(e)}
+    with ThreadPoolExecutor(max_workers=min(8, len(targets))) as ex:
+        return list(ex.map(one, targets))
+
+
+def list_everywhere(stats: bool = False) -> dict:
+    """Containers of every computer, each tagged with where it runs."""
+    hosts_out = []
+    for h in everywhere(lambda: list_containers(stats)):
+        for c in h.get("result") or []:
+            c.update(device=h["device"], device_name=h["name"], device_host=h["host"])
+        hosts_out.append({"device": h["device"], "name": h["name"], "host": h["host"], "containers": h.get("result") or [],
+                          "error": h.get("error"), "offline": h.get("offline", False)})
+    return {"hosts": hosts_out}
+
+
+def image_everywhere(image: str) -> list[dict]:
+    """Which computers have an image: [{device, name, present, size, error}]."""
+    image = _check_image(image)
+    out = []
+    for h in everywhere(lambda: image_details(image)):
+        det = h.get("result")
+        out.append({"device": h["device"], "name": h["name"], "present": bool(det), "size": (det or {}).get("size"),
+                    "error": h.get("error")})
+    return out
+
+
+def images_everywhere() -> list[dict]:
+    """Tagged images on every computer: [{device, name, images: [tags…]}] (for the image pickers)."""
+    def tags():
+        return sorted({t for i in _req("GET", "/images/json") for t in (i.get("RepoTags") or []) if t != "<none>:<none>"})
+    return [{"device": h["device"], "name": h["name"], "images": h.get("result") or [], "error": h.get("error")}
+            for h in everywhere(tags)]
+
+
+def copy_image(image: str, source, target) -> dict:
+    """Copy an image from one computer's Docker to another's: `docker save` on one, `docker load` on the other,
+    streamed through this app (no registry needed). source/target: 0 = this server, else a device id. A background
+    task of the target computer."""
+    from . import devices
+    image = _check_image(image)
+    src = int(source or 0) or None
+    dst = int(target or 0) or None
+    if src == dst:
+        raise DockerError("Choose another computer to copy the image to.")
+    with devices.use(src):
+        det = image_details(image)
+        src_name = devices.where()
+        if det is None:
+            raise DockerError(f"{image} isn't on {src_name}.")
+    size = det.get("size") or 0
+
+    def run(upd):
+        with devices.use(src):          # the request is sent now, so the connection belongs to the source
+            sc, sr = _open("GET", f"/images/{urllib.parse.quote(image, safe='')}/get", timeout=3600)
+        sent = 0
+        try:
+            def chunks():
+                nonlocal sent
+                while True:
+                    b = sr.read(1 << 20)
+                    if not b:
+                        break
+                    sent += len(b)
+                    upd(status=f"Copying {image} from {src_name} — {sent / 1e6:.0f}" + (f" of {size / 1e6:.0f} MB" if size else " MB"),
+                        progress=min(99.0, round(100 * sent / size, 1)) if size else None)
+                    yield b
+            c, r = _open("POST", "/images/load", {"quiet": "1"}, body=chunks(), timeout=3600,
+                         headers={"Content-Type": "application/x-tar"}, chunked=True)
+            try:
+                raw = r.read().decode("utf-8", "replace")
+            finally:
+                c.close()
+        finally:
+            sc.close()
+        for line in raw.splitlines():
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("error"):
+                raise DockerError(_friendly(ev["error"], 500))
+            if ev.get("stream", "").strip():
+                upd(line=ev["stream"].strip())
+        return {"image": image, "bytes": sent}
+    with devices.use(dst):
+        _call(_req, "GET", "/_ping")
+        return _task("copy", f"Copy {image} from {src_name}", run)
 
 
 def search_hub(term: str) -> list[dict]:

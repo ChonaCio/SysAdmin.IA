@@ -7,7 +7,8 @@ over SSH with that key (BatchMode: never a password prompt in the background):
     installed on the device): info (OS, CPU, memory, what's installed) and stats (CPU, memory,
     swap, load, network/disk rates, temperatures, mounted drives with usage);
   * modules    – Python 3, Docker and Ollama are installed from the app in a Console tab
-    (`module_command()`: fixed scripts, so sudo can ask for the device's password there);
+    (`module_command()`: fixed scripts). The key step also sets up passwordless sudo for the device's user
+    (`_SUDO_SETUP`, the password is typed once), so installs don't ask for it afterwards;
   * containers / local AI – the Containers and Local AI pages talk to the device's Docker socket and
     Ollama API through an SSH tunnel (`ssh -N -L sock:/var/run/docker.sock -L port:127.0.0.1:11434`),
     so all their features work on the device too. Which device a request is for is a context variable
@@ -325,11 +326,15 @@ def run(d: dict, command: str, *, stdin: bytes | None = None, timeout: float = 6
 _PY_CHECK = "command -v python3 >/dev/null 2>&1 || { echo SAI_NO_PYTHON >&2; exit 127; }; exec python3 - "
 
 
-def agent(d: dict, cmd: str, timeout: float = 40) -> dict:
-    """Run the monitoring agent on the device (piped into its python3)."""
-    if cmd not in ("info", "stats", "ports"):
+AGENT_COMMANDS = ("info", "stats", "ports", "ls", "sizes", "blockdevs", "procs", "pyenvs")
+
+
+def agent(d: dict, cmd: str, *args: str, timeout: float = 40) -> dict:
+    """Run the agent on the device (piped into its python3). args are quoted for the device's shell."""
+    if cmd not in AGENT_COMMANDS:
         raise DeviceError("Unknown agent command.")
-    code, out, err = run(d, "sh -c " + shlex.quote(_PY_CHECK + cmd), stdin=AGENT.read_bytes(), timeout=timeout)
+    line = " ".join([cmd, *(shlex.quote(str(a)) for a in args)])
+    code, out, err = run(d, "sh -c " + shlex.quote(_PY_CHECK + line), stdin=AGENT.read_bytes(), timeout=timeout)
     if code == 127 and "SAI_NO_PYTHON" in err:
         raise DeviceError(f"{d['name']} has no Python 3, which SysAdmin.IA needs to read its resources. "
                           "Install the Python module on the device.", "no_python")
@@ -452,7 +457,8 @@ _SCRIPTS = {
         '$S usermod -aG docker "$(id -un)" && echo "==> Done. SysAdmin.IA reconnects to the device so it applies."'),
     "ollama": _FETCH + (
         'echo "==> Installing Ollama (ollama.com/install.sh)"; '
-        'fetch https://ollama.com/install.sh | sh && echo "==> Done"'),
+        'fetch https://ollama.com/install.sh > /tmp/sai-ollama.sh && sh /tmp/sai-ollama.sh; R=$?; rm -f /tmp/sai-ollama.sh; '
+        '[ $R = 0 ] && echo "==> Done"; exit $R'),
 }
 
 
@@ -476,19 +482,49 @@ def modules_catalog() -> list[dict]:
     return [{"id": k, **v} for k, v in MODULES.items()]
 
 
-def module_command(module: str) -> str:
-    """The command a Console tab runs on the device to install a module (fixed scripts; sudo may ask for the password)."""
+# Passwordless sudo for the device's user, set up once in the key step (sudo asks for the password that one
+# time). Afterwards module installs and anything else that needs sudo run without a password. The rule goes in
+# /etc/sudoers.d/sysadmin-ia-<user>, checked with visudo before it's put in place (a file name with a dot is
+# ignored by sudo, so the .tmp copy never applies).
+_SUDO_SETUP = (
+    'if [ "$(id -u)" = 0 ]; then echo "==> Signed in as root: sudo isn\'t needed."; exit 0; fi; '
+    'command -v sudo >/dev/null 2>&1 || { echo "sudo isn\'t installed on the device: install it as root first (apt install sudo)."; exit 1; }; '
+    'U="$(id -un)"; F="/etc/sudoers.d/sysadmin-ia-$(printf %s "$U" | tr -c "A-Za-z0-9_-" _)"; '
+    'if sudo -n true 2>/dev/null; then echo "==> sudo already works without a password for $U."; exit 0; fi; '
+    'echo "==> Letting $U use sudo without a password. sudo asks for the password of $U once:"; '
+    'printf "%s ALL=(ALL) NOPASSWD: ALL\\n" "$U" | sudo tee "$F.tmp" >/dev/null && sudo chmod 0440 "$F.tmp" '
+    '&& sudo visudo -cf "$F.tmp" >/dev/null && sudo mv "$F.tmp" "$F" && sudo -k && sudo -n true '
+    '&& echo "==> Done: SysAdmin.IA can now install and manage things on the device without a password." '
+    '|| { sudo rm -f "$F.tmp" 2>/dev/null; echo "==> Setting up sudo failed (see above)."; exit 1; }')
+SETUP_STEPS = ("key", "setup", "sudo")   # key only · key + sudo · sudo only
+
+
+def module_command(module: str, d: dict | None = None) -> str:
+    """The command a Console tab runs on the device: a module install (fixed scripts), or a setup step
+    (key = add the device's key to authorized_keys, sudo = passwordless sudo, setup = both)."""
+    if module in SETUP_STEPS:
+        from . import ssh_keys
+        parts = []
+        if module in ("key", "setup"):
+            try:
+                parts.append(ssh_keys.install_command(d["key_name"]))
+            except ssh_keys.SshKeyError as e:
+                raise DeviceError(str(e))
+        if module in ("sudo", "setup"):
+            parts.append(_SUDO_SETUP)
+        return "sh -c " + shlex.quote("; ".join(parts))
     if module not in _SCRIPTS:
         raise DeviceError("Unknown module.")
     return "sh -c " + shlex.quote(_SCRIPTS[module])
 
 
 def console_argv(dev_id, module: str = "", container: str = "") -> list[str]:
-    """argv for an interactive Console tab on the device: a shell, a module install, or a shell in a container."""
+    """argv for an interactive Console tab on the device: a shell, a module install or setup step, or a shell in a
+    container. Not BatchMode: for the key step ssh asks for the device's password (the key isn't accepted yet)."""
     d = get(dev_id)
     argv = ssh_argv(d, batch=False, tty=True, shared=False)
     if module:
-        argv.append(module_command(module))
+        argv.append(module_command(module, d))
     elif container:
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", container):
             raise DeviceError("Invalid container.")
@@ -668,3 +704,175 @@ async def exec_async(d: dict, command: str, *, stdin: bytes | None = None, timeo
 def remote_env(env: dict) -> str:
     """`env K=V …` prefix for a remote command (values quoted)."""
     return "env " + " ".join(f"{k}={shlex.quote(str(v))}" for k, v in env.items()) + " " if env else ""
+
+
+def sudo_free(d: dict) -> bool:
+    """True when sudo works without a password on the device (set up in the key step), or the user is root."""
+    return ((d.get("info") or {}).get("sudo") in ("nopasswd", "root"))
+
+
+def _need_sudo(d: dict, what: str) -> None:
+    if not sudo_free(d):
+        raise DeviceError(f"{what} on {d['name']} needs sudo without a password. Set it up on the device's card in "
+                          "Server → Devices (the password is typed once).")
+
+
+# ---------------------------------------------------------------- files (Drives → browse, folder pickers)
+
+def _agent_checked(d: dict, cmd: str, *args: str, timeout: float = 40) -> dict:
+    r = agent(d, cmd, *args, timeout=timeout)
+    if isinstance(r, dict) and r.get("error") and cmd in ("ls", "sizes"):
+        raise DeviceError(r["error"])
+    return r
+
+
+def list_dir(dev_id, path: str = "/", hidden: bool = False) -> dict:
+    d = get(dev_id)
+    return {**_agent_checked(d, "ls", path or "/", "1" if hidden else "0"), "device": {"id": d["id"], "name": d["name"]}}
+
+
+def folder_sizes(dev_id, path: str) -> dict:
+    return _agent_checked(get(dev_id), "sizes", path or "/", timeout=60)
+
+
+def file_stream(dev_id, path: str):
+    """(file name, chunks) of a file on the device, read with `cat` over SSH."""
+    import posixpath
+    d = get(dev_id)
+    path = posixpath.normpath("/" + (path or "").lstrip("/"))
+    q = shlex.quote(path)
+    code, _o, _e = run(d, f"test -f {q} && test -r {q}", timeout=20)
+    if code != 0:
+        raise DeviceError(f"That's not a file on {d['name']}, or its user can't read it.")
+    proc = subprocess.Popen(ssh_argv(d) + [f"cat -- {q}"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, start_new_session=os.name != "nt")
+
+    def chunks():
+        try:
+            while True:
+                b = proc.stdout.read(256 * 1024)
+                if not b:
+                    break
+                yield b
+        finally:
+            with contextlib.suppress(Exception):
+                proc.kill()
+                proc.wait(5)
+    return posixpath.basename(path) or "file", chunks()
+
+
+# ---------------------------------------------------------------- drives (the Drives page on a device)
+
+_io_prev: dict[int, tuple[float, dict]] = {}
+
+
+def drives(dev_id) -> dict:
+    """The device's disks and volumes in the Drives page's shape (drives.build_drives on the device's lsblk)."""
+    from . import drives as dr
+    d = get(dev_id)
+    raw = agent(d, "blockdevs", timeout=30)
+    dev = {"id": d["id"], "name": d["name"], "host": d["host"]}
+    if raw.get("blockdevices") is None:
+        return {"available": False, "disks": [], "summary": None, "can_manage": False, "setup_command": None,
+                "message": raw.get("error") or "The device's drives can't be read.", "device": dev}
+    now, io = raw.get("time") or time.time(), raw.get("io") or {}
+    prev = _io_prev.get(d["id"])
+    rates = {}
+    for name, (r, w) in io.items():
+        pr = prev[1].get(name) if prev else None
+        dt = now - prev[0] if prev else 0
+        rates[name] = {"read_rate": max(0, r - pr[0]) / dt if pr and dt > 0 else 0.0,
+                       "write_rate": max(0, w - pr[1]) / dt if pr and dt > 0 else 0.0, "read_total": r, "write_total": w}
+    _io_prev[d["id"]] = (now, io)
+    usage = raw.get("usage") or {}
+    out = dr.build_drives(raw["blockdevices"], rates, lambda mp: usage.get(mp))
+    out.update(can_manage=sudo_free(d), setup_command=None, device=dev, mount_base=dr.MOUNT_BASE,
+               message=None if sudo_free(d) else
+               f"Mounting drives on {d['name']} needs sudo without a password: set it up on its card in Server → Devices.")
+    return out
+
+
+def mount(dev_id, device: str, name: str, persist: bool = False, readonly: bool = False) -> dict:
+    """Mount a volume of the device under /mnt/NAME (nosuid,nodev), like the root helper does on this server."""
+    from . import drives as dr
+    d = get(dev_id)
+    _need_sudo(d, "Mounting drives")
+    name = (name or "").strip()
+    if not dr.NAME_RE.fullmatch(name):
+        raise DeviceError("Names use 1–64 letters, digits, dots, dashes or underscores (no spaces).")
+    vol = next((v for k in drives(d["id"])["disks"] for v in k["volumes"] if v["path"] == device), None)
+    if not vol:
+        raise DeviceError("That drive is no longer connected. Refresh the list.")
+    if not vol["can_mount"]:
+        raise DeviceError(vol["note"] or "This volume can't be mounted (it may already be mounted).")
+    target = f"{dr.MOUNT_BASE}/{name}"
+    opts = "nosuid,nodev" + (",ro" if readonly else "")
+    q, t = shlex.quote(vol["path"]), shlex.quote(target)
+    script = (f'T={t}; if mountpoint -q "$T" 2>/dev/null; then echo "$T is already in use. Choose another name." >&2; exit 2; fi; '
+              f'if [ -d "$T" ] && [ -n "$(ls -A "$T" 2>/dev/null)" ]; then echo "$T already exists and isn\'t empty. Choose another name." >&2; exit 2; fi; '
+              f'sudo -n mkdir -p "$T" && sudo -n mount -o {opts} {q} "$T"')
+    if persist:
+        if not re.fullmatch(r"[A-Za-z0-9-]{4,64}", vol.get("uuid") or "") or vol["fstype"] not in dr.MOUNTABLE_FS:
+            raise DeviceError("This volume has no UUID, so it can't be mounted at startup. Mount it without that option.")
+        line = f"UUID={vol['uuid']} {target} {vol['fstype']} {opts},nofail 0 2"
+        script += (f' && printf "%s\\n%s\\n" {shlex.quote("# added by SysAdmin.IA: " + target)} {shlex.quote(line)} '
+                   '| sudo -n tee -a /etc/fstab >/dev/null')
+    code, out, err = run(d, "sh -c " + shlex.quote(script), timeout=90)
+    if code != 0:
+        raise DeviceError(f"Mounting failed on {d['name']}: {(err or out).strip()[-300:] or f'exit code {code}'}")
+    return {"mountpoint": target, "output": out}
+
+
+def unmount(dev_id, mountpoint: str, forget: bool = True) -> dict:
+    from . import drives as dr
+    import posixpath
+    d = get(dev_id)
+    _need_sudo(d, "Unmounting drives")
+    mp = posixpath.normpath(mountpoint or "")
+    if not mp.startswith(dr.MANAGED_PREFIXES) or not re.fullmatch(r"[A-Za-z0-9/._ -]{2,200}", mp):
+        raise DeviceError("Only drives mounted under /mnt, /media or /run/media can be unmounted here.")
+    t = shlex.quote(mp)
+    script = f"sudo -n umount {t}"
+    if forget and re.fullmatch(r"[A-Za-z0-9/._-]{2,200}", mp):   # drop the lines this app added to fstab
+        esc = mp.replace(".", "\\.")
+        script += f" && sudo -n sed -i '\\|^# added by SysAdmin.IA: {esc}$|{{N;d}}' /etc/fstab"
+    code, out, err = run(d, "sh -c " + shlex.quote(script), timeout=90)
+    if code != 0:
+        raise DeviceError(f"Unmounting failed on {d['name']}: {(err or out).strip()[-300:] or f'exit code {code}'}")
+    return {"mountpoint": mp, "output": out}
+
+
+# ---------------------------------------------------------------- processes (the Processes page on a device)
+
+SIGNALS = ("TERM", "KILL", "HUP", "INT", "STOP", "CONT")
+
+
+def processes(dev_id, sort: str = "cpu", limit: int = 60) -> dict:
+    d = get(dev_id)
+    sort = sort if sort in ("cpu", "mem", "name", "pid") else "cpu"
+    r = agent(d, "procs", sort, str(max(1, min(500, int(limit or 60)))), timeout=30)
+    r["device"] = {"id": d["id"], "name": d["name"], "host": d["host"], "user": d["user"]}
+    r["sudo"] = sudo_free(d)
+    return r
+
+
+def signal(dev_id, pid, sig: str) -> dict:
+    """Send a signal to a process on the device: as the device's user, or with sudo -n for other users' processes."""
+    d = get(dev_id)
+    sig = (sig or "").upper()
+    if sig not in SIGNALS:
+        raise DeviceError("Unknown signal.")
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        raise DeviceError("Invalid process.")
+    if pid <= 1:
+        raise DeviceError("That process can't be signalled from here.")
+    cmd = f"kill -s {sig} {pid} 2>/dev/null || sudo -n kill -s {sig} {pid}"
+    code, out, err = run(d, "sh -c " + shlex.quote(cmd), timeout=20)
+    if code != 0:
+        msg = (err or out).strip().splitlines()[-1][:200] if (err or out).strip() else ""
+        raise DeviceError(f"Couldn't signal process {pid} on {d['name']}"
+                          + (f": {msg}" if msg else "") + (". Processes of other users need sudo without a password "
+                                                           "(set it up in Server → Devices)." if not sudo_free(d) else "."))
+    return {"ok": True, "pid": pid, "signal": sig}

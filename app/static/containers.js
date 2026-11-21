@@ -125,7 +125,7 @@ function renderDockerStatus(s) {
 // ---- background tasks (downloads, creating containers, stacks)
 async function loadDockerTasks() {
   let t = [];
-  try { t = await api("/api/docker/tasks"); } catch { /* ignore */ }
+  try { t = await api("/api/docker/tasks?all=1"); } catch { /* ignore */ }   // tasks on every computer
   const before = new Set((state.dk.tasks || []).filter((x) => x.state === "running").map((x) => x.id));
   state.dk.tasks = t;
   const box = $("#dk-tasks");
@@ -135,13 +135,16 @@ async function loadDockerTasks() {
     box.append(el("div", { class: `card dk-task ${x.state}` },
       el("div", { class: "small" },
         running ? el("span", { class: "spinner", "aria-hidden": "true" }) : el("span", { class: x.state === "done" ? "ok-text" : "error" }, x.state === "done" ? "✓" : "✕"),
-        " ", el("strong", {}, x.title), " · ",
+        " ", el("strong", {}, x.title), x.device ? el("span", { class: "tag dk-dev-tag", "data-no-i18n": "" }, x.device_name || `#${x.device}`) : null, " · ",
         el("span", { class: x.state === "failed" ? "error" : "muted" }, x.state === "failed" ? x.error : x.status),
         x.result?.warnings?.length ? el("span", { class: "muted" }, ` (${x.result.warnings.join("; ")})`) : null),
       running && x.progress != null ? usageBar(x.progress) : null,
       x.log.length ? el("details", {}, el("summary", { class: "small" }, "Details"), el("pre", { class: "mono small update-notes" }, x.log.join("\n"))) : null));
     // a task finished since the last poll: refresh the lists
-    if (!running && before.has(x.id)) { refreshDockerTab(); if (state.dk.pendingPrepare === x.id) dkPrepare(); }
+    if (!running && before.has(x.id)) {
+      refreshDockerTab();
+      if (state.dk.pendingPrepare === x.id && $("#dk-dialog").open) state.dk.form?.clone ? dkImageCheck() : dkPrepare();
+    }
   }
 }
 
@@ -162,15 +165,17 @@ async function refreshDockerTab(quiet = false) {
 }
 
 const dkPost = (url, body) => api(url, { method: "POST", body: JSON.stringify(body || {}) });
-const hostUrl = (port, proto = "http") => `${proto}://${location.hostname}:${port}/`;
+const hostUrl = (port, proto = "http", host = null) => `${proto}://${host && host.includes(":") ? `[${host}]` : host || location.hostname}:${port}/`;
 
 function dkToolbar(...kids) { return el("div", { class: "dk-toolbar" }, ...kids); }
 
-// ---- containers
+// ---- containers: every computer's (this server + devices with Docker, Server → Devices)
+const dkTarget = () => String((state.target || {}).docker || "");
 async function dkContainers(quiet) {
-  const list = await api("/api/docker/containers?stats=true");
+  const all = await api("/api/docker/everywhere?stats=true");
   if (state.dk.tab !== "containers") return;
-  state.dk.containers = list;
+  state.dk.hostsSeen = all.hosts;
+  state.dk.containers = all.hosts.flatMap((h) => h.containers);
   const pane = $("#dk-pane");
   const keepFilter = $("#dk-filter")?.value ?? state.dk.filter;
   const focused = document.activeElement?.id === "dk-filter";
@@ -191,28 +196,50 @@ function dkRenderContainerRows() {
   if (!box) return;
   box.innerHTML = "";
   const q = (state.dk.filter || "").toLowerCase();
-  const list = (state.dk.containers || []).filter((c) => !q || `${c.name} ${c.image} ${c.stack || ""}`.toLowerCase().includes(q));
-  if (!list.length) {
+  const hosts = state.dk.hostsSeen || [];
+  const many = hosts.length > 1;
+  const list = (state.dk.containers || []).filter((c) => !q || `${c.name} ${c.image} ${c.stack || ""} ${c.device_name || ""}`.toLowerCase().includes(q));
+  if (!list.length && !many) {
     box.append(el("div", { class: "dk-empty" },
       el("p", { class: "muted" }, state.dk.containers?.length ? "No containers match." : "No containers yet."),
       state.dk.containers?.length ? null : el("p", { class: "small muted" }, "Click New container and type an app's image name, e.g. nginx, jellyfin/jellyfin or nextcloud. "
         + "Ports and folders are suggested for you.")));
     return;
   }
-  for (const c of list) box.append(dkContainerRow(c));
+  if (!many) { for (const c of list) box.append(dkContainerRow(c)); return; }
+  // one group per computer, with its problem if it can't be read
+  for (const h of hosts) {
+    const mine = list.filter((c) => String(c.device) === String(h.device));
+    box.append(el("div", { class: "dk-host-head" },
+      el("span", { class: "dk-host-icon", html: icon("server") }),
+      el("strong", { "data-no-i18n": h.device ? "" : null }, h.name),
+      el("span", { class: "muted small" }, h.error ? "" : `${h.containers.filter((c) => c.state === "running").length} running · ${h.containers.length} in all`),
+      h.error ? el("span", { class: `small ${h.offline ? "muted" : "error"}` }, h.error) : null));
+    if (!h.error && !mine.length) box.append(el("p", { class: "muted small dk-host-empty" }, q ? "No containers match." : "No containers here yet."));
+    for (const c of mine) box.append(dkContainerRow(c));
+  }
+}
+
+// Copy a container's settings to a new container on another computer (or the same one, with another name).
+async function dkCloneContainer(c) {
+  let hosts = [];
+  try { hosts = await api("/api/docker/hosts"); } catch (ex) { toast(ex.message); return; }
+  openDockerDialog(null, "", "", "", { clone: c, device: String((hosts.find((h) => String(h.id) !== String(c.device || 0)) || hosts[0] || { id: 0 }).id) });
 }
 
 function dkContainerRow(c) {
   const running = c.state === "running";
+  const dev = c.device || 0;        // the computer it runs on
   const act = (action, label, ic, cls = "ghost") => el("button", { type: "button", class: `small ${cls}`, title: label, onclick: async (e) => {
     e.currentTarget.disabled = true;
-    try { await dkPost(`/api/docker/containers/${c.id}/action`, { action }); } catch (ex) { toast(ex.message); }
+    try { await dkPost(onDevice(`/api/docker/containers/${c.id}/action`, dev), { action }); } catch (ex) { toast(ex.message); }
     refreshDockerTab();
   } }, withIcon(ic, label));
   const ports = c.ports.filter((p) => p.host).map((p) => {
     const label = `${p.host}${p.host !== p.container ? ` → ${p.container}` : ""}${p.proto === "udp" ? "/udp" : ""}`;
     return p.proto === "tcp" && running && p.ip !== "127.0.0.1"
-      ? el("a", { class: "tag tag-accent dk-port", href: hostUrl(p.host, [443, 8443, 9443].includes(p.container) ? "https" : "http"), target: "_blank", rel: "noopener noreferrer", title: `Open port ${p.host} on this server` }, iconEl("link"), label)
+      ? el("a", { class: "tag tag-accent dk-port", href: hostUrl(p.host, [443, 8443, 9443].includes(p.container) ? "https" : "http", c.device_host),
+        target: "_blank", rel: "noopener noreferrer", title: c.device ? `Open port ${p.host} on ${c.device_name}` : `Open port ${p.host} on this server` }, iconEl("link"), label)
       : el("span", { class: "tag", title: p.ip === "127.0.0.1" ? "Only reachable from the server itself" : "" }, label);
   });
   const folders = c.mounts.map((m) => el("span", { class: "tag", title: `${m.type === "volume" ? `volume ${m.name}` : m.source} → ${m.target}${m.readonly ? " (read-only)" : ""}` },
@@ -232,12 +259,14 @@ function dkContainerRow(c) {
       running ? act("restart", "Restart", "refresh") : null,
       el("button", { type: "button", class: "small ghost", onclick: () => openDockerLogs(c) }, withIcon("file", "Logs")),
       running ? el("button", { type: "button", class: "small ghost", title: "Open a shell inside the container",
-        onclick: () => openContainerConsole(c.id, c.name) }, withIcon("console", "Terminal")) : null,
+        onclick: () => openContainerConsole(c.id, c.name, String(dev || "")) }, withIcon("console", "Terminal")) : null,
       c.stack ? null : el("button", { type: "button", class: "small ghost", title: "Change ports, folders, settings or the image version",
-        onclick: () => openDockerDialog(c.id) }, withIcon("edit", "Edit")),
+        onclick: () => openDockerDialog(c.id, "", "", "", { device: String(dev || "") }) }, withIcon("edit", "Edit")),
+      c.stack ? null : el("button", { type: "button", class: "small ghost", title: "Make a new container with the same settings, on another device or here",
+        onclick: () => dkCloneContainer(c) }, withIcon("copy", "Copy to…")),
       el("button", { type: "button", class: "small ghost danger", onclick: async () => {
-        if (!confirm(`Remove the container “${c.name}”?${running ? "\n\nIt is running and will be stopped." : ""}\n\nFiles in shared server folders are kept.`)) return;
-        try { await dkPost(`/api/docker/containers/${c.id}/remove`, { volumes: false }); toast(`Removed ${c.name}.`); } catch (ex) { toast(ex.message); }
+        if (!confirm(`Remove the container “${c.name}”${c.device ? ` on ${c.device_name}` : ""}?${running ? "\n\nIt is running and will be stopped." : ""}\n\nFiles in shared server folders are kept.`)) return;
+        try { await dkPost(onDevice(`/api/docker/containers/${c.id}/remove`, dev), { volumes: false }); toast(`Removed ${c.name}.`); } catch (ex) { toast(ex.message); }
         refreshDockerTab();
       } }, withIcon("trash", "Remove"))));
 }
@@ -318,7 +347,8 @@ function openDockerLogs(c, stack = null) {
   pre.textContent = "Loading…";
   const load = async () => {
     try {
-      const r = await api(stack ? `/api/docker/stacks/${stack}/logs?tail=300` : `/api/docker/containers/${c.id}/logs?tail=500`);
+      const r = await api(stack ? `/api/docker/stacks/${stack}/logs?tail=300`
+        : c.device != null ? onDevice(`/api/docker/containers/${c.id}/logs?tail=500`, c.device) : `/api/docker/containers/${c.id}/logs?tail=500`);
       const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 30;
       pre.textContent = r.logs || "(no output yet)";
       if (atBottom) pre.scrollTop = pre.scrollHeight;
@@ -333,30 +363,114 @@ $("#dk-logs-close").addEventListener("click", () => { clearInterval(state.dk.log
 $("#dk-logs-dialog").addEventListener("close", () => clearInterval(state.dk.logTimer));
 
 // ---- create / edit container
-async function openDockerDialog(editId = null, image = "", appId = "", appTitle = "") {
+// opts.device: the computer ("" = this server, else a device id; default: the page's "Runs on");
+// opts.clone: a container (from the list) whose settings fill a new container, on opts.device.
+const dkF = (path) => onDevice(path, state.dk.form?.device);   // a request for the dialog's computer
+async function openDockerDialog(editId = null, image = "", appId = "", appTitle = "", opts = {}) {
   const d = $("#dk-dialog");
+  const clone = opts.clone || null;
   state.dk.edit = editId;
   state.dk.form = { image, name: "", restart: "unless-stopped", network: "bridge", ports: [], mounts: [], env: [], command: "",
                     privileged: false, allow_system_paths: false, start: true, pull: false, prepared: false, sysctls: {},
-                    app_id: appId, app_image: image, app: null };
-  $("#dk-dialog-title").textContent = editId ? "Edit container" : appTitle ? `Install ${appTitle}` : "New container";
+                    app_id: appId, app_image: image, app: null, device: opts.device != null ? String(opts.device || "") : dkTarget(),
+                    clone: clone ? { device: String(clone.device || 0), name: clone.device_name || "this server" } : null };
+  $("#dk-dialog-title").textContent = editId ? "Edit container" : clone ? `Copy ${clone.name}` : appTitle ? `Install ${appTitle}` : "New container";
   $("#dk-save").textContent = editId ? "Save and recreate" : "Create and start";
   $("#dk-form-error").hidden = true;
   $("#dk-form-body").innerHTML = "";
   $("#dk-form-body").append(el("p", { class: "muted small" }, "Loading…"));
   d.showModal();
   try {
-    const [host, nets, vols] = await Promise.all([api("/api/docker/host"), api("/api/docker/networks"), api("/api/docker/volumes")]);
-    state.dk.host = host; state.dk.nets = nets; state.dk.vols = vols;
+    state.dk.hosts = await api("/api/docker/hosts").catch(() => [{ id: 0, name: "This server" }]);
+    if (clone) {   // the source container's settings, read from its own computer
+      const c = await api(onDevice(`/api/docker/containers/${clone.id}`, clone.device || 0));
+      const sameHost = String(clone.device || 0) === String(state.dk.form.device || 0);
+      Object.assign(state.dk.form, { image: c.image, name: sameHost ? `${c.name}-copy` : c.name, restart: c.restart, network: c.network || "bridge",
+        ports: c.ports, mounts: c.mounts, env: c.env, command: c.command, privileged: c.privileged, prepared: true, sysctls: c.sysctls || {},
+        allow_system_paths: c.mounts.some((m) => m.type === "bind" && isSystemPath(m.source)) });
+    }
+    await dkLoadHost();
     if (editId) {
-      const c = await api(`/api/docker/containers/${editId}`);
+      const c = await api(dkF(`/api/docker/containers/${editId}`));
       Object.assign(state.dk.form, { image: c.image, name: c.name, restart: c.restart, network: c.network || "bridge",
         ports: c.ports, mounts: c.mounts, env: c.env, command: c.command, privileged: c.privileged, prepared: true, sysctls: c.sysctls || {},
         allow_system_paths: c.mounts.some((m) => m.type === "bind" && isSystemPath(m.source)) });
     }
   } catch (ex) { $("#dk-form-body").innerHTML = ""; $("#dk-form-body").append(el("p", { class: "error small" }, ex.message)); return; }
   renderDockerForm();
-  if (image && !editId) dkPrepare();
+  if (clone) dkImageCheck();
+  else if (image && !editId) dkPrepare();
+}
+
+// Drives, used ports, networks and volumes of the dialog's computer.
+async function dkLoadHost() {
+  const [host, nets, vols] = await Promise.all([api(dkF("/api/docker/host")), api(dkF("/api/docker/networks")), api(dkF("/api/docker/volumes"))]);
+  state.dk.host = host; state.dk.nets = nets; state.dk.vols = vols;
+}
+
+// "Create on": another computer. Its ports and folders differ, so a new container's suggestions are made again.
+async function dkSetDialogDevice(dev) {
+  const f = state.dk.form;
+  f.image = ($("#dk-image")?.value || f.image).trim();
+  f.device = dev;
+  const msg = $("#dk-image-msg");
+  if (msg) { msg.className = "small busy"; msg.innerHTML = '<span class="spinner" aria-hidden="true"></span> Connecting…'; }
+  try { await dkLoadHost(); } catch (ex) { if (msg) { msg.className = "small error"; msg.textContent = ex.message; } return; }
+  if (f.clone) { renderDockerForm(); dkImageCheck(); return; }
+  if (f.prepared && f.image) { f.prepared = false; renderDockerForm(); dkPrepare(); } else renderDockerForm();
+}
+
+const dkHostName = (dev) => ((state.dk.hosts || []).find((h) => String(h.id) === String(dev || 0)) || { name: dev ? `#${dev}` : "This server" }).name;
+
+// Is the image on the dialog's computer? If not: download it, or copy it from a computer that has it.
+async function dkImageCheck(autoPull = false) {
+  const f = state.dk.form;
+  const msg = $("#dk-image-msg");
+  if (!f.image || !msg) return false;
+  msg.className = "small busy"; msg.innerHTML = '<span class="spinner" aria-hidden="true"></span> Looking for the image on your computers…';
+  let where = [];
+  try { where = await api(`/api/docker/images/where?name=${encodeURIComponent(f.image)}`); }
+  catch (ex) { msg.className = "small error"; msg.textContent = ex.message; return false; }
+  const here = where.find((w) => String(w.device) === String(f.device || 0));
+  if (here && here.present) {
+    msg.className = "small ok-text";
+    msg.textContent = `✓ ${f.image} is on ${dkHostName(f.device)}${here.size ? ` (${fmtBytes(here.size)})` : ""}.`
+      + (f.clone ? ` Settings copied from ${f.clone.name}: check the ports and folders (the folders' contents aren't copied).` : "");
+    return true;
+  }
+  const others = where.filter((w) => w.present && String(w.device) !== String(f.device || 0));
+  if (!others.length && autoPull) return false;
+  msg.className = "small"; msg.innerHTML = "";
+  msg.append(`${f.image} isn't on ${dkHostName(f.device)} yet. `);
+  for (const o of others) msg.append(el("button", { type: "button", class: "small", onclick: () => dkCopyImage(f.image, o.device, f.device) },
+    withIcon("copy", `Copy it from ${o.name}${o.size ? ` (${fmtBytes(o.size)})` : ""}`)), " ");
+  msg.append(el("button", { type: "button", class: "small ghost", onclick: () => dkPullForForm() }, withIcon("download", "Download it")),
+    el("span", { class: "muted" }, " (or create: it's downloaded then)"));
+  return false;
+}
+
+async function dkCopyImage(image, from, to, after = null) {
+  try {
+    const t = await dkPost("/api/docker/images/copy", { name: image, source: Number(from || 0), target: Number(to || 0) });
+    state.dk.pendingPrepare = t.id;
+    const msg = $("#dk-image-msg");
+    if (msg && $("#dk-dialog").open) { msg.className = "small busy"; msg.innerHTML = '<span class="spinner" aria-hidden="true"></span> Copying the image (progress is shown on the page behind this window)…'; }
+    else toast(`Copying ${image}…`);
+    if (after) after();
+    loadDocker();
+  } catch (ex) { toast(ex.message, 7000); }
+}
+
+async function dkPullForForm() {
+  const f = state.dk.form;
+  try {
+    const t = await dkPost(dkF("/api/docker/images/pull"), { name: f.image });
+    state.dk.pendingPrepare = t.id;
+    const msg = $("#dk-image-msg");
+    msg.className = "small busy";
+    msg.innerHTML = '<span class="spinner" aria-hidden="true"></span> Downloading the image (progress is shown on the page behind this window)…';
+    loadDocker();
+  } catch (ex) { toast(ex.message); }
 }
 
 const SYSTEM_PATHS = ["/", "/bin", "/boot", "/dev", "/etc", "/lib", "/lib64", "/proc", "/root", "/run", "/sbin", "/sys", "/usr", "/var/lib/docker", "/var/run/docker.sock"];
@@ -372,11 +486,15 @@ async function dkPrepare() {
   const msg = $("#dk-image-msg");
   msg.className = "small busy"; msg.innerHTML = '<span class="spinner" aria-hidden="true"></span> Checking the image…';
   try {
-    const r = await api(`/api/docker/prepare?image=${encodeURIComponent(f.image)}&name=${encodeURIComponent(f.name)}&app_id=${encodeURIComponent(f.app_id || "")}`);
+    const r = await api(dkF(`/api/docker/prepare?image=${encodeURIComponent(f.image)}&name=${encodeURIComponent(f.name)}&app_id=${encodeURIComponent(f.app_id || "")}`));
     if (!r.present) {
-      const t = await dkPost("/api/docker/images/pull", { name: f.image }).catch((ex) => { throw ex; });
+      // on another of your computers? offer to copy it from there; otherwise download it
+      if ((state.dk.hosts || []).length > 1 && !(await dkImageCheck(true)) && $("#dk-image-msg button")) return;
+      const t = await dkPost(dkF("/api/docker/images/pull"), { name: f.image }).catch((ex) => { throw ex; });
       state.dk.pendingPrepare = t.id;
-      msg.innerHTML = '<span class="spinner" aria-hidden="true"></span> Downloading the image (progress is shown on the page behind this window)… '
+      const m1 = $("#dk-image-msg");
+      m1.className = "small busy";
+      m1.innerHTML = '<span class="spinner" aria-hidden="true"></span> Downloading the image (progress is shown on the page behind this window)… '
         + "The form fills in when it's done.";
       loadDocker();
       return;
@@ -390,7 +508,7 @@ async function dkPrepare() {
     renderDockerForm();
     const m2 = $("#dk-image-msg");
     m2.className = "small ok-text";
-    m2.textContent = `✓ ${r.image} is on the server (${fmtBytes(r.details.size)}).` +
+    m2.textContent = `✓ ${r.image} is on ${f.device ? dkHostName(f.device) : "the server"} (${fmtBytes(r.details.size)}).` +
       (r.app ? ` Recommended settings for ${r.app.title} are filled in below: check them, especially the folders.`
         : r.ports.length || r.mounts.length ? " Suggested ports and folders are filled in below: check them." : " It doesn't declare ports or data folders: add them below if the app needs them.");
   } catch (ex) { msg.className = "small error"; msg.textContent = ex.message; }
@@ -400,6 +518,15 @@ function renderDockerForm() {
   const f = state.dk.form;
   const body = $("#dk-form-body");
   body.innerHTML = "";
+  // where: this server or a device with Docker (Server → Devices); fixed when editing
+  const hosts = state.dk.hosts || [];
+  if (hosts.length > 1 || f.device) {
+    const sel = el("select", { id: "dk-device", disabled: !!state.dk.edit, onchange: (e) => dkSetDialogDevice(e.target.value) },
+      hosts.map((h) => el("option", { value: h.id ? String(h.id) : "", selected: String(h.id || "") === String(f.device || "") },
+        h.id ? `${h.name} (${h.host})` : "This server")));
+    body.append(el("label", { class: "dk-create-on" }, state.dk.edit ? "Runs on" : "Create on", sel,
+      f.clone ? el("span", { class: "small muted" }, `Copying the settings of a container on ${f.clone.name}. Ports and folders are those of the original: check them for this computer.`) : null));
+  }
   // image
   const hub = el("div", { class: "dk-hub", id: "dk-hub" });
   body.append(el("label", {}, "Image",
@@ -489,7 +616,7 @@ function renderDockerForm() {
               el("input", { value: m.source, class: `mono ${(isSystemPath(m.source) && !f.allow_system_paths) || (m.required && !m.source) ? "invalid" : ""}`, spellcheck: "false",
                 required: !!m.required, placeholder: m.required ? "required: click Browse to choose it" : "",
                 oninput: (e) => { m.source = e.target.value.trim(); e.target.classList.toggle("invalid", !!m.required && !m.source); } }),
-              el("button", { type: "button", class: "small ghost", onclick: () => pickHostFolder(m.source || (m.suggest ? `${m.suggest}/` : ""), (p) => { m.source = p; drawMounts(); }) }, withIcon("folder", "Browse"))));
+              el("button", { type: "button", class: "small ghost", onclick: () => pickHostFolder(m.source || (m.suggest ? `${m.suggest}/` : ""), (p) => { m.source = p; drawMounts(); }, f.device) }, withIcon("folder", "Browse"))));
       mountsBox.append(el("div", { class: "dk-map" },
         m.label ? el("div", { class: "small dk-map-title" }, el("strong", {}, m.label),
           m.required ? el("span", { class: "error" }, " * required") : null,
@@ -520,7 +647,7 @@ function renderDockerForm() {
         const t = prompt("Where should it appear inside the container?", "/data");
         if (!t) return;
         f.mounts.push({ type: "bind", source: p, target: t, readonly: false }); drawMounts();
-      }) }, withIcon("folder", "Share a folder")),
+      }, f.device) }, withIcon("folder", "Share a folder")),
       el("button", { type: "button", class: "small ghost", onclick: () => {
         const v = prompt("Docker volume name (created if it doesn't exist):", `${appName()}-data`);
         if (!v) return;
@@ -615,13 +742,15 @@ $("#dk-form").addEventListener("submit", async (e) => {
                  env: f.env.filter((x) => x.key && (x.value !== "" || x.required)) };   // empty optional settings are left out
   delete spec.details;
   delete spec.app;
+  delete spec.device;
+  delete spec.clone;
   try {
     if (state.dk.edit) {
       if (!confirm("Save and recreate the container?\n\nIt is stopped and replaced by a new one with these settings (a few seconds of downtime). "
         + "Files in shared folders and volumes are kept; files written elsewhere inside the old container are lost.")) return;
-      await api(`/api/docker/containers/${state.dk.edit}`, { method: "PUT", body: JSON.stringify({ spec }) });
+      await api(dkF(`/api/docker/containers/${state.dk.edit}`), { method: "PUT", body: JSON.stringify({ spec }) });
     } else {
-      await dkPost("/api/docker/containers", { spec });
+      await dkPost(dkF("/api/docker/containers"), { spec });
     }
     $("#dk-dialog").close();
     toast(state.dk.edit ? "Updating the container…" : "Creating the container…");
@@ -630,7 +759,7 @@ $("#dk-form").addEventListener("submit", async (e) => {
 });
 
 // ---- folder picker (drives from the Drives module + the server's folders)
-function pickHostFolder(start, done) {
+function pickHostFolder(start, done, dev = dkTarget()) {   // dev: the computer whose folders are shown
   const d = $("#dk-folder-dialog");
   const drives = $("#dk-picker-drives");
   drives.innerHTML = "";
@@ -644,7 +773,7 @@ function pickHostFolder(start, done) {
     input.value = path;
     $("#dk-picker-path").textContent = path;
     try {
-      const r = await api(`/api/files?path=${encodeURIComponent(path)}&hidden=false`);
+      const r = await api(onDevice(`/api/files?path=${encodeURIComponent(path)}&hidden=false`, dev));
       input.value = r.path;
       $("#dk-picker-path").textContent = r.path;
       if (r.parent) list.append(el("button", { type: "button", class: "dk-pick-row", onclick: () => go(r.parent) }, iconEl("arrow-up"), " .."));
@@ -670,8 +799,19 @@ function pickHostFolder(start, done) {
 
 // ---- images
 async function dkImages() {
-  const list = await api("/api/docker/images");
+  const [list, hosts] = await Promise.all([api("/api/docker/images"), api("/api/docker/hosts").catch(() => [])]);
   if (state.dk.tab !== "images") return;
+  const here = dkTarget() || "0";
+  const others = hosts.filter((h) => String(h.id) !== here);
+  // copy an image to another computer (docker save → docker load through the app, no registry needed)
+  const copyTo = (tag) => others.length ? el("select", { class: "small", "aria-label": "Copy to another computer", onchange: (e) => {
+    const to = e.target.value;
+    e.target.value = "";
+    if (!to) return;
+    const h = others.find((x) => String(x.id) === to);
+    if (confirm(`Copy ${tag} to ${h ? h.name : to}?\n\nThe image is sent through SysAdmin.IA, so it works without a registry and for images you built yourself.`))
+      dkCopyImage(tag, here, to);
+  } }, el("option", { value: "" }, "Copy to…"), others.map((h) => el("option", { value: String(h.id) }, h.id ? h.name : "This server"))) : null;
   const pane = $("#dk-pane");
   pane.innerHTML = "";
   const name = el("input", { placeholder: "Image to download, e.g. nginx:latest", class: "mono", spellcheck: "false" });
@@ -706,6 +846,7 @@ async function dkImages() {
         el("div", {}, i.containers.length ? `used by ${i.containers.join(", ")}` : "not used"))),
     el("div", { class: "dk-row-actions" },
       i.tags[0] ? el("button", { type: "button", class: "small", onclick: () => openDockerDialog(null, i.tags[0]) }, withIcon("plus", "Create container")) : null,
+      i.tags[0] ? copyTo(i.tags[0]) : null,
       i.tags[0] ? el("button", { type: "button", class: "small ghost", title: "Download the newest version of this tag",
         onclick: async () => { try { await dkPost("/api/docker/images/pull", { name: i.tags[0] }); loadDocker(); } catch (ex) { toast(ex.message); } } }, withIcon("refresh", "Update")) : null,
       el("button", { type: "button", class: "small ghost danger", onclick: async () => {
@@ -774,13 +915,13 @@ async function openStackDialog(name = null) {
   // quick inserts: a drive folder path at the cursor
   const ins = $("#dk-stack-insert");
   ins.innerHTML = "";
-  try { state.dk.host = state.dk.host || await api("/api/docker/host"); } catch { /* ignore */ }
+  try { state.dk.host = await api("/api/docker/host"); } catch { /* ignore */ }   // the page's computer (not a dialog's)
   const drives = state.dk.host?.drives || [];
   if (drives.length) ins.append(el("span", { class: "muted" }, "Insert a folder path: "),
     drives.map((dr) => el("button", { type: "button", class: "small ghost", onclick: () => pickHostFolder(dr.path + "/", (p) => {
       const ta = f.compose; const at = ta.selectionStart ?? ta.value.length;
       ta.value = ta.value.slice(0, at) + p + ta.value.slice(ta.selectionEnd ?? at); ta.focus();
-    }) }, iconEl(dr.external ? "external" : "internal"), ` ${dr.label || dr.path}`)));
+    }, dkTarget()) }, iconEl(dr.external ? "external" : "internal"), ` ${dr.label || dr.path}`)));
   d.showModal();
 }
 async function saveStack(start) {

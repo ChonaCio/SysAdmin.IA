@@ -37,6 +37,16 @@ function procStateOf(w) {
 async function loadProcesses() {
   clearTimeout(state.procTimer);
   const list = $("#proc-list");
+  // "Runs on" a device (Server → Devices): that device's processes instead of SysAdmin.IA's own
+  const dev = window.targetDevice ? targetDevice("processes") : null;
+  $("#proc-restart-all").hidden = !!dev;
+  $("#proc-mode").hidden = !!dev;
+  list.hidden = !!dev;
+  if (dev) {
+    await loadSysProcs(dev);
+    if (state.view === "processes") state.procTimer = setTimeout(loadProcesses, 10000);
+    return;
+  }
   let st;
   try { st = await api("/api/processes"); }
   catch (ex) {
@@ -55,7 +65,78 @@ async function loadProcesses() {
   for (const w of st.workers) list.append(procCard(w, st.supervised, open.has(w.name)));
   state.procSummary = null;
   refreshProcIndicators();
+  await loadSysProcs(null);
   state.procTimer = setTimeout(() => state.view === "processes" && loadProcesses(), 5000);
+}
+
+// ---- every process of this server or of a device: sort, filter, stop (TERM) or kill (KILL)
+state.sysprocs = { sort: "cpu", filter: "", limit: 60 };
+async function loadSysProcs(dev) {
+  const box = $("#proc-device");
+  const s = state.sysprocs;
+  let r;
+  try { r = await api(`/api/sysprocs?sort=${s.sort}&limit=${s.limit}`); }
+  catch (ex) {
+    box.hidden = false;
+    box.innerHTML = "";
+    box.append(el("div", { class: "card" }, el("p", { class: "error small" }, ex.message),
+      dev && window.deviceReconnect ? el("button", { type: "button", class: "small", onclick: () => deviceReconnect(dev.id, loadProcesses) }, withIcon("refresh", "Reconnect")) : null));
+    return;
+  }
+  if (state.view !== "processes" || String((targetDevice("processes") || {}).id || "") !== String((dev || {}).id || "")) return;
+  const keep = $("#sp-filter");
+  const focused = document.activeElement === keep;
+  box.hidden = false;
+  box.innerHTML = "";
+  const filter = el("input", { type: "search", id: "sp-filter", placeholder: "Filter by name, user or command…", value: s.filter,
+    oninput: (e) => { s.filter = e.target.value; draw(); } });
+  const sort = el("select", { "aria-label": "Sort by", onchange: (e) => { s.sort = e.target.value; loadProcesses(); } },
+    [["cpu", "Most CPU"], ["mem", "Most memory"], ["name", "Name"], ["pid", "Process id"]].map(([v, l]) => el("option", { value: v, selected: s.sort === v }, l)));
+  const limit = el("select", { "aria-label": "How many", onchange: (e) => { s.limit = Number(e.target.value); loadProcesses(); } },
+    [30, 60, 150, 500].map((n) => el("option", { value: String(n), selected: s.limit === n }, `Top ${n}`)));
+  const rows = el("tbody");
+  const app = new Set(r.app_pids || []);
+  const draw = () => {
+    rows.innerHTML = "";
+    const q = s.filter.toLowerCase();
+    const list = r.procs.filter((p) => !q || `${p.name} ${p.user} ${p.cmd} ${p.pid}`.toLowerCase().includes(q));
+    if (!list.length) rows.append(el("tr", {}, el("td", { colspan: "7", class: "muted small" }, "No processes match.")));
+    for (const p of list) {
+      const sig = (signal, label, cls) => el("button", { type: "button", class: `small ghost ${cls || ""}`, title: label, onclick: async (e) => {
+        const what = signal === "KILL" ? `Kill ${p.name} (process ${p.pid}) at once?\n\nIt can't save anything or clean up.`
+          : `Stop ${p.name} (process ${p.pid})?\n\nIt's asked to end (SIGTERM).`;
+        if (!confirm(what)) return;
+        e.currentTarget.disabled = true;
+        try { await api(`/api/sysprocs/${p.pid}/signal`, { method: "POST", body: JSON.stringify({ signal }) }); toast(`Signal sent to ${p.name}.`); }
+        catch (ex) { toast(ex.message, 7000); }
+        setTimeout(loadProcesses, 800);
+      } }, label);
+      const own = app.has(p.pid);
+      rows.append(el("tr", {},
+        el("td", { class: "num mono" }, String(p.pid)),
+        el("td", { class: "sp-name" }, el("strong", { "data-no-i18n": "" }, p.name), own ? el("span", { class: "tag" }, "SysAdmin.IA") : null,
+          el("div", { class: "muted small mono dk-ellipsis", title: p.cmd, "data-no-i18n": "" }, p.cmd)),
+        el("td", { class: "small mono", "data-no-i18n": "" }, p.user),
+        el("td", { class: "num" }, `${p.cpu.toFixed(1)}%`),
+        el("td", { class: "num nowrap" }, fmtBytes(p.mem)),
+        el("td", { class: "small muted nowrap hide-sm" }, p.started ? fmtWhen(p.started) : ""),
+        el("td", { class: "num nowrap" }, own ? el("span", { class: "muted small" }, "use the cards above") : [sig("TERM", "Stop"), sig("KILL", "Kill", "danger")])));
+    }
+  };
+  draw();
+  const who = dev ? (r.device?.name || dev.name) : "this server";
+  box.append(el("div", { class: "card sp-card" },
+    el("div", { class: "ai-card-head" },
+      el("span", { class: "icon-tile", html: icon("monitor") }),
+      el("div", { class: "ai-card-title" }, el("b", {}, dev ? `Processes on ${who}` : "All processes on this server"),
+        el("div", { class: "muted small" }, el("span", {}, `${r.total} processes.`), " ", el("span", {}, dev
+          ? (r.sudo ? "Any process can be stopped (sudo works without a password)." : `Only the processes of ${r.device?.user || "the device's user"} can be stopped; others need sudo without a password (Server → Devices).`)
+          : "SysAdmin.IA's user can only stop its own processes; its own parts are managed with the cards above.")))),
+    el("div", { class: "dk-toolbar" }, filter, sort, limit),
+    el("div", { class: "table-wrap" }, el("table", { class: "pyenv-ver-table small sp-table" },
+      el("thead", {}, el("tr", {}, el("th", {}, "PID"), el("th", {}, "Name"), el("th", {}, "User"), el("th", {}, "CPU"), el("th", {}, "Memory"),
+        el("th", { class: "hide-sm" }, "Started"), el("th", {}, ""))), rows))));
+  if (focused) { filter.focus(); filter.setSelectionRange(filter.value.length, filter.value.length); }
 }
 
 function procCard(w, supervised, logsOpen) {

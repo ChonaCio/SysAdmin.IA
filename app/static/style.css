@@ -1118,3 +1118,18 @@ svg.dag-edges g.edge-del circle { fill: var(--crit); } svg.dag-edges g.edge-del 
 @media (max-width: 760px) {
   .dev-drives th:nth-child(2), .dev-drives td:nth-child(2), .dev-drives th:nth-child(3), .dev-drives td:nth-child(3) { display: none; }
 }
+/* containers on every computer (Server → Devices) */
+.dk-host-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 14px 0 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border); }
+.dk-host-head:first-child { margin-top: 0; }
+.dk-host-icon { display: inline-flex; width: 18px; height: 18px; color: var(--muted); }
+.dk-host-icon svg { width: 18px; height: 18px; }
+.dk-host-empty { margin: 4px 0 8px; }
+.dk-dev-tag { margin-left: 6px; }
+.dk-create-on { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+.dk-create-on select { max-width: 360px; }
+/* every process (Processes page) */
+.sp-card .dk-toolbar { margin: 10px 0; }
+.sp-table td { vertical-align: top; }
+.sp-name { max-width: 420px; }
+.sp-name .tag { margin-left: 6px; }
+.sp-table td.num button { margin-left: 4px; }

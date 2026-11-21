@@ -291,6 +291,7 @@
           <button data-sub="files" class="seg-btn">Browse files</button>
         </span>
       </div>
+      <div id="drv-target" class="dev-target-bar" hidden></div>
 
       <div id="drives-sub-drives" class="subview">
         <p class="note warn" id="drives-setup" hidden></p>
@@ -756,8 +757,10 @@
         </div>
         <button type="button" class="ghost" id="proc-restart-all"><span data-icon="refresh"></span> Restart everything</button>
       </div>
+      <div id="proc-target" class="dev-target-bar" hidden></div>
       <p class="small muted" id="proc-mode"></p>
       <div id="proc-list" class="proc-list"></div>
+      <div id="proc-device" hidden></div>
     </div>
   </section>
 
@@ -811,6 +814,7 @@
         </div>
         <button type="button" class="primary" id="pyenv-add"><span data-icon="plus"></span> New environment</button>
       </div>
+      <div id="pye-target" class="dev-target-bar" hidden></div>
       <div class="card" id="pyenv-server"></div>
       <div class="card" id="pyenv-pythons"></div>
       <div class="card" id="pyenv-tasks" hidden></div>
