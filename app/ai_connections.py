@@ -385,8 +385,16 @@ def _clean(data: dict, existing: dict | None = None, consume: bool = True) -> tu
         raise ConnectionError_("Invalid model name.")
     config["model"] = model
     if provider == "ollama_managed":
-        from . import local_ai
-        installed = local_ai.installed_names()
+        from . import devices, local_ai
+        dev = incoming.get("device", old_cfg.get("device")) or None
+        if dev:      # a model on a device (Server → Devices)
+            try:
+                dev = devices.get(dev)["id"]
+            except devices.DeviceError as e:
+                raise ConnectionError_(str(e))
+            config["device"] = dev
+        with devices.use(dev):
+            installed = local_ai.installed_names()
         if installed and model not in installed and f"{model}:latest" not in installed:
             raise ConnectionError_(f"“{model}” isn't installed on this server. Download it in Local AI first.")
     if p.get("supports_effort"):

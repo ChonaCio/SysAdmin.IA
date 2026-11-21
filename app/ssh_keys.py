@@ -277,6 +277,8 @@ def update(name: str, new_name: str = "", description: str | None = None) -> dic
         mpath.rename(nmeta)
         if db.get_setting(DEFAULT_KEY_SETTING) == name:
             db.set_setting(DEFAULT_KEY_SETTING, new_name)
+        from . import devices
+        devices.key_renamed(name, new_name)        # devices that sign in with it follow the new name
         name = new_name
     return _info(name)
 
@@ -286,6 +288,11 @@ def delete(name: str) -> None:
     priv, pub, mpath = _paths(name)
     if not priv.exists() and not pub.exists():
         raise SshKeyError(f"There's no SSH key called {name} (any more).")
+    from . import devices
+    users = devices.key_users(name)
+    if users:
+        raise SshKeyError(f"{name} is used to sign in to: {', '.join(users)}. Choose another key for "
+                          "those devices in Server → Devices first.")
     for p in (priv, pub, mpath):
         p.unlink(missing_ok=True)
     if db.get_setting(DEFAULT_KEY_SETTING) == name:

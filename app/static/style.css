@@ -1087,3 +1087,34 @@ svg.dag-edges g.edge-del circle { fill: var(--crit); } svg.dag-edges g.edge-del 
 .proc-facts dd.mono { overflow-wrap: anywhere; }
 .pyenv-ver-table td.mono { overflow-wrap: anywhere; word-break: break-all; }
 .pyenv-ver-table td { min-width: 0; }
+
+/* ---- Server → Devices */
+.dev-card.dev-off .dev-meters { opacity: .6; }
+.dev-desc { margin: 6px 0 0; }
+.dev-problem { margin: 10px 0 0; }
+.dev-problem p { margin: 0 0 8px; }
+.dev-meters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px 18px; margin-top: 12px; }
+.dev-meter { min-width: 0; }
+.dev-meter-top { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 3px; font-variant-numeric: tabular-nums; }
+.dev-meter .muted { overflow-wrap: anywhere; }
+.dev-modules { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--grid); }
+.dev-mod { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  min-width: 0; max-width: 100%; }
+.dev-mod.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--border)); }
+.dev-mod-icon { display: inline-flex; color: var(--muted); }
+.dev-mod.ok .dev-mod-icon { color: var(--ok); }
+.dev-mod-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.25; }
+.dev-mod-text span { overflow-wrap: anywhere; }
+.dev-details { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--grid); }
+.dev-temps { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+.dev-drives td.dev-used { min-width: 120px; }
+.dev-drives td.dev-used .bar { display: inline-block; width: 70px; vertical-align: middle; margin-right: 6px; }
+.dev-details .table-wrap { overflow-x: auto; margin-bottom: 10px; }
+.dev-test { padding: 6px 0; overflow-wrap: anywhere; }
+.dev-target-bar { margin: 0 0 12px; }
+.dev-target { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; }
+.dev-target select { min-width: 0; max-width: 100%; }
+.dag-node-dev { color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+@media (max-width: 760px) {
+  .dev-drives th:nth-child(2), .dev-drives td:nth-child(2), .dev-drives th:nth-child(3), .dev-drives td:nth-child(3) { display: none; }
+}

@@ -6,9 +6,13 @@ unloads and deletes them. Installed models are offered in AI connections under t
 "Ollama (Server Managed)".
 
 Ollama listens on 127.0.0.1:11434 (only this server can reach it); SAI_OLLAMA_URL overrides it.
+On a device (Server → Devices) the same API is reached through an SSH tunnel: see devices.py; the
+device's Ollama is installed from the Devices page (no root helper there).
 """
 from __future__ import annotations
 
+import contextvars
+import http.client
 import json
 import os
 import re
@@ -155,9 +159,30 @@ def available() -> bool:
 
 # ---------------------------------------------------------------- talking to Ollama
 
+def _device():
+    from . import devices
+    return devices.current()
+
+
+def _url() -> str:
+    """Ollama's address: this server's, or the current device's through an SSH tunnel (devices.py)."""
+    from . import devices
+    if devices.current_id():
+        try:
+            return devices.ollama_url()
+        except devices.DeviceError as e:
+            raise LocalAIError(str(e))
+    return OLLAMA_URL
+
+
+def _not_running() -> str:
+    d = _device()
+    return f"Ollama isn't running on {d['name']}." if d else "Ollama isn't running on this server."
+
+
 def _req(path: str, method: str = "GET", body: dict | None = None, timeout: float = 10):
     data = json.dumps(body).encode() if body is not None else None
-    req = urllib.request.Request(f"{OLLAMA_URL}{path}", data=data, method=method,
+    req = urllib.request.Request(f"{_url()}{path}", data=data, method=method,
                                  headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -169,8 +194,8 @@ def _req(path: str, method: str = "GET", body: dict | None = None, timeout: floa
         except Exception:
             msg = e.reason
         raise LocalAIError(f"Ollama: {msg}")
-    except (urllib.error.URLError, OSError, TimeoutError):
-        raise LocalAIError("Ollama isn't running on this server.")
+    except (urllib.error.URLError, OSError, TimeoutError, http.client.HTTPException):
+        raise LocalAIError(_not_running())
 
 
 def running_version() -> str | None:
@@ -226,8 +251,40 @@ def _context_length() -> int | None:
         return None
 
 
+def _remote_status(d: dict) -> dict:
+    from . import devices
+    out = {"available": True, "installed": False, "running": False, "version": None, "service": "unknown",
+           "url": None, "ram_total": None, "ram_available": None, "gpus": [], "models_dir": None, "disk_free": None,
+           "context_length": None, "context_choices": list(CONTEXT_CHOICES), "can_manage": False, "setup_command": None,
+           "install": {"state": None, "message": None, "log": "", "progress": None, "stage": ""},
+           "device": {"id": d["id"], "name": d["name"], "host": d["host"]}}
+    try:
+        info = devices.fresh_info()
+    except devices.DeviceError as e:
+        out["error"] = str(e)
+        out["device"]["state"] = e.kind
+        return out
+    ol = info.get("ollama") or {}
+    st = d.get("stats") or {}
+    out.update(installed=bool(ol.get("installed")), service=ol.get("service") or "unknown", gpus=info.get("gpus") or [],
+               models_dir=ol.get("models_dir"), context_length=ol.get("context_length"),
+               ram_total=(st.get("mem") or {}).get("total") or info.get("mem_total"),
+               ram_available=(st.get("mem") or {}).get("available"))
+    version = running_version()
+    out.update(running=version is not None, version=version, installed=out["installed"] or version is not None)
+    mdir = out["models_dir"] or "/"
+    for dr in sorted(st.get("drives") or [], key=lambda x: -len(x["mount"])):
+        if mdir == dr["mount"] or mdir.startswith(dr["mount"].rstrip("/") + "/"):
+            out["disk_free"] = dr["free"]
+            break
+    return out
+
+
 def status() -> dict:
     from . import server_name
+    d = _device()
+    if d:
+        return _remote_status(d)
     vm = psutil.virtual_memory()
     mdir = _models_dir()
     try:
@@ -307,6 +364,9 @@ def installed_names() -> list[str]:
 def catalog() -> dict:
     have = set(installed_names())
     ram = psutil.virtual_memory().total / 2**30
+    d = _device()
+    if d:
+        ram = (((d.get("stats") or {}).get("mem") or {}).get("total") or (d.get("info") or {}).get("mem_total") or 0) / 2**30
     models = []
     for c in CATALOG:
         tag = c["name"] if ":" in c["name"].rsplit("/", 1)[-1] else f"{c['name']}:latest"
@@ -337,23 +397,38 @@ def unload(name: str) -> None:
 
 # ---------------------------------------------------------------- downloads (pull) in the background
 
-_pulls: dict[str, dict] = {}
+_pulls: dict[str, dict] = {}    # key: "<device id or ''>|<model>"
 _pull_lock = threading.RLock()   # re-entrant: progress updates happen while it's held
 
 
+def _pkey(name: str) -> str:
+    from . import devices
+    return f"{devices.current_id() or ''}|{name}"
+
+
 def pull_progress() -> list[dict]:
+    """Downloads on the current target (this server or the current device)."""
+    from . import devices
+    dev = devices.current_id()
     with _pull_lock:
         now = time.time()
         for k in [k for k, v in _pulls.items() if v.get("finished") and now - v["finished"] > 600]:
             _pulls.pop(k)      # forget finished downloads after 10 minutes
-        return [dict(v) for v in _pulls.values()]
+        return [dict(v) for v in _pulls.values() if v.get("device") == dev]
 
 
 def _pull_worker(name: str) -> None:
+    key = _pkey(name)
+
     def upd(**kw):
         with _pull_lock:
-            _pulls[name].update(kw)
-    req = urllib.request.Request(f"{OLLAMA_URL}/api/pull", method="POST",
+            _pulls[key].update(kw)
+    try:
+        base = _url()
+    except LocalAIError as e:
+        upd(state="failed", finished=time.time(), error=str(e))
+        return
+    req = urllib.request.Request(f"{base}/api/pull", method="POST",
                                  data=json.dumps({"model": name, "name": name, "stream": True}).encode(),
                                  headers={"Content-Type": "application/json"})
     try:
@@ -370,10 +445,10 @@ def _pull_worker(name: str) -> None:
                     kw.update(total=ev["total"], completed=ev.get("completed", 0))
                 upd(**kw)
                 with _pull_lock:
-                    if _pulls[name].get("cancel"):
+                    if _pulls[key].get("cancel"):
                         upd(state="cancelled", finished=time.time(), status="Cancelled")
                         return
-        upd(state="done", finished=time.time(), status="Downloaded", completed=_pulls[name].get("total", 0))
+        upd(state="done", finished=time.time(), status="Downloaded", completed=_pulls[key].get("total", 0))
     except urllib.error.HTTPError as e:
         try:
             msg = json.loads(e.read()).get("error") or e.reason
@@ -389,20 +464,23 @@ def pull(name: str) -> dict:
     name = check_name(name)
     if running_version() is None:
         raise LocalAIError("Ollama isn't running. Install or start it first.")
+    from . import devices
+    key = _pkey(name)
     with _pull_lock:
-        cur = _pulls.get(name)
+        cur = _pulls.get(key)
         if cur and cur.get("state") == "downloading":
             raise LocalAIError(f"{name} is already downloading.")
-        _pulls[name] = {"name": name, "state": "downloading", "status": "Starting…", "total": 0,
-                        "completed": 0, "started": time.time(), "error": None}
-    threading.Thread(target=_pull_worker, args=(name,), daemon=True, name=f"ollama-pull-{name}").start()
-    return _pulls[name]
+        _pulls[key] = {"name": name, "state": "downloading", "status": "Starting…", "total": 0, "device": devices.current_id(),
+                       "completed": 0, "started": time.time(), "error": None}
+    ctx = contextvars.copy_context()      # the download keeps going to the same device
+    threading.Thread(target=ctx.run, args=(_pull_worker, name), daemon=True, name=f"ollama-pull-{name}").start()
+    return dict(_pulls[key])
 
 
 def cancel_pull(name: str) -> None:
     with _pull_lock:
-        if name in _pulls:
-            _pulls[name]["cancel"] = True
+        if _pkey(name) in _pulls:
+            _pulls[_pkey(name)]["cancel"] = True
 
 
 # ---------------------------------------------------------------- install / service (root helper)
@@ -462,6 +540,9 @@ def install_progress() -> dict:
 
 def helper(*args: str, timeout: int = 120) -> str:
     from . import server_name
+    d = _device()
+    if d:
+        raise LocalAIError(f"On a device, Ollama is installed and managed from Server → Devices → {d['name']}.")
     if not server_name.helper_supports("ollama-install"):
         raise LocalAIError("This needs a one-time setup as root. On the server, run:\n  " + server_name.setup_command())
     try:

@@ -193,8 +193,46 @@ def _clean_task(t: dict, i: int, ops: dict) -> dict:
     rule = t.get("trigger_rule") or "all_success"
     if rule not in TRIGGER_RULES:
         raise DagError(f"Task “{tid}”: unknown trigger rule “{rule}”.")
+    device = _clean_device(t.get("device"), tid, op, clean)
     return {"task_id": tid, "operator": op, "params": clean, "upstream": sorted(set(up)), "retries": retries,
-            "retry_delay": delay, "trigger_rule": rule, "execution_timeout": timeout}
+            "retry_delay": delay, "trigger_rule": rule, "execution_timeout": timeout, "device": device}
+
+
+def _clean_device(ref, tid: str, op: str, params: dict) -> int | None:
+    """Where a task runs: None = this server, else a device id (Server → Devices)."""
+    if ref in (None, "", 0, "0", "local", "server"):
+        return None
+    from . import devices
+    if op not in devices.REMOTE_OPERATORS:
+        raise DagError(f"Task “{tid}”: “{operators()[op]['label']}” only runs on this server, not on a device.")
+    try:
+        dev = devices.resolve(ref)
+    except devices.DeviceError as e:
+        raise DagError(f"Task “{tid}”: {e}")
+    if op == "run_python" and params.get("venv"):
+        raise DagError(f"Task “{tid}”: Python environments are on this server. On a device the task uses the device's "
+                       "python3: set Environment to the base Python.")
+    return dev
+
+
+def _device_name(dev_id) -> str | int:
+    """The device's name for the code view (its id if it was deleted)."""
+    from . import devices
+    try:
+        return devices.get(dev_id)["name"]
+    except devices.DeviceError:
+        return dev_id
+
+
+def _device_id_loose(ref):
+    """normalize(): a device name from the code view → its id when it exists; anything else is kept as it is."""
+    if ref in (None, "", 0, "0"):
+        return None
+    from . import devices
+    try:
+        return devices.resolve(ref)
+    except Exception:  # noqa: BLE001 - checked properly by clean_dag
+        return ref
 
 
 def _toposort(tasks: list[dict]) -> list[str]:
@@ -269,7 +307,8 @@ def normalize(data: dict) -> dict:
         tasks.append({"task_id": str(t.get("task_id") or ""), "operator": t.get("operator") if t.get("operator") in ops else "empty",
                       "params": dict(t.get("params") or {}), "upstream": [u for u in (t.get("upstream") or []) if isinstance(u, str)],
                       "retries": t.get("retries") or 0, "retry_delay": t.get("retry_delay", 60),
-                      "trigger_rule": t.get("trigger_rule") or "all_success", "execution_timeout": t.get("execution_timeout")})
+                      "trigger_rule": t.get("trigger_rule") or "all_success", "execution_timeout": t.get("execution_timeout"),
+                      "device": _device_id_loose(t.get("device"))})
     ids = {t["task_id"] for t in tasks}
     for t in tasks:
         t["upstream"] = [u for u in t["upstream"] if u in ids and u != t["task_id"]]
@@ -382,6 +421,8 @@ def to_code(d: dict) -> str:
             kw.append(("trigger_rule", t["trigger_rule"]))
         if t.get("execution_timeout"):
             kw.append(("execution_timeout", t["execution_timeout"]))
+        if t.get("device"):
+            kw.append(("device", _device_name(t["device"])))
         lines.append(f"    {var[t['task_id']]} = " + _call(f"tasks.{t['operator']}", kw, "    "))
     edges = []
     for t in d["tasks"]:
@@ -503,12 +544,13 @@ def from_code(code: str) -> dict:
             if name in var_task:
                 raise _err(st, f"“{name}” is defined twice.")
             tid = kw.pop("task_id", None) or name
-            meta = {k: kw.pop(k) for k in ("retries", "retry_delay", "trigger_rule", "execution_timeout") if k in kw}
+            meta = {k: kw.pop(k) for k in ("retries", "retry_delay", "trigger_rule", "execution_timeout", "device") if k in kw}
             known = {f["key"] for f in ops[op]["fields"]}
             extra = sorted(set(kw) - known)
             if extra:
                 raise _err(st.value, f"tasks.{op} has no setting {', '.join(extra)}. It has: "
-                                     f"{', '.join(sorted(known)) or 'none'} (and retries, retry_delay, trigger_rule, execution_timeout).")
+                                     f"{', '.join(sorted(known)) or 'none'} (and retries, retry_delay, trigger_rule, "
+                                     "execution_timeout, device).")
             var_task[name] = {"task_id": str(tid), "operator": op, "params": kw, "upstream": [], **meta, "_line": st.lineno}
             continue
         if isinstance(st, ast.Expr) and isinstance(st.value, ast.BinOp):
@@ -777,14 +819,51 @@ async def _run_process(argv: list[str], ctx: dict, p: dict, shown: str, env: dic
     except asyncio.CancelledError:
         proc.kill()
         raise
-    text = out.decode("utf-8", "replace").strip()
+    return _finish_output(proc.returncode, out.decode("utf-8", "replace"), ctx, shown)
+
+
+async def _run_remote(dev: dict, command: str, ctx: dict, p: dict, shown: str, stdin: bytes | None = None) -> tuple[str, str]:
+    """Like _run_process, on a device over SSH."""
+    from . import devices
+    timeout = int(p.get("timeout") or 300)
+    shown = f"# on the device {dev['name']} ({dev['user']}@{dev['host']})\n{shown}"
+    try:
+        code, text = await devices.exec_async(dev, command, stdin=stdin, timeout=timeout)
+    except asyncio.TimeoutError:
+        raise J.JobError(f"It took longer than {timeout} seconds and was stopped.", details=shown)
+    except devices.DeviceError as e:
+        raise J.JobError(str(e), details=shown)
+    return _finish_output(code, text, ctx, shown)
+
+
+def _remote_context(ctx: dict) -> dict:
+    """SAI_CONTEXT for a device (sent on the command line, so kept under ~100 KB)."""
+    c = _context_json(ctx)
+    return {"SAI_CONTEXT": c if len(c) < 100_000 else json.dumps({"dag": ctx.get("dag"), "run": ctx.get("run")}),
+            "PYTHONUNBUFFERED": "1"}
+
+
+def _remote_workdir(p: dict, ctx: dict, default: str = "") -> str:
+    """cd prefix on a device (the folder isn't checked here: cd fails on the device if it's missing)."""
+    import shlex
+    w = V.render(p.get("workdir") or "", ctx).strip() or default
+    if not w:
+        return "cd && "
+    if not w.startswith("/"):
+        raise J.JobError(f"The working folder must be a full path (starting with /), not “{w[:80]}”.")
+    return f"cd {shlex.quote(w)} && "
+
+
+def _finish_output(code: int, raw: str, ctx: dict, shown: str) -> tuple[str, str]:
+    """Output of a command → {{last.output}}, details, and a failure on a non-zero exit code."""
+    text = raw.strip()
     if len(text) > 8000:
         text = text[:4000] + "\n…\n" + text[-3900:]
-    ctx["last"] = {"output": text, "exit_code": proc.returncode}
-    details = f"{shown}\n\n— Output —\n{text or '(no output)'}\n\n[exit code {proc.returncode}]"
-    if proc.returncode != 0:
+    ctx["last"] = {"output": text, "exit_code": code}
+    details = f"{shown}\n\n— Output —\n{text or '(no output)'}\n\n[exit code {code}]"
+    if code != 0:
         last_line = (text.splitlines() or [""])[-1][:200]
-        raise J.JobError(f"It failed (exit code {proc.returncode}){': ' + last_line if last_line else ''}", details=details)
+        raise J.JobError(f"It failed (exit code {code}){': ' + last_line if last_line else ''}", details=details)
     n = len(text.splitlines())
     first = (text.splitlines() or [""])[0][:160]
     return (f"Exit code 0 · {n} line{'s' if n != 1 else ''} of output" + (f": {first}" if first else "")
@@ -795,8 +874,11 @@ async def _op_run_python(p: dict, ctx: dict) -> tuple[str, str]:
     import os
     import shlex
     import tempfile
-    from . import pyenvs
+    from . import devices, pyenvs
     from .config import settings
+    dev = devices.current()
+    if dev:
+        return await _run_python_remote(dev, p, ctx)
     try:
         py = pyenvs.env_python(p["venv"]) if p.get("venv") else pyenvs.base_python()
     except pyenvs.PyEnvError as e:
@@ -832,10 +914,36 @@ async def _op_run_python(p: dict, ctx: dict) -> tuple[str, str]:
             pass
 
 
+async def _run_python_remote(dev: dict, p: dict, ctx: dict) -> tuple[str, str]:
+    """Run Python on a device with its python3: the code is sent on stdin, a file must be on the device."""
+    import shlex
+    from . import devices
+    if p.get("venv"):
+        raise J.JobError("Python environments are on this server. On a device the task uses the device's python3.")
+    try:
+        args = shlex.split(V.render(p.get("args") or "", ctx))
+    except ValueError as e:
+        raise J.JobError(f"The arguments can't be read: {e}")
+    env = devices.remote_env(_remote_context(ctx))
+    qargs = " ".join(shlex.quote(a) for a in args)
+    if p.get("source") == "file":
+        f = V.render(p.get("file") or "", ctx).strip()
+        if not f.startswith("/"):
+            raise J.JobError(f"The Python file must be a full path (starting with /), not “{f[:80]}”.")
+        folder = f.rsplit("/", 1)[0] or "/"
+        cmd = (_remote_workdir(p, ctx, folder) + f"{env}python3 -u {shlex.quote(f)} {qargs}").rstrip()
+        return await _run_remote(dev, cmd, ctx, p, f"# python3 on the device\n# file: {f} {' '.join(args)}".rstrip())
+    code = V.render(p.get("code") or "", ctx)
+    cmd = (_remote_workdir(p, ctx) + f"{env}python3 -u - {qargs}").rstrip()
+    return await _run_remote(dev, cmd, ctx, p, f"# python3 on the device\n{code}", stdin=code.encode("utf-8"))
+
+
 async def _op_run_shell(p: dict, ctx: dict) -> tuple[str, str]:
     import shutil
+    from . import devices
     shell = p.get("shell") if p.get("shell") in ("bash", "sh") else "bash"
-    exe = shutil.which(shell)
+    dev = devices.current()
+    exe = shell if dev else shutil.which(shell)
     if not exe:
         raise J.JobError(f"{shell} isn't installed on this server.")
     script = V.render(p.get("script") or "", ctx)
@@ -851,6 +959,9 @@ async def _op_run_shell(p: dict, ctx: dict) -> tuple[str, str]:
             raise J.JobError(f"Environment variables, line {i}: write NAME=value.")
         env[k.strip()] = V.render(v, ctx)
     shown = f"# {shell}" + (f" (+ {', '.join(env)})" if env else "") + f"\n{script}"
+    if dev:     # the script goes on stdin, so it can be as long as needed
+        cmd = _remote_workdir(p, ctx) + devices.remote_env({**_remote_context(ctx), **env}) + f"{shell} -s"
+        return await _run_remote(dev, cmd, ctx, p, shown, stdin=script.encode("utf-8"))
     return await _run_process([exe, "-c", script], ctx, p, shown, env)
 
 
@@ -1070,6 +1181,15 @@ class DagScheduler(J.JobEngine):
         return final
 
     async def _run_task(self, t: dict, ctx: dict, ti: int, run_pk: int) -> tuple[str, dict]:
+        """Run one task instance; a task with a device runs there (devices.TARGET is what the operators follow)."""
+        from . import devices
+        token = devices.TARGET.set(t.get("device") or None)
+        try:
+            return await self._run_task_here(t, ctx, ti, run_pk)
+        finally:
+            devices.TARGET.reset(token)
+
+    async def _run_task_here(self, t: dict, ctx: dict, ti: int, run_pk: int) -> tuple[str, dict]:
         func = OP_FUNCS[t["operator"]]
         attempts = int(t.get("retries") or 0) + 1
         msg, details = "", ""
@@ -1095,6 +1215,8 @@ class DagScheduler(J.JobEngine):
                 msg, details = f"Took longer than its time limit ({t['execution_timeout']} s) and was stopped.", ""
             except Exception as e:
                 msg, details = str(e), getattr(e, "details", "") or ""
+                if t.get("device") and not details:
+                    details = f"# on the device {_device_name(t['device'])}"
             if attempt < attempts:
                 db.execute("UPDATE task_instances SET state='up_for_retry', message=?, details=? WHERE id=?",
                            (V.mask(f"Try {attempt} failed: {msg}")[:2000], V.mask(details)[:12000], ti))
@@ -1147,4 +1269,10 @@ def catalog() -> dict:
         base_label = f"Base Python ({pyenvs._version_of(bp) or 'python3'})"
     except Exception:  # noqa: BLE001
         envs, base_label = [], "Base Python"
-    return {**base, "operators": operators(), "trigger_rules": TRIGGER_RULES, "pyenvs": envs, "base_python": base_label}
+    from . import devices
+    try:
+        devs = [{"value": d["id"], "label": d["name"], "host": d["host"]} for d in devices.list_devices()]
+    except Exception:  # noqa: BLE001
+        devs = []
+    return {**base, "operators": operators(), "trigger_rules": TRIGGER_RULES, "pyenvs": envs, "base_python": base_label,
+            "devices": devs, "remote_operators": list(devices.REMOTE_OPERATORS)}

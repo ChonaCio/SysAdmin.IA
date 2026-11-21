@@ -7,6 +7,7 @@ import binascii
 import contextlib
 import os
 import re
+import shutil
 import signal
 import json
 import logging
@@ -21,7 +22,7 @@ from pydantic import BaseModel
 from . import ai_connections as ai
 from . import agent, auth, console, db, drives, google_oauth, jobs, mail, monitor, providers, server_name, updater
 from . import containers, firewall, lan_names, local_ai, model_search, network, publish, routers, user_prefs, variables
-from . import dags, procs, pyenvs, ssh_keys
+from . import dags, devices, procs, pyenvs, ssh_keys
 from .auth import User, admin_user, current_user
 from .config import settings
 
@@ -40,6 +41,30 @@ async def unexpected_error(request: Request, exc: Exception):
     happened instead of a bare "HTTP 500"."""
     log.error("Unhandled error on %s %s", request.method, request.url.path, exc_info=exc)
     return JSONResponse({"detail": f"Unexpected error ({type(exc).__name__}): {exc}"[:500]}, status_code=500)
+
+
+class DeviceTarget:
+    """`?device=ID` on /api/docker/… and /api/localai/…: the request is for a device from Server → Devices
+    (containers.py / local_ai.py then talk to it through an SSH tunnel). Pure ASGI, so the context variable
+    reaches the endpoint and the threads it starts with asyncio.to_thread."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http" and scope["path"].startswith(("/api/docker/", "/api/localai/")):
+            from urllib.parse import parse_qs
+            dev = (parse_qs(scope.get("query_string", b"").decode("latin-1")).get("device") or [""])[0]
+            if dev.isdigit() and int(dev) > 0:
+                token = devices.TARGET.set(int(dev))
+                try:
+                    return await self.app(scope, receive, send)
+                finally:
+                    devices.TARGET.reset(token)
+        await self.app(scope, receive, send)
+
+
+app.add_middleware(DeviceTarget)
 
 
 @app.middleware("http")
@@ -476,7 +501,9 @@ async def localai_status(user: User = Depends(admin_user)):
 @app.get("/api/localai/models")
 async def localai_models(user: User = Depends(admin_user)):
     data = await asyncio.to_thread(local_ai.models)
-    used = {c["config"].get("model"): c["name"] for c in ai.list_all() if c["provider"] == "ollama_managed"}
+    dev = devices.current_id()
+    used = {c["config"].get("model"): c["name"] for c in ai.list_all()
+            if c["provider"] == "ollama_managed" and (c["config"].get("device") or None) == dev}
     for m in data["models"]:
         m["connection"] = used.get(m["name"])
     return data
@@ -517,7 +544,9 @@ async def localai_unload(body: ModelBody, user: User = Depends(admin_user)):
 
 @app.post("/api/localai/delete")
 async def localai_delete(body: ModelBody, request: Request, user: User = Depends(admin_user)):
-    users = [c["name"] for c in ai.list_all() if c["provider"] == "ollama_managed" and c["config"].get("model") == body.name]
+    dev = devices.current_id()
+    users = [c["name"] for c in ai.list_all() if c["provider"] == "ollama_managed" and c["config"].get("model") == body.name
+             and (c["config"].get("device") or None) == dev]
     await asyncio.to_thread(_lai, local_ai.delete, body.name)
     db.audit("localai_delete", user.username, auth.client_ip(request), {"model": body.name})
     return {"ok": True, "connections": users}
@@ -526,12 +555,15 @@ async def localai_delete(body: ModelBody, request: Request, user: User = Depends
 @app.post("/api/localai/use")
 async def localai_use(body: ModelBody, request: Request, user: User = Depends(admin_user)):
     """Create (or return) the AI connection for an installed model, so it can be picked in chats."""
+    dev = devices.current()      # a model on a device: the connection reaches it through an SSH tunnel
     for c in ai.list_all():
-        if c["provider"] == "ollama_managed" and c["config"].get("model") == body.name:
+        if (c["provider"] == "ollama_managed" and c["config"].get("model") == body.name
+                and (c["config"].get("device") or None) == (dev["id"] if dev else None)):
             return ai.public(c)
     try:
-        c = ai.create({"name": f"{body.name} (local)", "provider": "ollama_managed", "method": "local",
-                       "config": {"model": body.name}, "is_default": not ai.any_enabled()})
+        cfg = {"model": body.name, **({"device": dev["id"]} if dev else {})}
+        c = await asyncio.to_thread(ai.create, {"name": f"{body.name} ({dev['name'] if dev else 'local'})", "provider": "ollama_managed",
+                                                "method": "local", "config": cfg, "is_default": not ai.any_enabled()})
     except ai.ConnectionError_ as e:
         raise HTTPException(400, str(e))
     db.audit("ai_connection_created", user.username, auth.client_ip(request),
@@ -1324,6 +1356,77 @@ async def ssh_delete(name: str, request: Request, user: User = Depends(admin_use
     await asyncio.to_thread(_ssh, ssh_keys.delete, name)
     db.audit("ssh_key_deleted", user.username, auth.client_ip(request), {"name": name})
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- devices (other computers controlled over SSH)
+
+def _dev(fn, *a, **kw):
+    try:
+        return fn(*a, **kw)
+    except devices.DeviceError as e:
+        raise HTTPException(400, str(e))
+
+
+class DeviceBody(BaseModel):
+    name: str = ""
+    host: str = ""
+    port: int = 22
+    user: str = ""
+    key_name: str = ""
+    description: str = ""
+
+
+@app.get("/api/devices")
+async def devices_list(live: bool = False, user: User = Depends(admin_user)):
+    """The devices (live=1: connect to each one and read its resources now)."""
+    def run():
+        rows = devices.overview() if live else [devices.public(d) for d in devices.list_devices()]
+        return {"devices": rows, "modules": devices.modules_catalog(), "ssh": bool(shutil.which("ssh")),
+                "keys": [k["name"] for k in ssh_keys.list_keys()], "default_key": ssh_keys.default_key()}
+    return await asyncio.to_thread(run)
+
+
+@app.post("/api/devices")
+async def devices_create(body: DeviceBody, request: Request, user: User = Depends(admin_user)):
+    d = await asyncio.to_thread(_dev, devices.create, _mail_dict(body))
+    db.audit("device_added", user.username, auth.client_ip(request), {"name": d["name"], "host": d["host"], "user": d["user"]})
+    return devices.public(d)
+
+
+@app.post("/api/devices/test")
+async def devices_test(body: DeviceBody, user: User = Depends(admin_user)):
+    return await asyncio.to_thread(_dev, devices.test, _mail_dict(body))
+
+
+@app.get("/api/devices/{dev_id}")
+async def devices_one(dev_id: int, user: User = Depends(admin_user)):
+    d = await asyncio.to_thread(_dev, devices.stats, dev_id)
+    d["used_by"] = devices.used_by(dev_id)
+    return d
+
+
+@app.put("/api/devices/{dev_id}")
+async def devices_update(dev_id: int, body: DeviceBody, request: Request, user: User = Depends(admin_user)):
+    d = await asyncio.to_thread(_dev, devices.update, dev_id, _mail_dict(body))
+    db.audit("device_updated", user.username, auth.client_ip(request), {"id": dev_id, "name": d["name"], "host": d["host"]})
+    return devices.public(d)
+
+
+@app.delete("/api/devices/{dev_id}")
+async def devices_delete(dev_id: int, request: Request, user: User = Depends(admin_user)):
+    name = _dev(devices.get, dev_id)["name"]
+    await asyncio.to_thread(_dev, devices.delete, dev_id)
+    db.audit("device_deleted", user.username, auth.client_ip(request), {"id": dev_id, "name": name})
+    return {"ok": True}
+
+
+@app.post("/api/devices/{dev_id}/refresh")
+async def devices_refresh(dev_id: int, user: User = Depends(admin_user)):
+    """Reconnect (after installing a module: a new docker group needs a new login) and read everything again."""
+    def run():
+        devices.reset_connections(devices.get(dev_id))
+        return devices.probe(dev_id, refresh_info=True)
+    return await asyncio.to_thread(_dev, run)
 
 
 @app.get("/api/ssh/keys/{name}/public")
@@ -2142,14 +2245,32 @@ def _schedule_restart() -> None:
 
 @app.websocket("/ws/console")
 async def console_ws(ws: WebSocket, mode: str = "shell", id: str = "", host: str = "", port: int = 22, user_name: str = "",
-                     key: str = "", install_key: str = ""):
+                     key: str = "", install_key: str = "", device: int = 0, module: str = ""):
     user = auth.websocket_user(ws)
     if not user or not user.is_admin or not settings.allow_console:
         await ws.close(code=4401 if not user else 4403)
         return
-    mode = mode if mode in ("update", "container", "ssh") else "shell"
+    mode = mode if mode in ("update", "container", "ssh", "device") else "shell"
     if mode == "container" and not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", id):
         await ws.close(code=4400)
+        return
+    if mode == "device" or (mode == "container" and device):
+        # a device from Server → Devices: a shell, a module install (fixed script) or a shell in one of its containers
+        try:
+            argv = devices.console_argv(device, module if mode == "device" else "", id if mode == "container" else "")
+            d = devices.get(device)
+        except devices.DeviceError:
+            await ws.close(code=4400)
+            return
+        await ws.accept()
+        ip, started = auth.client_ip(ws), time.time()
+        detail = {"device": d["name"], "ssh": f"{d['user']}@{d['host']}:{d['port']}"}
+        detail.update({"module": module} if module else {"container": id} if mode == "container" else {})
+        db.audit("device_module_install" if module else "console_open", user.username, ip, detail)
+        code = await console.run(ws, "ssh", argv_override=argv)
+        db.audit("console_close", user.username, ip, {"exit_code": code, "seconds": round(time.time() - started), **detail})
+        with contextlib.suppress(Exception):
+            await ws.close()
         return
     ssh = key_path = ssh_cmd = None
     if mode == "ssh":

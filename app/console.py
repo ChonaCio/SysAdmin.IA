@@ -128,8 +128,9 @@ def _make_controlling_tty() -> None:  # runs in the child before exec
 
 
 async def run(ws: WebSocket, mode: str, container: str = "", ssh: tuple[str, int, str] | None = None,
-              ssh_key: str | None = None, ssh_cmd: str | None = None) -> int | None:
-    """Serve one console session on an accepted WebSocket. Returns the exit code."""
+              ssh_key: str | None = None, ssh_cmd: str | None = None, argv_override: list[str] | None = None) -> int | None:
+    """Serve one console session on an accepted WebSocket. Returns the exit code.
+    argv_override: the program to run (devices.console_argv: ssh to a device from Server → Devices)."""
     if not AVAILABLE:
         await ws.send_json({"type": "error", "message": "The console is only available when the app runs on Linux."})
         return None
@@ -142,7 +143,7 @@ async def run(ws: WebSocket, mode: str, container: str = "", ssh: tuple[str, int
         _set_size(slave, 120, 32)
         env = _env()
         proc = await asyncio.create_subprocess_exec(
-            *_argv(mode, container, ssh, ssh_key, ssh_cmd), stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env["HOME"],
+            *(argv_override or _argv(mode, container, ssh, ssh_key, ssh_cmd)), stdin=slave, stdout=slave, stderr=slave, env=env, cwd=env["HOME"],
             start_new_session=True, preexec_fn=_make_controlling_tty,
         )
     except Exception as e:

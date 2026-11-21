@@ -249,6 +249,7 @@ function drawGraph(canvas, tasks, layout, opts = {}) {
       el("span", { class: "dag-node-icon", html: icon(spec.icon || "bolt") }),
       el("span", { class: "dag-node-text" }, el("span", { class: "dag-node-id mono", "data-no-i18n": "" }, t.task_id || "?"),
         el("span", { class: "dag-node-op small muted" }, spec.label),
+        t.device ? el("span", { class: "dag-node-dev small", "data-no-i18n": "", title: "Runs on this device" }, "@ " + dagDeviceName(t.device)) : null,
         st ? el("span", { class: "dag-node-state small" }, tiLabel(st)) : null),
       opts.editable ? el("span", { class: "port in", title: "Input: connect a task's output here" }) : null,
       opts.editable ? el("span", { class: "port out", title: "Drag from here to the task that should run after this one" }) : null);
@@ -616,10 +617,25 @@ function renderInspector() {
     t.execution_timeout = limit.value ? Number(limit.value) : null; t.trigger_rule = rule.value;
   };
   [retries, delay, limit, rule].forEach((i) => i.addEventListener("change", syncAdv));
+  // Where the task runs: this server or a device from Server → Devices (only operators that can run remotely).
+  let runOn = null;
+  const devs = state.dag.cat.devices || [];
+  if ((state.dag.cat.remote_operators || []).includes(t.operator) && (devs.length || t.device)) {
+    const sel = el("select", {}, el("option", { value: "" }, "This server"),
+      ...devs.map((d) => el("option", { value: String(d.value) }, `${d.label} (${d.host})`)));
+    if (t.device && !devs.some((d) => String(d.value) === String(t.device))) sel.append(el("option", { value: String(t.device) }, `${t.device} (not found)`));
+    sel.value = t.device ? String(t.device) : "";
+    sel.addEventListener("change", () => { t.device = sel.value ? (Number(sel.value) || sel.value) : null; renderEditor(); });
+    runOn = el("label", { class: "field" }, "Runs on", sel,
+      el("span", { class: "muted small" }, t.device
+        ? (t.operator === "run_python" ? "Runs over SSH with the device's python3; a Python file must be on the device." : "Runs over SSH on the device, with the device's user.")
+        : "Pick a device to run this task there instead (Server → Devices)."));
+  }
   box.append(
     el("div", { class: "insp-head" }, el("span", { class: "icon-tile small-tile", html: icon(spec.icon || "bolt") }),
       el("div", {}, el("strong", {}, spec.label), el("div", { class: "muted small" }, spec.description))),
     el("label", { class: "field" }, "Task id", idInput, el("span", { class: "muted small" }, `Other tasks use its output as {{tasks.${t.task_id}.output}}.`)),
+    runOn || "",
     t.upstream.length ? el("p", { class: "small" }, "Runs after: ", el("span", { class: "mono", "data-no-i18n": "" }, t.upstream.join(", "))) :
       el("p", { class: "small muted" }, "Runs first (nothing before it)."),
     fields,
@@ -632,6 +648,11 @@ function renderInspector() {
     el("div", { class: "flow-label" }, "Placeholders"),
     el("p", { class: "muted small" }, "Click one to insert it in the text box you were editing."),
     dagPlaceholders(t));
+}
+
+function dagDeviceName(id) {
+  const d = ((state.dag && state.dag.cat && state.dag.cat.devices) || []).find((x) => String(x.value) === String(id));
+  return d ? d.label : String(id);
 }
 
 function dagPlaceholders(t) {

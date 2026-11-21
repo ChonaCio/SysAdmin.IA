@@ -78,12 +78,36 @@ class _UnixConnection(http.client.HTTPConnection):
         self.sock = s
 
 
+def _device():
+    """The device this request is for (Server → Devices), or None for this server."""
+    from . import devices
+    return devices.current()
+
+
+def _host() -> str:
+    """Docker address: this server's, or the current device's through an SSH tunnel (devices.py)."""
+    from . import devices
+    if devices.current_id():
+        try:
+            return devices.docker_host()
+        except devices.DeviceError as e:
+            raise DockerError(str(e))
+    return DOCKER_HOST
+
+
+def _not_running() -> str:
+    d = _device()
+    return (f"Docker isn't running on {d['name']}, or SysAdmin.IA isn't allowed to use it there."
+            if d else "Docker isn't running on this server.")
+
+
 def _conn(timeout: float) -> http.client.HTTPConnection:
-    if DOCKER_HOST.startswith("tcp://"):
-        hp = DOCKER_HOST[6:].rstrip("/")
-        host, _, port = hp.rpartition(":")
-        return http.client.HTTPConnection(host or hp, int(port or 2375), timeout=timeout)
-    return _UnixConnection(DOCKER_HOST.replace("unix://", "", 1), timeout)
+    host = _host()
+    if host.startswith("tcp://"):
+        hp = host[6:].rstrip("/")
+        h, _, port = hp.rpartition(":")
+        return http.client.HTTPConnection(h or hp, int(port or 2375), timeout=timeout)
+    return _UnixConnection(host.replace("unix://", "", 1), timeout)
 
 
 def _open(method: str, path: str, query: dict | None = None, body=None, timeout: float = 30,
@@ -103,7 +127,10 @@ def _open(method: str, path: str, query: dict | None = None, body=None, timeout:
         c.close()
         if isinstance(e, PermissionError) or getattr(e, "errno", None) == 13:
             raise DockerError("NO_ACCESS")
-        raise DockerError("Docker isn't running on this server.")
+        raise DockerError(_not_running())
+    except http.client.HTTPException:          # a tunnel whose far end was refused closes the connection at once
+        c.close()
+        raise DockerError(_not_running())
     if r.status >= 400:
         raw = r.read()
         c.close()
@@ -198,8 +225,55 @@ def install_progress() -> dict:
     return out
 
 
+def _remote_status(d: dict) -> dict:
+    """status() for a device: what's installed comes from the device's agent, the rest from its Docker API."""
+    from . import devices
+    out = {"available": True, "installed": False, "running": False, "access": False, "version": None, "api_version": None,
+           "service": "unknown", "compose": None, "info": None, "needs_restart": False, "error": None, "can_manage": False,
+           "setup_command": None, "install": {"state": None, "message": None, "log": "", "stage": ""},
+           "group": {"member": True, "active": True},
+           "device": {"id": d["id"], "name": d["name"], "host": d["host"]}}
+    try:
+        info = devices.fresh_info()
+    except devices.DeviceError as e:
+        out["error"] = str(e)
+        out["device"]["state"] = e.kind
+        return out
+    dk = info.get("docker") or {}
+    out.update(installed=bool(dk.get("installed")), service=dk.get("service") or "unknown", compose=dk.get("compose"),
+               group={"member": bool(dk.get("group")), "active": bool(dk.get("access"))})
+    try:
+        v = _req("GET", "/version", timeout=6)
+        out.update(running=True, access=True, version=v.get("Version"), api_version=v.get("ApiVersion"), installed=True)
+        i = _req("GET", "/info", timeout=8)
+        out["info"] = {"containers": i.get("Containers", 0), "running": i.get("ContainersRunning", 0),
+                       "paused": i.get("ContainersPaused", 0), "stopped": i.get("ContainersStopped", 0),
+                       "images": i.get("Images", 0), "driver": i.get("Driver"), "root_dir": i.get("DockerRootDir"),
+                       "os": i.get("OperatingSystem"), "cpus": i.get("NCPU"), "memory": i.get("MemTotal"), "disk_free": None}
+        root = i.get("DockerRootDir") or "/"
+        for dr in sorted(((d.get("stats") or {}).get("drives") or []), key=lambda x: -len(x["mount"])):
+            if root == dr["mount"] or root.startswith(dr["mount"].rstrip("/") + "/"):
+                out["info"]["disk_free"] = dr["free"]
+                break
+    except DockerError as e:
+        if not out["installed"]:
+            out["error"] = None
+        elif not dk.get("access"):
+            out["running"] = dk.get("service") == "active"
+            out["error"] = (f"The user {d['user']} on {d['name']} isn't allowed to use Docker yet. Install the "
+                            "“Docker access” module on the device (Server → Devices)."
+                            if not dk.get("group") else
+                            f"{d['user']} was added to the docker group on {d['name']}: reconnect to the device to use it.")
+        else:
+            out["error"] = str(e)
+    return out
+
+
 def status() -> dict:
     from . import server_name
+    d = _device()
+    if d:
+        return _remote_status(d)
     out = {"available": available(), "installed": bool(_binary()), "running": False, "access": False,
            "version": None, "api_version": None, "service": _service_state(), "compose": None,
            "info": None, "needs_restart": False, "error": None,
@@ -236,6 +310,9 @@ def status() -> dict:
 
 def helper(*args: str, timeout: int = 120) -> str:
     from . import server_name
+    d = _device()
+    if d:
+        raise DockerError(f"On a device, Docker is installed and managed from Server → Devices → {d['name']}.")
     if not server_name.helper_supports("docker-install"):
         raise DockerError("This needs a one-time setup as root. On the server, run:\n  " + server_name.setup_command())
     try:
@@ -292,7 +369,9 @@ def list_containers(stats: bool = False) -> list[dict]:
     out.sort(key=lambda c: (c["state"] != "running", c["stack"] or "", c["name"]))
     if stats:
         running = [c for c in out if c["state"] == "running"]
-        threads = [threading.Thread(target=lambda c=c: c.update(stats=_stats(c["id"])), daemon=True) for c in running[:40]]
+        import contextvars
+        threads = [threading.Thread(target=contextvars.copy_context().run, args=(lambda c=c: c.update(stats=_stats(c["id"])),),
+                                    daemon=True) for c in running[:40]]
         for t in threads:
             t.start()
         for t in threads:
@@ -427,6 +506,13 @@ def used_host_ports(exclude_container: str | None = None) -> dict[int, str]:
                     used[p["host"]] = f"container “{c['name']}”"
     except DockerError:
         pass
+    d = _device()
+    if d:   # a device: its listening ports from the agent (no program names without root)
+        from . import devices
+        for p in devices.ports(d["id"]):
+            if p not in used and p not in mine:
+                used[p] = f"a program on {d['name']}"
+        return used
     try:
         for s in psutil.net_connections(kind="inet"):
             if s.status == psutil.CONN_LISTEN and s.laddr and s.laddr.port not in used and s.laddr.port not in mine:
@@ -459,8 +545,19 @@ def host_folders() -> dict:
     """Where container data can live: mounted drives from the Drives module (+ the app's data dir)."""
     from . import drives
     out = []
+    dev = _device()
+    if dev:   # a device: its mounted drives from the last stats
+        from . import devices
+        try:
+            st = devices.stats(dev["id"]).get("stats") or {}
+        except devices.DeviceError:
+            st = {}
+        for v in st.get("drives") or []:
+            system = v["mount"] in ("/", "/boot", "/var", "/usr", "/home")
+            out.append({"path": v["mount"], "label": v["mount"], "disk": v["device"], "external": False, "system": system,
+                        "free": v["free"], "total": v["total"], "fstype": v["fstype"]})
     try:
-        d = drives.list_drives()
+        d = drives.list_drives() if not dev else {"disks": []}
     except Exception:
         d = {"disks": []}
     for disk in d.get("disks", []):
@@ -742,19 +839,24 @@ _tlock = threading.RLock()
 
 
 def tasks() -> list[dict]:
+    from . import devices
+    dev = devices.current_id()
     with _tlock:
         now = time.time()
         for k in [k for k, v in _tasks.items() if v.get("finished") and now - v["finished"] > 900]:
             _tasks.pop(k)
-        return sorted((dict(v) for v in _tasks.values()), key=lambda t: -t["started"])
+        return sorted((dict(v) for v in _tasks.values() if v.get("device") == dev), key=lambda t: -t["started"])
 
 
 def _task(kind: str, title: str, target) -> dict:
+    import contextvars
+    from . import devices
     tid = f"{kind}-{int(time.time() * 1000)}"
+    dev = devices.current_id()
     with _tlock:
-        if any(t["title"] == title and t["state"] == "running" for t in _tasks.values()):
+        if any(t["title"] == title and t["state"] == "running" and t.get("device") == dev for t in _tasks.values()):
             raise DockerError(f"“{title}” is already running.")
-        _tasks[tid] = {"id": tid, "kind": kind, "title": title, "state": "running", "status": "Starting…",
+        _tasks[tid] = {"id": tid, "kind": kind, "title": title, "state": "running", "status": "Starting…", "device": dev,
                        "progress": None, "log": [], "started": time.time(), "finished": None, "error": None, "result": None}
 
     def upd(**kw):
@@ -771,7 +873,8 @@ def _task(kind: str, title: str, target) -> dict:
         except Exception as e:  # noqa: BLE001 - reported to the user
             msg = _err_text(e) if isinstance(e, DockerError) else str(e)
             upd(state="failed", finished=time.time(), error=msg, status="Failed")
-    threading.Thread(target=run, daemon=True, name=f"docker-{tid}").start()
+    ctx = contextvars.copy_context()      # the thread keeps working on the same device
+    threading.Thread(target=ctx.run, args=(run,), daemon=True, name=f"docker-{tid}").start()
     return dict(_tasks[tid])
 
 
@@ -1037,9 +1140,35 @@ def prune(what: list[str]) -> dict:
 # ---------------------------------------------------------------- stacks (Docker Compose)
 
 def _stacks_dir() -> Path:
+    d = _device()
+    if d:      # a device's stacks are kept apart (and copied to the device to run there)
+        from . import devices
+        return devices.stacks_dir(d["id"])
     p = Path(settings.data_dir) / "stacks"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+_WRITE_STACK = ("import json,os,sys;d=os.path.expanduser('~/.sysadmin-ia/stacks/'+sys.argv[1]);os.makedirs(d,exist_ok=True);"
+                "f=json.load(sys.stdin)\nfor k,v in f.items():\n  p=os.path.join(d,k);open(p,'w').write(v);os.chmod(p,0o600)")
+
+
+def _compose_remote(d: dict, name: str, *args: str, timeout: int = 1800) -> subprocess.CompletedProcess:
+    """docker compose on a device: the stack's files are copied to ~/.sysadmin-ia/stacks/NAME there first, so
+    relative paths in the compose file are folders of the device."""
+    from . import devices
+    local = _stacks_dir() / name
+    files = {n: (local / n).read_text() for n in ("compose.yaml", ".env") if (local / n).is_file()}
+    rdir = f"$HOME/.sysadmin-ia/stacks/{name}"
+    cmd = (f"python3 -c {shlex.quote(_WRITE_STACK)} {name} && cd \"{rdir}\" && "
+           f"docker compose -p {name} -f compose.yaml {' '.join(shlex.quote(a) for a in args)}")
+    if args[:1] == ("down",) and "--rm-files" in args:
+        cmd = f"cd \"{rdir}\" 2>/dev/null && docker compose -p {name} -f compose.yaml down; cd && rm -rf \"{rdir}\""
+    try:
+        code, out, err = devices.run(d, cmd, stdin=json.dumps(files).encode(), timeout=timeout)
+    except devices.DeviceError as e:
+        raise DockerError(str(e))
+    return subprocess.CompletedProcess(args, code, out, err)
 
 
 def compose_version() -> str | None:
@@ -1054,6 +1183,9 @@ def compose_version() -> str | None:
 
 
 def _compose(name: str, *args: str, timeout: int = 1800) -> subprocess.CompletedProcess:
+    d = _device()
+    if d:
+        return _compose_remote(d, name, *args, timeout=timeout)
     docker = _binary()
     if not docker:
         raise DockerError("The docker command isn't installed.")
@@ -1152,7 +1284,8 @@ def delete_stack(name: str) -> None:
     _check_stack(name)
     d = _stacks_dir() / name
     if (d / "compose.yaml").is_file():
-        p = _compose(name, "down", timeout=600)
+        # on a device the copy of the files there is removed too
+        p = _compose(name, "down", *(["--rm-files"] if _device() else []), timeout=600)
         if p.returncode != 0 and "no configuration file" not in (p.stderr or ""):
             raise DockerError((p.stderr or p.stdout).strip()[-800:])
     shutil.rmtree(d, ignore_errors=True)

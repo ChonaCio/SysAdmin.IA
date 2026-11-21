@@ -31,7 +31,8 @@ function renderDockerStatus(s) {
   $("#dk-tile").innerHTML = icon("box");
   $("#dk-tile").className = `icon-tile ${s.running && s.access ? "accent" : ""}`;
   const setup = $("#dk-setup");
-  setup.hidden = !s.available || s.can_manage;
+  const dev = s.device;     // a device from Server → Devices: installed from there; no service controls here
+  setup.hidden = !s.available || s.can_manage || !!dev;
   if (!setup.hidden) { setup.innerHTML = ""; setup.append("Installing and controlling Docker needs a one-time setup on the server. Run this as root, then reload: ", el("code", {}, s.setup_command || "")); }
   const inst = s.install || {};
   const installing = inst.state === "running";
@@ -44,6 +45,7 @@ function renderDockerStatus(s) {
   else if (s.installed) setPill("stopped", "warn");
   else setPill("not installed", "");
   $("#dk-version").textContent = !s.available ? "Containers are only available when the app runs on Linux."
+    : dev && s.error && !s.installed ? s.error
     : s.running && s.access ? `Docker ${s.version}${s.compose ? ` · Compose ${s.compose}` : " · Docker Compose not installed (stacks unavailable)"}`
     : s.installed ? (s.error || "Installed, but the service isn't running.")
     : "Not installed yet. Installing takes a few minutes and about 500 MB of disk.";
@@ -58,7 +60,14 @@ function renderDockerStatus(s) {
   };
   const svc = (action, label, ic) => el("button", { type: "button", class: "small", disabled: !s.can_manage,
     onclick: post("/api/docker/service", { action }, `Docker: ${label.toLowerCase()} done.`) }, withIcon(ic, label));
-  if (s.available && !s.installed && !installing) {
+  if (dev) {
+    if (!s.error && !s.installed) acts.append(el("button", { type: "button", class: "primary",
+      onclick: () => window.deviceInstallModule && deviceInstallModule(dev.id, "docker") }, withIcon("download", "Install Docker on the device")));
+    else if (s.installed && !s.access && !(s.group && s.group.member)) acts.append(el("button", { type: "button", class: "primary",
+      onclick: () => window.deviceInstallModule && deviceInstallModule(dev.id, "docker_access") }, withIcon("key", "Give access")));
+    if (s.error) acts.append(el("button", { type: "button", class: "small",
+      onclick: () => window.deviceReconnect && deviceReconnect(dev.id, loadDocker) }, withIcon("refresh", "Reconnect")));
+  } else if (s.available && !s.installed && !installing) {
     acts.append(el("button", { type: "button", class: "primary", disabled: !s.can_manage, onclick: async (e) => {
       if (!confirm("Install Docker on this server?\n\nThis downloads and runs Docker's official install script (get.docker.com) as root. "
         + "It installs Docker Engine and Docker Compose.\n\nSysAdmin.IA is then added to the “docker” group so it can manage containers. "
@@ -96,7 +105,7 @@ function renderDockerStatus(s) {
       stat("Disk", i.disk_free != null ? fmtBytes(i.disk_free) : "–", `free in ${i.root_dir || "/var/lib/docker"}`)));
   }
   const acc = $("#dk-access");
-  acc.hidden = !(s.installed && !s.access && s.error && !installing);
+  acc.hidden = !(s.installed && !s.access && s.error && !installing) && !(dev && s.error && s.installed);
   acc.textContent = s.error || "";
 
   $("#dk-install").hidden = !(installing || inst.state === "failed");
@@ -110,7 +119,7 @@ function renderDockerStatus(s) {
     log.scrollTop = log.scrollHeight;
     if (inst.state === "failed") $("#dk-install-details").open = true;
   }
-  $("#dk-danger").hidden = !s.installed || !s.can_manage || installing;
+  $("#dk-danger").hidden = !s.installed || !s.can_manage || installing || !!dev;
 }
 
 // ---- background tasks (downloads, creating containers, stacks)

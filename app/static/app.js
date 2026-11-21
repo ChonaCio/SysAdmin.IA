@@ -108,7 +108,17 @@ function hydrateIcons(root = document) {
 hydrateIcons();
 
 // ------------------------------------------------------------ helpers
+// Containers and Local AI can work on a device from Server → Devices: their requests then carry ?device=ID
+// (state.target is set by the "Runs on" picker at the top of those pages, see devices.js).
+function withDeviceTarget(path) {
+  const t = state.target || {};
+  const dev = path.startsWith("/api/docker/") ? t.docker
+    : path.startsWith("/api/localai/") && !path.startsWith("/api/localai/search") ? t.localai : null;
+  return dev ? `${path}${path.includes("?") ? "&" : "?"}device=${encodeURIComponent(dev)}` : path;
+}
+
 async function api(path, opts = {}) {
+  path = withDeviceTarget(path);
   const r = await fetch(path, {
     ...opts,
     headers: { "Content-Type": "application/json", "X-SAI-CSRF": "1", ...(opts.headers || {}) },
@@ -186,6 +196,8 @@ function switchView(v) {
   if (v === "processes" && window.loadProcesses) loadProcesses();
   if (v === "pyenvs" && window.loadPyEnvs) loadPyEnvs();
   if (v === "sshkeys" && window.loadSshKeys) loadSshKeys();
+  if (v === "devices" && window.loadDevices) loadDevices();
+  if ((v === "containers" || v === "localai") && window.renderTargetBar) renderTargetBar(v === "containers" ? "docker" : "localai");
   if (window.checkProcBanner) checkProcBanner(v);
   if (v === "localai") loadLocalAI();
   if (v === "containers" && window.loadDocker) loadDocker();
@@ -1758,9 +1770,11 @@ function connectConsole(name) {
   const proto = location.protocol === "https:" ? "wss" : "ws";
   const ssh = state.sshSessions[name];
   const extra = name === "container" ? `&id=${encodeURIComponent(state.consoleContainer?.id || "")}`
+      + (state.consoleContainer?.device ? `&device=${encodeURIComponent(state.consoleContainer.device)}` : "")
+    : ssh && ssh.device ? `&device=${encodeURIComponent(ssh.device)}` + (ssh.module ? `&module=${encodeURIComponent(ssh.module)}` : "")
     : ssh ? `&host=${encodeURIComponent(ssh.host)}&port=${ssh.port}&user_name=${encodeURIComponent(ssh.user)}`
       + (ssh.key ? `&key=${encodeURIComponent(ssh.key)}` : "") + (ssh.install ? `&install_key=${encodeURIComponent(ssh.install)}` : "") : "";
-  const mode = ssh ? "ssh" : name.startsWith("sh-") ? "shell" : name;   // every shell tab is its own session
+  const mode = ssh && ssh.device ? "device" : ssh ? "ssh" : name.startsWith("sh-") ? "shell" : name;   // every shell tab is its own session
   const ws = new WebSocket(`${proto}://${location.host}/ws/console?mode=${mode}${extra}`);
   ws.binaryType = "arraybuffer";
   c.ws = ws;
@@ -1776,6 +1790,8 @@ function connectConsole(name) {
     if (typeof e.data !== "string") { c.term.write(new Uint8Array(e.data)); return; }
     const m = JSON.parse(e.data);
     if (m.type === "exit") c.term.write(`\r\n\x1b[90m[session ended, exit code ${m.code}]\x1b[0m\r\n`);
+    // a module was installed on a device: reconnect (a new docker group needs a new login) and read it again
+    if (m.type === "exit" && ssh && ssh.device && ssh.module && window.deviceAfterModule) deviceAfterModule(ssh.device, ssh.module, m.code);
     if (m.type === "error") c.term.write(`\r\n\x1b[31m${m.message}\x1b[0m\r\n`);
   };
   ws.onclose = (e) => {
@@ -1815,13 +1831,14 @@ function openConsole(name) {
 
 // A shell inside a Docker container (opened from the Containers module).
 function openContainerConsole(id, name) {
+  const device = (state.target || {}).docker || "";   // a container on a device (Server → Devices)
   const c = makeConsole("container");
-  if (state.consoleContainer?.id !== id) {
+  if (state.consoleContainer?.id !== id || (state.consoleContainer?.device || "") !== device) {
     if (c.ws) { c.ws.onclose = null; c.ws.close(); c.ws = null; }
     c.term.reset();
     c.status = "";
   }
-  state.consoleContainer = { id, name };
+  state.consoleContainer = { id, name, device };
   const tab = $("#console-container-tab");
   tab.hidden = false;
   tab.textContent = `Container: ${name}`;
@@ -1865,6 +1882,17 @@ function openSshConsole(host, port, user, label, key = "", install = "") {
   addConsoleTab(name, `SSH: ${label || host}`, `${user}@${host}:${port}${key ? ` · key ${key}` : ""}`);
   openConsole(name);
 }
+
+// A device from Server → Devices: a shell on it, or installing a module (Python, Docker, Ollama) there.
+// The server builds the ssh command from the saved device (address, user, key); module scripts are fixed.
+function openDeviceConsole(dev, module = "", moduleLabel = "") {
+  state.sshCount = (state.sshCount || 0) + 1;
+  const name = `ssh-${state.sshCount}`;
+  state.sshSessions[name] = { device: dev.id, module, host: dev.host, port: dev.port, user: dev.user, label: dev.name };
+  addConsoleTab(name, module ? `${dev.name}: ${moduleLabel || module}` : `SSH: ${dev.name}`, `${dev.user}@${dev.host}:${dev.port} · key ${dev.key_name}`);
+  openConsole(name);
+}
+window.openDeviceConsole = openDeviceConsole;
 
 function closeConsoleTab(name) {
   const c = consoles[name];
@@ -2304,7 +2332,8 @@ function renderLaiStatus(s) {
   $("#lai-tile").innerHTML = icon("chip");
   $("#lai-tile").className = `icon-tile ${s.running ? "accent" : ""}`;
   const setup = $("#lai-setup");
-  setup.hidden = !s.available || s.can_manage;
+  const dev = s.device;     // a device from Server → Devices (installed from there; no service controls here)
+  setup.hidden = !s.available || s.can_manage || !!dev;
   if (!setup.hidden) { setup.innerHTML = ""; setup.append("Installing and controlling Ollama needs a one-time setup on the server. Run this as root, then reload: ", el("code", {}, s.setup_command || "")); }
   const pill = $("#lai-pill");
   const inst = s.install || {};
@@ -2315,18 +2344,27 @@ function renderLaiStatus(s) {
   else if (s.installed) { pill.textContent = "stopped"; pill.className = "status-pill warn"; }
   else { pill.textContent = "not installed"; pill.className = "status-pill"; }
   $("#lai-version").textContent = !s.available ? "Local AI is only available when the app runs on Linux."
+    : dev && s.error ? s.error
+    : dev && s.running ? `Version ${s.version} · on ${dev.name}, reached through SSH`
     : s.running ? `Version ${s.version} · listening on ${s.url} (this server only)`
     : s.installed ? "Installed, but the service isn't running." : "Not installed yet. Installing takes a few minutes and about 1–2 GB of disk.";
 
   const acts = $("#lai-actions");
   acts.innerHTML = "";
+  if (dev) {
+    if (!s.error && !s.installed) acts.append(el("button", { type: "button", class: "primary",
+      onclick: () => window.deviceInstallModule && deviceInstallModule(dev.id, "ollama") }, withIcon("download", "Install Ollama on the device")));
+    if (s.error || (s.installed && !s.running)) acts.append(el("button", { type: "button", class: "small",
+      onclick: () => window.deviceReconnect && deviceReconnect(dev.id, loadLocalAI) }, withIcon("refresh", "Reconnect")));
+  }
   const svc = (action, label, iconName) => el("button", { type: "button", class: "small", disabled: !s.can_manage, onclick: async (e) => {
     e.currentTarget.disabled = true;
     try { await api("/api/localai/service", { method: "POST", body: JSON.stringify({ action }) }); toast(`Ollama: ${label.toLowerCase()} done.`); }
     catch (ex) { toast(ex.message); }
     setTimeout(loadLocalAI, 1500);
   } }, withIcon(iconName, label));
-  if (s.available && !s.installed && !installing) {
+  if (dev) { /* handled above */ }
+  else if (s.available && !s.installed && !installing) {
     acts.append(el("button", { type: "button", class: "primary", disabled: !s.can_manage, onclick: async (e) => {
       if (!confirm("Install Ollama on this server?\n\nThis downloads and runs Ollama's official installer (ollama.com/install.sh) as root. "
         + "It adds an “ollama” service and user, and GPU support if a GPU is found.")) return;
@@ -2369,14 +2407,14 @@ function renderLaiStatus(s) {
     log.scrollTop = log.scrollHeight;
     if (inst.state === "failed") $("#lai-install-details").open = true;
   }
-  $("#lai-context").hidden = !s.installed;
+  $("#lai-context").hidden = !s.installed || !!dev;
   const csel = $("#lai-context-select");
   csel.innerHTML = s.context_choices.map((n) => `<option value="${n}">${n >= 1024 ? n / 1024 + "k" : n} tokens</option>`).join("");
   csel.value = String(s.context_length || 4096);
   $("#lai-context-apply").disabled = !s.can_manage;
   $("#lai-models-card").hidden = !s.running;
   $("#lai-get-card").hidden = !s.running;
-  $("#lai-danger").hidden = !s.installed || !s.can_manage || installing;
+  $("#lai-danger").hidden = !s.installed || !s.can_manage || installing || !!dev;
 }
 
 async function loadLaiModels() {

@@ -64,6 +64,8 @@
       <span data-icon="network"></span><span>Network</span></button>
     <button data-view="sshkeys" class="tab nav-item admin-only" id="tab-sshkeys" title="SSH keys">
       <span data-icon="key"></span><span>SSH keys</span></button>
+    <button data-view="devices" class="tab nav-item admin-only" id="tab-devices" title="Devices">
+      <span data-icon="server"></span><span>Devices</span></button>
     <button data-view="processes" class="tab nav-item admin-only" id="tab-processes" title="Processes">
       <span data-icon="chip"></span><span>Processes</span><span class="nav-alert" id="proc-nav-alert" hidden title="A process isn't working"></span></button>
     <div class="nav-group admin-only">Automation</div>
@@ -529,6 +531,7 @@
             in a few clicks.</p>
         </div>
       </div>
+      <div id="dk-target" class="dev-target-bar" hidden></div>
       <p class="note warn" id="dk-setup" hidden></p>
 
       <div class="card">
@@ -586,6 +589,7 @@
             and there's no per-use cost. Installed models appear in AI connections as <strong>Ollama (Server Managed)</strong>.</p>
         </div>
       </div>
+      <div id="lai-target" class="dev-target-bar" hidden></div>
       <p class="note warn" id="lai-setup" hidden></p>
 
       <div class="card" id="lai-status-card">
@@ -774,6 +778,25 @@
       <div id="ssh-notice"></div>
       <div id="ssh-list" class="proc-list"></div>
       <div class="card" id="ssh-hosts"></div>
+    </div>
+  </section>
+
+  <!-- ================= DEVICES ================= -->
+  <section id="view-devices" class="view">
+    <div class="page">
+      <div class="page-head">
+        <div>
+          <h2>Devices</h2>
+          <p class="muted small">Other Linux computers this server controls over SSH: watch their resources and drives, install
+            Docker or Ollama on them, run their containers and AI models from here, and run job tasks on them.</p>
+        </div>
+        <div class="row">
+          <button type="button" class="ghost" id="dev-refresh"><span data-icon="refresh"></span> Refresh</button>
+          <button type="button" class="primary" id="dev-add"><span data-icon="plus"></span> Add a device</button>
+        </div>
+      </div>
+      <div id="dev-notice"></div>
+      <div id="dev-list" class="proc-list"></div>
     </div>
   </section>
 
@@ -1068,5 +1091,6 @@
   <script src="/static/dags.js"></script>
   <script src="/static/pyenvs.js"></script>
   <script src="/static/sshkeys.js"></script>
+  <script src="/static/devices.js"></script>
 </body>
 </html>

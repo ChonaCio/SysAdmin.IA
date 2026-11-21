@@ -829,6 +829,18 @@ async def _act_run_command(a: dict, ctx: dict) -> tuple[str, str]:
     from .config import settings
     cmd = V.render(a["command"], ctx)
     timeout = int(a.get("timeout") or 120)
+    from . import devices
+    dev = devices.current()
+    if dev:     # a DAG task set to run on a device (Server → Devices)
+        import shlex
+        shown = f"# on the device {dev['name']} ({dev['user']}@{dev['host']})\n$ {cmd}"
+        try:
+            code, text = await devices.exec_async(dev, "bash -lc " + shlex.quote(cmd), timeout=timeout)
+        except asyncio.TimeoutError:
+            raise JobError(f"The command took longer than {timeout} seconds and was stopped.", details=shown)
+        except devices.DeviceError as e:
+            raise JobError(str(e), details=shown)
+        return _command_result(code, text, ctx, shown)
     proc = await asyncio.create_subprocess_exec(
         "bash", "-lc", cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
         stdin=asyncio.subprocess.DEVNULL, cwd=str(settings.data_dir), start_new_session=True)
@@ -838,14 +850,18 @@ async def _act_run_command(a: dict, ctx: dict) -> tuple[str, str]:
         proc.kill()
         await proc.wait()
         raise JobError(f"The command took longer than {timeout} seconds and was stopped.", details=f"$ {cmd}")
-    text = out.decode("utf-8", "replace").strip()
+    return _command_result(proc.returncode, out.decode("utf-8", "replace"), ctx, f"$ {cmd}")
+
+
+def _command_result(code: int, raw: str, ctx: dict, shown: str) -> tuple[str, str]:
+    text = raw.strip()
     if len(text) > 8000:
         text = text[:4000] + "\n…\n" + text[-3900:]
-    ctx["last"] = {"output": text, "exit_code": proc.returncode}
-    details = f"$ {cmd}\n{text or '(no output)'}\n\n[exit code {proc.returncode}]"
-    if proc.returncode != 0:
+    ctx["last"] = {"output": text, "exit_code": code}
+    details = f"{shown}\n{text or '(no output)'}\n\n[exit code {code}]"
+    if code != 0:
         last_line = (text.strip().splitlines() or [""])[-1][:200]
-        raise JobError(f"The command failed (exit code {proc.returncode}){': ' + last_line if last_line else ''}", details=details)
+        raise JobError(f"The command failed (exit code {code}){': ' + last_line if last_line else ''}", details=details)
     n = len(text.splitlines())
     first = (text.splitlines() or [""])[0][:160]
     return (f"Exit code 0 · {n} line{'s' if n != 1 else ''} of output" + (f": {first}" if first else "")

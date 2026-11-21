@@ -437,6 +437,12 @@ class OpenAICompatProvider:
         if self.conn["provider"] == "ollama_managed":
             from .local_ai import OLLAMA_URL
             base = f"{OLLAMA_URL}/v1"
+            if self.cfg.get("device"):      # a model on a device (Server → Devices), through an SSH tunnel
+                from . import devices
+                try:
+                    base = f"{devices.ollama_url(self.cfg['device'])}/v1"
+                except devices.DeviceError as e:
+                    raise ProviderError(f"“{self.conn['name']}” runs on a device that can't be reached: {e}")
         headers = {}
         if self.conn["provider"] == "openrouter":
             headers = {"X-Title": "SysAdmin.IA"}
